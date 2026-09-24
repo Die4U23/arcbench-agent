@@ -1,0 +1,50 @@
+id: ROOT
+name: ArcDesk Real Local Authentication
+children:
+  - id: REQ-AUTH-REAL-LOCAL
+    name: Implement persistent local account authentication
+    description: >-
+      Extend the provided ArcDesk React/Vite account-access interface with a real,
+      local-only authentication backend. This task requires account identity and
+      password verification; a format-only form success or mocked success is not
+      acceptable. Keep the service bound to 127.0.0.1 and do not call any external
+      authentication provider or network service.
+
+      Implement a Python 3 backend using standard-library HTTP, sqlite3, secrets,
+      hashlib.scrypt, and hmac.compare_digest. Persist users in a local SQLite file
+      outside source-controlled files. Normalize email addresses consistently and
+      enforce uniqueness. Never store plaintext passwords: use a unique random salt
+      of at least 16 bytes and scrypt with N >= 131072, r >= 8, p >= 1. Add input-size
+      limits and parameterized SQL.
+
+      Provide JSON endpoints: POST /api/auth/register (valid registration creates a
+      persistent account and returns 201; duplicate email returns 409), POST
+      /api/auth/login (only an existing email and matching password return 200; an
+      unknown email and a wrong password both return the same generic 401 response),
+      GET /api/auth/session (returns the authenticated user's safe profile or 401),
+      and POST /api/auth/logout (invalidates the server-side session and expires its
+      cookie). Registration does not silently authenticate the user; the user must
+      sign in with the credentials they registered.
+
+      Use random, unpredictable session identifiers in HttpOnly, SameSite cookies;
+      keep session state on the server and never put credentials or session tokens in
+      localStorage/sessionStorage. Rotate the session identifier at successful login,
+      expire sessions, and invalidate the active session at logout. Keep the success
+      page accessible only after the backend confirms the account. Show clear errors
+      for unknown accounts and incorrect passwords without revealing which condition
+      occurred. Preserve accessible form labels and field validation.
+
+      Add meaningful UI tests and backend integration tests that exercise the actual
+      HTTP handlers with an isolated temporary SQLite database. At minimum verify:
+      arbitrary well-formed but unregistered credentials cannot log in; registration
+      persists an account; that account can subsequently log in only with its matching
+      password; duplicate registrations are rejected; malformed data and short
+      passwords are rejected; authenticated session lookup succeeds; logout revokes
+      the session; stored password data is not plaintext; and unknown-email and
+      wrong-password responses are indistinguishable. Tests must assert response
+      status, response body, cookie/session behavior, and UI state where relevant.
+
+      Add scripts so npm run build and npm run test execute successfully, with the test
+      script running both frontend tests and Python backend integration tests. Document
+      how to start the backend and frontend locally, where the development database is
+      stored, and how to reset only this demo database.

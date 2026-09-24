@@ -25,6 +25,8 @@
 
 本地离线模式不调用模型，但仍需要一个含 `requirements.yaml` 的任务目录。使用 `--demo` 可走确定性示例生成流程；不带 `--demo` 则走模型驱动流程，需要 ARC-Bench Runner 注入的模型环境变量。
 
+模型实现阶段默认最多进行 36 轮模型响应和 96 次项目工具调用。可用 `--max-model-turns`、`--max-tool-calls` 覆盖，或分别设置 `ARCBENCH_MAX_MODEL_TURNS`、`ARCBENCH_MAX_TOOL_CALLS` 环境变量。`examples/auth-interface-task/requirements.yaml` 是可复现的登录注册网站任务样例。
+
 ## ARC-Bench 运行
 
 Python 上传入口为仓库根目录的 `main.py`，依赖声明为 `requirements.txt`。平台运行时通过环境变量提供 `OPENAI_API_KEY`、`OPENAI_BASE_URL` 和 `MODEL`。Agent 不会复制模板覆盖 Runner 准备的目标目录；它直接读取和修改 `--output-dir` 中已有项目。

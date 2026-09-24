@@ -84,7 +84,7 @@ def run_model_agent(runtime: AgentRuntime, config: AgentConfig, tree: dict[str, 
         raise ValueError(
             f"The initial model-driven implementation currently supports task type 'web', not {config.task_type!r}"
         )
-    model = ModelClient(max_turns=18, max_tool_calls=48)
+    model = ModelClient(max_turns=config.max_model_turns, max_tool_calls=config.max_tool_calls)
     project_tools = ProjectTools(config.output_dir, timeout_seconds=120)
     plans: dict[str, str] = {}
     for module in modules:

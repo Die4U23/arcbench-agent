@@ -11,7 +11,14 @@ children:
       confirmation, and acceptance of terms. Add accessible labels, required-field,
       email, password-length and password-match validation, password visibility
       toggles, inline errors, and a visible success state after valid local submission.
-      Keep form handling local; no real authentication backend or external service is
-      required. Ensure the layout works on mobile and desktop. Provide package.json
+      Define sign-in validity by the form rules only (a syntactically valid email and a
+      non-empty password meeting the stated minimum length); do not check whether the
+      account exists or whether the password is correct. Any values meeting those rules
+      must reach the local success state. For registration, any full name and syntactically
+      valid email are acceptable when the password meets the stated minimum, confirmation
+      matches, and terms are accepted. Keep form handling local; do not call a backend or
+      external service, or imply that an account was actually authenticated or created.
+      Automated tests must assert these successful local submissions and representative
+      invalid-input cases. Ensure the layout works on mobile and desktop. Provide package.json
       scripts for build and test, and include meaningful automated tests for the main
       form interactions.

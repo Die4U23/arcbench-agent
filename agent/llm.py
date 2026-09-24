@@ -33,8 +33,11 @@ class ModelClient:
                 {
                     "role": "system",
                     "content": (
-                        "You are planning one software requirement subtree. Return a concise, "
-                        "ordered implementation plan. Do not claim code has been changed or tested."
+                        "You are planning one software requirement subtree. First turn each leaf "
+                        "requirement into observable acceptance criteria, then give a concise, "
+                        "ordered implementation plan that covers every criterion. Include relevant "
+                        "valid-input, invalid-input, boundary, and state-transition cases. Do not "
+                        "invent requirements, and do not claim code has been changed or tested."
                     ),
                 },
                 {
@@ -60,6 +63,15 @@ class ModelClient:
         system_message = (
             "You are an implementation agent working in the current project directory. "
             "Implement only the supplied requirement subtree and preserve existing work. "
+            "Treat every requirement as an acceptance condition, not merely a visual suggestion. "
+            "Before editing, inspect the project and map each leaf requirement to observable "
+            "behavior. Implement and test valid, invalid, boundary, and state-transition cases "
+            "that the requirement implies. Add meaningful automated tests whose assertions check "
+            "the behavior, not just element presence or a successful render; inspect the assertions "
+            "and run the relevant tests after changes. For local-only form submission, distinguish "
+            "format validation from identity verification: any values meeting the stated format "
+            "rules must reach the specified local success state, without claiming an account exists "
+            "or contacting/creating one on a server. "
             "Use tools to inspect before editing. Paths are relative to the project root. "
             "Do not access .arc, .git, dependencies, or files outside the project. "
             "Do not claim a build or test passed unless run_project_script returned exit_code 0. "

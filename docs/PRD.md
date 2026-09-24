@@ -210,7 +210,7 @@ ARC-Bench Runner
 
 ## 12. 建议的近期工作顺序
 
-1. 在两位组员的电脑上按 `.python-version`、`.nvmrc` 和 `scripts/setup.ps1` 建立一致的本地环境；记录非 Windows 成员的等效安装步骤。
+1. 在两位组员的电脑上按 `.python-version` 和 `scripts/setup.ps1` 建立一致的 Python 环境；本地运行 Web 项目构建/测试时，再按 `.nvmrc` 安装一致的 Node.js 版本。记录非 Windows 成员的等效安装步骤。
 2. 准备一份本地 `requirements.yaml`，用 `--demo` 检查入口、静态页面输出和 SDK 事件/Traceability 文件。
 3. 由小组在 ARC-Bench Runner 上运行首个真实任务，确认模型工具调用、依赖安装、目标目录基线及 SDK 刷新行为。
 4. 保存平台运行标识、代码版本、实际命令结果和失败原因，按真实环境修订技术选型。

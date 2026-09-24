@@ -12,7 +12,7 @@ class ModelClient:
         api_key = os.environ.get("OPENAI_API_KEY", "").strip()
         self.model = os.environ.get("MODEL", "").strip()
         if not api_key:
-            raise RuntimeError("OPENAI_API_KEY is not set. Use --demo for the offline example.")
+            raise RuntimeError("OPENAI_API_KEY is not set. Pass --demo with a local requirements.yaml task for deterministic offline mode.")
         if not self.model:
             raise RuntimeError("MODEL is not set by the ARC-Bench Runner.")
         from openai import OpenAI

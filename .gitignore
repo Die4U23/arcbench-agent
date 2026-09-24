@@ -15,7 +15,6 @@ test-results/
 .env.*
 !.env.example
 .arc/
-demo/output/
 node_modules/
 npm-debug.log*
 *.log

@@ -1,6 +1,0 @@
-id: ROOT
-name: Offline demo task
-children:
-  - id: REQ-DEMO-1
-    name: Welcome page
-    description: Generate a small welcome page that explains this is the ARC-Bench project demo.

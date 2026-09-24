@@ -1,0 +1,17 @@
+id: ROOT
+name: Login and Registration Interface
+children:
+  - id: REQ-AUTH-INTERFACE
+    name: Build a polished account access experience
+    description: >-
+      Create a polished, responsive website for a fictional product called ArcDesk.
+      It must provide sign-in and account-creation forms with a clear way to switch
+      between them. Sign-in includes email and password, remember-me, forgot-password,
+      and submit controls. Registration includes full name, email, password, password
+      confirmation, and acceptance of terms. Add accessible labels, required-field,
+      email, password-length and password-match validation, password visibility
+      toggles, inline errors, and a visible success state after valid local submission.
+      Keep form handling local; no real authentication backend or external service is
+      required. Ensure the layout works on mobile and desktop. Provide package.json
+      scripts for build and test, and include meaningful automated tests for the main
+      form interactions.

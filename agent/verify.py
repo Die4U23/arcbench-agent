@@ -54,6 +54,8 @@ def _run_npm_script(package_dir: Path, script: str) -> CheckResult:
         "cwd": package_dir,
         "capture_output": True,
         "text": True,
+        "encoding": "utf-8",
+        "errors": "replace",
         "timeout": TIMEOUT_SECONDS,
         "check": False,
     }

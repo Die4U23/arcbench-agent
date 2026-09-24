@@ -3,12 +3,24 @@ venv/
 __pycache__/
 *.py[cod]
 build/
+dist/
 *.egg-info/
 .pytest_cache/
 .ruff_cache/
+.coverage
+coverage/
+playwright-report/
+test-results/
 .env
 .env.*
 !.env.example
 .arc/
 demo/output/
 node_modules/
+npm-debug.log*
+*.log
+Thumbs.db
+Desktop.ini
+
+# Downloaded/extracted upstream starter archives kept locally for reference.
+/template/

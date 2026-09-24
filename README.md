@@ -17,7 +17,9 @@
 
 ## 本地环境
 
-推荐 Python 3.12 64 位。项目直接依赖已按本机当前使用的 OpenAI Python SDK 和 PyYAML 版本固定；ARC-Bench Runtime SDK 作为源码随仓库提供。传递依赖仍由 pip 根据 SDK 元数据解析。
+Python 版本以 `.python-version` 为准（当前为 3.12.6，需 64 位）；`scripts/setup.ps1` 会读取并校验该版本，已有 `.venv` 版本不匹配时会提示重建。项目直接依赖已按本机当前使用的 OpenAI Python SDK 和 PyYAML 版本固定；ARC-Bench Runtime SDK 作为源码随仓库提供。传递依赖仍由 pip 根据 SDK 元数据解析。
+
+`.nvmrc` 记录用于本地 Web 项目构建与测试的 Node.js 版本；它不是 Agent Python 依赖，也不会由 `setup.ps1` 自动安装。使用 nvm 的开发环境可通过该文件切换版本；其他环境请安装相同版本的 Node.js。
 
 ```powershell
 .\scripts\setup.ps1

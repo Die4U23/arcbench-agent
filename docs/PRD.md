@@ -73,7 +73,7 @@ Agent 调用内置 `arcbench_agent_runtime` Python SDK。SDK 管理固定事件�
 ```text
 ARC-Bench Runner
   └─ 启动 main.py，传入任务与输出目录，并注入模型环境变量
-       └─ Agent 读取 requirements.yaml
+       └─ Agent 读取 requirements.yaml 或 README.md
             ├─ 模型 API：分析需求、规划或生成代码
             ├─ 工具：编辑项目、构建、测试、修复
             └─ Runtime SDK：更新状态、Traceability、Git
@@ -92,6 +92,8 @@ ARC-Bench Runner
 ### FR-2：需求读取与任务规划
 
 - 读取当前任务所需的需求文件，不依赖手工硬编码某个任务 ID。
+- 支持已有的 `requirements.yaml`，以及以 `README.md` / `requirements.md` 发布的 Markdown 需求树；两种来源归一化为统一内部结构。
+- 保留原始需求 ID、父子层级、描述、依赖、Given/When/Then 场景和视觉参考链接；Markdown 图片应作为图像输入交给视觉模型，而不只是把 URL 当文字；不把评测测试文件混入需求树。
 - 将需求转为可实施的模块/步骤，并保留需求标识与实现、接口、测试之间的对应关系。
 - 若采用逐个子树处理等策略，应确保跨步骤共享同一目标目录和已完成工作。
 

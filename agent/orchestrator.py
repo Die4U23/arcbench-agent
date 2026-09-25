@@ -87,9 +87,24 @@ def run_model_agent(runtime: AgentRuntime, config: AgentConfig, tree: dict[str, 
     model = ModelClient(max_turns=config.max_model_turns, max_tool_calls=config.max_tool_calls)
     project_tools = ProjectTools(config.output_dir, timeout_seconds=120)
     plans: dict[str, str] = {}
+    root_visual_references = tree.get("visual_reference", [])
+    if isinstance(root_visual_references, str):
+        root_visual_references = [root_visual_references]
     for module in modules:
         runtime.events.mark_design_started(module.node_id, "Analyzing requirement subtree")
-        plan = model.plan(config.task_type, module.subtree)
+        planning_subtree = dict(module.subtree)
+        module_visual_references = planning_subtree.get("visual_reference", [])
+        if isinstance(module_visual_references, str):
+            module_visual_references = [module_visual_references]
+        if isinstance(root_visual_references, list):
+            planning_subtree["visual_reference"] = list(
+                dict.fromkeys([*root_visual_references, *module_visual_references])
+            )
+        plan = model.plan(
+            config.task_type,
+            planning_subtree,
+            reference_dir=config.requirement_dir,
+        )
         plans[module.node_id] = plan
         runtime.events.mark_design_done(module.node_id, "Implementation plan prepared")
         runtime.events.mark_implementation_started(module.node_id, "Applying requirement subtree")

@@ -25,7 +25,7 @@ Python 版本以 `.python-version` 为准（当前为 3.12.6，需 64 位）；`
 .\scripts\setup.ps1
 ```
 
-本地离线模式不调用模型，但仍需要一个含 `requirements.yaml` 的任务目录。使用 `--demo` 可走确定性示例生成流程；不带 `--demo` 则走模型驱动流程，需要 ARC-Bench Runner 注入的模型环境变量。
+本地任务目录可提供 `requirements.yaml`，或提供 ARC-Bench 任务页对应的 `README.md` / `requirements.md`。Requirement Reader 会把任一格式归一化为同一需求树；两者同时存在时优先使用 `requirements.yaml`，原始 Markdown 保持不变。Markdown 中的图片引用会作为视觉输入交给规划模型：本地图片限制为 PNG/JPEG/GIF/WebP 且不超过 8 MiB；公开 HTTP(S) 图片 URL 会直接传给兼容的模型服务。可用 `VISUAL_MODEL` 指定视觉模型，未设置时使用 `MODEL`，因此包含图片的任务要求所选模型支持图像输入。本地离线模式不调用模型，使用 `--demo` 可走确定性示例生成流程；不带 `--demo` 则走模型驱动流程，需要 ARC-Bench Runner 注入的模型环境变量。
 
 模型实现阶段默认最多进行 36 轮模型响应和 96 次项目工具调用。可用 `--max-model-turns`、`--max-tool-calls` 覆盖，或分别设置 `ARCBENCH_MAX_MODEL_TURNS`、`ARCBENCH_MAX_TOOL_CALLS` 环境变量。`examples/auth-interface-task/requirements.yaml` 是登录注册界面任务样例；`examples/auth-real-auth-task/requirements.yaml` 是本地真实认证任务样例。
 
@@ -37,7 +37,7 @@ Python 上传入口为仓库根目录的 `main.py`，依赖声明为 `requiremen
 
 ## 项目结构
 
-- `agent/requirements.py`：读取并校验 `requirements.yaml`。
+- `agent/requirements.py`：读取 YAML 或 Markdown 需求文件，并归一化为内部需求树。
 - `agent/orchestrator.py`：按需求子树编排设计、实现、验证和有限修复。
 - `agent/llm.py`：OpenAI 兼容模型调用与工具循环。
 - `agent/tools.py`：项目文件浏览/编辑和受限 npm 脚本执行。

@@ -23,7 +23,7 @@ def parse_config() -> AgentConfig:
         "requirement_path",
         nargs="?",
         default=os.environ.get("ARCBENCH_TASK_DIR", "requirements"),
-        help="Directory containing requirements.yaml.",
+        help="Task directory containing requirements.yaml or README.md/requirements.md.",
     )
     parser.add_argument(
         "--output-dir",

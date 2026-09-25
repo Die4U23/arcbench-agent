@@ -13,8 +13,8 @@
 | Agent 入口 | Python `main.py` + `requirements.txt` | 符合用户提供的 Runtime API 上传约定 |
 | Python 版本 | 3.10+ | 空白 starter 的 Runtime SDK `pyproject.toml` 声明 `requires-python >=3.10`；Runner 实际版本仍需验证 |
 | 平台运行时 | starter 随附 `arcbench-agent-runtime`，经其高层 API 操作 | 空白 starter 的 `requirements.txt` 引用 `./arcbench-agent-runtime`；保留本地 SDK 依赖，不能假定任意平台环境都预装该包 |
-| 模型调用 | starter 示例采用 `openai` Python 包 | 示例读取 `OPENAI_API_KEY`、`OPENAI_BASE_URL`、`MODEL`，支持 Chat Completions 与 Responses；具体模型能力需验证 |
-| 需求读取 | `PyYAML` + 标准数据结构 | 需求文件为 YAML；官网下载 starter 的依赖清单未必都含 PyYAML，若实现读取 YAML，需将其明确加入 Agent 依赖 |
+| 模型调用 | starter 示例采用 `openai` Python 包 | 示例读取 `OPENAI_API_KEY`、`OPENAI_BASE_URL`、`MODEL`；可选 `VISUAL_MODEL` 处理图片参考，服务须支持图像输入，具体能力需验证 |
+| 需求读取 | `PyYAML` + Markdown 结构解析 + 标准数据结构 | 支持 `requirements.yaml` 与 ArcBench README 任务说明，并归一化成同一需求树；图片参考由规划阶段做多模态输入 |
 | 流程编排 | 自研显式状态机/流水线 | 阶段顺序清晰、状态上报可与真实步骤对应；初期不引入重型 Agent 框架 |
 | 本地开发 | `venv` 或 `uv`，开发依赖单独管理 | 平台入口依赖与本地开发工具分开，避免无必要增加上传包依赖 |
 | 测试与质量 | `pytest`、`ruff` 作为开发期候选工具 | 仅在开始实现后启用；不要求目标应用必须使用 Python 测试框架 |

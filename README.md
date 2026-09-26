@@ -17,7 +17,7 @@
 
 ## 本地环境
 
-Python 版本以 `.python-version` 为准（当前为 3.12.6，需 64 位）；`scripts/setup.ps1` 会读取并校验该版本，已有 `.venv` 版本不匹配时会提示重建。项目直接依赖已按本机当前使用的 OpenAI Python SDK 和 PyYAML 版本固定；ARC-Bench Runtime SDK 作为源码随仓库提供。传递依赖仍由 pip 根据 SDK 元数据解析。
+Python 版本以 `.python-version` 为准（当前为 3.12.6，需 64 位）；`scripts/setup.ps1` 会读取并校验该版本，已有 `.venv` 版本不匹配时会提示重建。项目直接依赖包括固定版本的 OpenAI Python SDK、PyYAML 和 Playwright；ARC-Bench Runtime SDK 作为源码随仓库提供。传递依赖仍由 pip 根据 SDK 元数据解析。
 
 `.nvmrc` 记录用于本地 Web 项目构建与测试的 Node.js 版本；它不是 Agent Python 依赖，也不会由 `setup.ps1` 自动安装。使用 nvm 的开发环境可通过该文件切换版本；其他环境请安装相同版本的 Node.js。
 
@@ -25,7 +25,9 @@ Python 版本以 `.python-version` 为准（当前为 3.12.6，需 64 位）；`
 .\scripts\setup.ps1
 ```
 
-本地任务目录可提供 `requirements.yaml`，或提供 ARC-Bench 任务页对应的 `README.md` / `requirements.md`。Requirement Reader 会把任一格式归一化为同一需求树；两者同时存在时优先使用 `requirements.yaml`，原始 Markdown 保持不变。Markdown 中的图片引用会作为视觉输入交给规划模型：本地图片限制为 PNG/JPEG/GIF/WebP 且不超过 8 MiB；公开 HTTP(S) 图片 URL 会直接传给兼容的模型服务。可用 `VISUAL_MODEL` 指定视觉模型，未设置时使用 `MODEL`，因此包含图片的任务要求所选模型支持图像输入。本地离线模式不调用模型，使用 `--demo` 可走确定性示例生成流程；不带 `--demo` 则走模型驱动流程，需要 ARC-Bench Runner 注入的模型环境变量。
+本地任务目录可提供 `requirements.yaml`，或提供 ARC-Bench 任务页对应的 `README.md` / `requirements.md`。Requirement Reader 会把任一格式归一化为同一需求树；两者同时存在时优先使用 `requirements.yaml`，原始 Markdown 保持不变。Markdown 中的图片引用会作为视觉输入交给规划与实现模型：本地图片限制为 PNG/JPEG/GIF/WebP 且不超过 8 MiB；公开 HTTP(S) 图片 URL 会直接传给兼容的模型服务。可用 `VISUAL_MODEL` 指定视觉模型，可用 `VISUAL_REVIEW_MODEL` 指定独立的视觉验收模型；未配置时两者回退到 `MODEL`。包含图片的任务要求所选模型支持图像输入。本地离线模式不调用模型，使用 `--demo` 可走确定性示例生成流程；不带 `--demo` 则走模型驱动流程，需要 ARC-Bench Runner 注入的模型环境变量。
+
+对含视觉参考的网页任务，Agent 还要求生成 `arcbench-visual-acceptance.json`，记录参考图对应的页面、视口、裁剪区域和浏览器交互流程。验证器启动生成的网站，用 Playwright/Chromium 截图并运行交互步骤，再让视觉模型对照参考图评审；有重大视觉差异或交互失败时，Agent 会把失败信息及对应的实际截图交给实现模型，进行一次有界修复。首次验收若没有 Chromium，Agent 会尝试下载；Runner 需允许访问 Playwright 浏览器下载源。截图与机器可读报告写入生成项目的 `artifacts/visual-acceptance/`。浏览器不可用或验收清单缺失时会明确报告未通过，不会只凭 build/test 标记完成。
 
 模型实现阶段默认最多进行 36 轮模型响应和 96 次项目工具调用。可用 `--max-model-turns`、`--max-tool-calls` 覆盖，或分别设置 `ARCBENCH_MAX_MODEL_TURNS`、`ARCBENCH_MAX_TOOL_CALLS` 环境变量。`examples/auth-interface-task/requirements.yaml` 是登录注册界面任务样例；`examples/auth-real-auth-task/requirements.yaml` 是本地真实认证任务样例。
 
@@ -42,6 +44,7 @@ Python 上传入口为仓库根目录的 `main.py`，依赖声明为 `requiremen
 - `agent/llm.py`：OpenAI 兼容模型调用与工具循环。
 - `agent/tools.py`：项目文件浏览/编辑和受限 npm 脚本执行。
 - `agent/verify.py`：构建/测试结果收集及离线示例验证。
+- `agent/visual_acceptance.py`：Playwright 页面截图、交互覆盖与视觉验收报告。
 - `arcbench-agent-runtime/`：官网下载 starter 随附的 Runtime SDK。
 - `docs/`：课程项目 PRD 与技术选型文档。
 

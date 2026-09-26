@@ -109,12 +109,17 @@ def run_model_agent(runtime: AgentRuntime, config: AgentConfig, tree: dict[str, 
         runtime.events.mark_design_done(module.node_id, "Implementation plan prepared")
         runtime.events.mark_implementation_started(module.node_id, "Applying requirement subtree")
         writes_before = len(project_tools.written_paths)
-        model.implement(
+        budget_exhausted = model.implement(
             task_type=config.task_type,
             subtree=module.subtree,
             plan=plan,
             project_tools=project_tools,
         )
+        if budget_exhausted:
+            LOGGER.warning(
+                "Model reached the turn/tool-call budget before signalling completion; "
+                "verifying the current project state instead of failing the run"
+            )
         if len(project_tools.written_paths) == writes_before:
             raise RuntimeError(f"No project files were changed for requirement {module.node_id}")
         runtime.events.mark_implementation_done(module.node_id, "Implementation turn completed")
@@ -124,13 +129,17 @@ def run_model_agent(runtime: AgentRuntime, config: AgentConfig, tree: dict[str, 
         feedback = result.summary()
         LOGGER.warning("Initial verification failed; starting one bounded repair pass")
         for module in modules:
-            model.implement(
+            repair_budget_exhausted = model.implement(
                 task_type=config.task_type,
                 subtree=module.subtree,
                 plan=plans[module.node_id],
                 project_tools=project_tools,
                 repair_feedback=feedback,
             )
+            if repair_budget_exhausted:
+                LOGGER.warning(
+                    "Repair pass reached the model budget; re-verifying the current project state"
+                )
         result = verify_project(config.output_dir)
 
     for node_id in walk_requirement_ids(tree):

@@ -11,7 +11,13 @@ from .config import AgentConfig
 from .llm import ModelClient
 from .requirements import RequirementModule, load_requirement_tree, root_modules, walk_requirement_ids
 from .tools import ProjectTools
-from .verify import VerificationResult, verify_demo_page, verify_project
+from .verify import (
+    VerificationResult,
+    prepare_web_template_structure,
+    verify_demo_page,
+    verify_project,
+    verify_web_template_structure,
+)
 from .visual_acceptance import collect_visual_references, verify_visual_acceptance
 
 
@@ -85,6 +91,7 @@ def run_model_agent(runtime: AgentRuntime, config: AgentConfig, tree: dict[str, 
         raise ValueError(
             f"The initial model-driven implementation currently supports task type 'web', not {config.task_type!r}"
         )
+    prepare_web_template_structure(config.output_dir)
     model = ModelClient(max_turns=config.max_model_turns, max_tool_calls=config.max_tool_calls)
     project_tools = ProjectTools(config.output_dir, timeout_seconds=120)
     plans: dict[str, str] = {}
@@ -131,17 +138,25 @@ def run_model_agent(runtime: AgentRuntime, config: AgentConfig, tree: dict[str, 
 
     def verify_current_project() -> VerificationResult:
         project_result = verify_project(config.output_dir)
-        if not visual_references:
-            return project_result
-        visual_result = verify_visual_acceptance(
-            config.output_dir,
-            config.requirement_dir,
-            visual_references,
-            model,
+        structure_result = verify_web_template_structure(config.output_dir)
+        visual_result = (
+            verify_visual_acceptance(
+                config.output_dir,
+                config.requirement_dir,
+                visual_references,
+                model,
+            )
+            if visual_references
+            else None
         )
+        checks = (*project_result.checks, *structure_result.checks)
+        if visual_result is not None:
+            checks = (*checks, *visual_result.checks)
         return VerificationResult(
-            project_result.passed and visual_result.passed,
-            (*project_result.checks, *visual_result.checks),
+            project_result.passed
+            and structure_result.passed
+            and (visual_result is None or visual_result.passed),
+            checks,
         )
 
     result = verify_current_project()

@@ -156,7 +156,14 @@ class ModelClient:
         plan: str,
         project_tools: ProjectTools,
         repair_feedback: str | None = None,
-    ) -> None:
+    ) -> bool:
+        """Run the implementation tool loop.
+
+        Returns True when a turn/tool-call budget was reached before the model
+        ended the conversation on its own, so the caller can still verify the
+        current project state instead of discarding completed work. Returns
+        False when the model sent a final message without tool calls.
+        """
         system_message = (
             "You are an implementation agent working in the current project directory. "
             "Implement only the supplied requirement subtree and preserve existing work. "
@@ -186,6 +193,7 @@ class ModelClient:
             {"role": "system", "content": system_message},
             {"role": "user", "content": user_message},
         ]
+        stopped_by_budget = False
         for _ in range(self.max_turns):
             response = self.client.chat.completions.create(
                 model=self.model,
@@ -195,12 +203,15 @@ class ModelClient:
             )
             assistant_message = response.choices[0].message
             if not assistant_message.tool_calls:
-                return
+                return False
             messages.append(assistant_message.model_dump(exclude_none=True))
             for tool_call in assistant_message.tool_calls:
+                if self.tool_calls_used >= self.max_tool_calls:
+                    # Stop without another API call: the assistant message may
+                    # reference tool calls whose results were never appended.
+                    stopped_by_budget = True
+                    break
                 self.tool_calls_used += 1
-                if self.tool_calls_used > self.max_tool_calls:
-                    raise RuntimeError(f"Tool call budget exceeded ({self.max_tool_calls})")
                 try:
                     arguments = json.loads(tool_call.function.arguments or "{}")
                     result = project_tools.call(tool_call.function.name, arguments)
@@ -213,4 +224,6 @@ class ModelClient:
                         "content": result[:20_000],
                     }
                 )
-        raise RuntimeError(f"Model turn budget exceeded ({self.max_turns})")
+            if stopped_by_budget:
+                break
+        return True

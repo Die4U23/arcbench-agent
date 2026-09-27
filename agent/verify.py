@@ -107,6 +107,51 @@ def verify_project(project_dir: Path) -> VerificationResult:
     return VerificationResult(all(check.passed for check in checks), tuple(checks))
 
 
+def verify_web_template_structure(project_dir: Path) -> VerificationResult:
+    required_dirs = ("frontend", "backend")
+    missing = [name for name in required_dirs if not (project_dir / name).is_dir()]
+    problems: list[str] = []
+    if missing:
+        problems.append(
+            "missing required root-level directories: " + ", ".join(f"{name}/" for name in missing)
+        )
+
+    frontend_manifest_path = project_dir / "frontend" / "package.json"
+    if not frontend_manifest_path.is_file():
+        problems.append("frontend/package.json is missing")
+    else:
+        try:
+            frontend_manifest = json.loads(frontend_manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            problems.append(f"frontend/package.json is invalid: {exc}")
+        else:
+            scripts = frontend_manifest.get("scripts", {}) if isinstance(frontend_manifest, dict) else None
+            if not isinstance(scripts, dict) or not isinstance(scripts.get("build"), str) or not scripts["build"].strip():
+                problems.append("frontend/package.json must define a non-empty scripts.build command")
+
+    passed = not problems
+    output = (
+        "Required Web layout is present and the frontend defines its build command."
+        if passed
+        else "Web template is not ready: " + "; ".join(problems)
+        + ". Put the app in frontend/, backend code in backend/, and make the frontend buildable independently."
+    )
+    return VerificationResult(
+        passed,
+        (CheckResult("web template structure", passed, 0 if passed else 1, output),),
+    )
+
+
+def prepare_web_template_structure(project_dir: Path) -> None:
+    """Create the runner-required top-level Web directories before generation."""
+    project_dir.mkdir(parents=True, exist_ok=True)
+    for name in ("frontend", "backend"):
+        directory = project_dir / name
+        if directory.exists() and not directory.is_dir():
+            raise RuntimeError(f"Required Web directory path is occupied by a file: {name}/")
+        directory.mkdir(exist_ok=True)
+
+
 def verify_demo_page(project_dir: Path, expected_heading: str) -> VerificationResult:
     page = project_dir / "index.html"
     if not page.is_file():

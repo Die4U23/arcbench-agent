@@ -13,7 +13,8 @@
 | Agent 入口 | Python `main.py` + `requirements.txt` | 符合用户提供的 Runtime API 上传约定 |
 | Python 版本 | 3.10+ | 空白 starter 的 Runtime SDK `pyproject.toml` 声明 `requires-python >=3.10`；Runner 实际版本仍需验证 |
 | 平台运行时 | starter 随附 `arcbench-agent-runtime`，经其高层 API 操作 | 空白 starter 的 `requirements.txt` 引用 `./arcbench-agent-runtime`；保留本地 SDK 依赖，不能假定任意平台环境都预装该包 |
-| 模型调用 | starter 示例采用 `openai` Python 包 | 示例读取 `OPENAI_API_KEY`、`OPENAI_BASE_URL`、`MODEL`；可选 `VISUAL_MODEL` 处理图片参考，服务须支持图像输入，具体能力需验证 |
+| 模型调用 | starter 示例采用 `openai` Python 包 | 示例读取 `OPENAI_API_KEY`、`OPENAI_BASE_URL`、`MODEL`；`VISUAL_MODEL` 处理计划/实现中的图片参考，`VISUAL_REVIEW_MODEL` 可独立负责验收。端点须支持图像输入；实现模型还须支持工具调用 |
+| Agent 浏览器验收 | Playwright Python 1.63.0 + Chromium | 仅有图像参考的 Web 任务启动；截图和真实控件交互在隔离的本地浏览器完成。缺少浏览器时尝试安装 Chromium，安装/运行失败应使视觉验收失败并给出原因 |
 | 需求读取 | `PyYAML` + Markdown 结构解析 + 标准数据结构 | 支持 `requirements.yaml` 与 ArcBench README 任务说明，并归一化成同一需求树；图片参考由规划阶段做多模态输入 |
 | 流程编排 | 自研显式状态机/流水线 | 阶段顺序清晰、状态上报可与真实步骤对应；初期不引入重型 Agent 框架 |
 | 本地开发 | `venv` 或 `uv`，开发依赖单独管理 | 平台入口依赖与本地开发工具分开，避免无必要增加上传包依赖 |
@@ -103,7 +104,7 @@ ARC-Bench Runner
 
 - 优先读取目标项目 `package.json` 中实际存在的 scripts，而不是假设统一命令。
 - 前端/后端依赖安装是否由 Runner 负责、是否允许联网需实测。
-- E2E 只有在模板、依赖、浏览器和平台执行环境均支持时才纳入首阶段验收。
+- 目标项目自己的 E2E 依赖与 Agent 的 Playwright 运行时是两回事；Agent 的视觉验收使用自身 Python Playwright 和 Chromium，不假设生成项目已安装浏览器测试包。
 
 **模板复制规则：**平台可能已在输出目录准备新项目模板或演化基线。Agent 应先探测输出目录并遵循平台约定；已有项目或基线时不得无条件复制覆盖。空目录时是否复制随包模板，也要通过官方 starter example 确认。
 
@@ -115,6 +116,9 @@ ARC-Bench Runner
 - 若目标测试框架支持机器可读报告，优先解析该报告；否则至少依据真实退出码并保留原始输出摘要。
 - 测试报告解析失败时应标记“结果无法解析/验证失败”，不能推断为通过。
 - 修复循环轮数、命令超时、模型调用次数都应受预算约束。
+- 图片参考任务需先验证机器可用的 Chromium 与生成应用 `start` 脚本；按清单路由和视口截图，将每张输出图与原图交给视觉验收模型对照。像素渲染的小差异可接受，页面层级/几何/控件的重大偏差必须修复。
+- 修复轮次从验收报告读取本需求的失败截图，与对应参考图一起传给实现模型，使修改依据包含实际页面；读取截图时限定在目标项目的验收截图目录。
+- 浏览器拦截对生成站点以外的请求，避免验收期间向外部站点发送表单内容或测试数据。
 - 演化任务尽量运行相关回归测试；基线对比能力后续按任务和平台证据扩展。
 
 ### 4.6 Runtime SDK 与 Traceability

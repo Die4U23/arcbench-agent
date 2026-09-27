@@ -12,6 +12,7 @@ from .llm import ModelClient
 from .requirements import RequirementModule, load_requirement_tree, root_modules, walk_requirement_ids
 from .tools import ProjectTools
 from .verify import VerificationResult, verify_demo_page, verify_project
+from .visual_acceptance import collect_visual_references, verify_visual_acceptance
 
 
 LOGGER = logging.getLogger("arcbench_agent")
@@ -87,6 +88,8 @@ def run_model_agent(runtime: AgentRuntime, config: AgentConfig, tree: dict[str, 
     model = ModelClient(max_turns=config.max_model_turns, max_tool_calls=config.max_tool_calls)
     project_tools = ProjectTools(config.output_dir, timeout_seconds=120)
     plans: dict[str, str] = {}
+    planning_subtrees: dict[str, dict[str, Any]] = {}
+    visual_references = collect_visual_references(tree)
     root_visual_references = tree.get("visual_reference", [])
     if isinstance(root_visual_references, str):
         root_visual_references = [root_visual_references]
@@ -100,6 +103,7 @@ def run_model_agent(runtime: AgentRuntime, config: AgentConfig, tree: dict[str, 
             planning_subtree["visual_reference"] = list(
                 dict.fromkeys([*root_visual_references, *module_visual_references])
             )
+        planning_subtrees[module.node_id] = planning_subtree
         plan = model.plan(
             config.task_type,
             planning_subtree,
@@ -111,9 +115,10 @@ def run_model_agent(runtime: AgentRuntime, config: AgentConfig, tree: dict[str, 
         writes_before = len(project_tools.written_paths)
         budget_exhausted = model.implement(
             task_type=config.task_type,
-            subtree=module.subtree,
+            subtree=planning_subtree,
             plan=plan,
             project_tools=project_tools,
+            reference_dir=config.requirement_dir,
         )
         if budget_exhausted:
             LOGGER.warning(
@@ -124,23 +129,39 @@ def run_model_agent(runtime: AgentRuntime, config: AgentConfig, tree: dict[str, 
             raise RuntimeError(f"No project files were changed for requirement {module.node_id}")
         runtime.events.mark_implementation_done(module.node_id, "Implementation turn completed")
 
-    result = verify_project(config.output_dir)
+    def verify_current_project() -> VerificationResult:
+        project_result = verify_project(config.output_dir)
+        if not visual_references:
+            return project_result
+        visual_result = verify_visual_acceptance(
+            config.output_dir,
+            config.requirement_dir,
+            visual_references,
+            model,
+        )
+        return VerificationResult(
+            project_result.passed and visual_result.passed,
+            (*project_result.checks, *visual_result.checks),
+        )
+
+    result = verify_current_project()
     if not result.passed:
         feedback = result.summary()
         LOGGER.warning("Initial verification failed; starting one bounded repair pass")
         for module in modules:
             repair_budget_exhausted = model.implement(
                 task_type=config.task_type,
-                subtree=module.subtree,
+                subtree=planning_subtrees[module.node_id],
                 plan=plans[module.node_id],
                 project_tools=project_tools,
                 repair_feedback=feedback,
+                reference_dir=config.requirement_dir,
             )
             if repair_budget_exhausted:
                 LOGGER.warning(
                     "Repair pass reached the model budget; re-verifying the current project state"
                 )
-        result = verify_project(config.output_dir)
+        result = verify_current_project()
 
     for node_id in walk_requirement_ids(tree):
         if node_id == "ROOT":

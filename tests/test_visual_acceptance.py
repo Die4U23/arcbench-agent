@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from agent.llm import ModelClient
-from agent.visual_acceptance import collect_visual_references, validate_manifest, _run_steps
+from agent.visual_acceptance import collect_visual_references, validate_manifest, _assert_control_coverage, _run_steps
 
 
 def valid_manifest(reference: str = "reference/login.png") -> dict:
@@ -57,6 +57,16 @@ class VisualAcceptanceManifestTests(unittest.TestCase):
         payload = valid_manifest()
         self.assertIs(validate_manifest(payload, ["reference/login.png"]), payload)
 
+    def test_rejects_noncanonical_select_action(self) -> None:
+        payload = valid_manifest()
+        payload["flows"][0]["steps"][0] = {
+            "action": "select",
+            "selector": "#email",
+            "value": "user@example.test",
+        }
+        with self.assertRaisesRegex(ValueError, "action is not supported"):
+            validate_manifest(payload, ["reference/login.png"])
+
     def test_rejects_unmapped_reference(self) -> None:
         with self.assertRaisesRegex(ValueError, "unmapped references"):
             validate_manifest(valid_manifest(), ["reference/login.png", "reference/register.png"])
@@ -79,6 +89,9 @@ class _FakeLocator:
 
     def is_visible(self) -> bool:
         return bool(self.state.get("visible", False))
+
+    def is_enabled(self) -> bool:
+        return bool(self.state.get("enabled", True))
 
     def input_value(self, **_kwargs) -> str:
         return str(self.state.get("value", ""))
@@ -116,10 +129,72 @@ class _FakePage:
         return self.time_origin
 
     def wait_for_url(self, url: str, **_kwargs) -> None:
-        self.url = url
+        if callable(url):
+            if not url(self.url):
+                raise AssertionError(f"URL did not match: {self.url}")
+        else:
+            self.url = url
 
 
 class BrowserInteractionTransitionTests(unittest.TestCase):
+    def test_initial_visible_precondition_is_allowed_before_flow_actions(self) -> None:
+        payload = valid_manifest()
+        payload["flows"][0]["steps"] = [
+            {"action": "expect_visible", "selector": "#email"},
+            {"action": "fill", "selector": "#email", "value": "user@example.test"},
+            {"action": "expect_value", "selector": "#email", "value": "user@example.test"},
+        ]
+        payload["flows"][0]["covers"] = ["#email"]
+        validate_manifest(payload, ["reference/login.png"])
+        page = _FakePage()
+        page.states["#email"] = {"value": "", "visible": True}
+        results = _run_steps(page, payload["flows"][0]["steps"], "http://127.0.0.1:3000/")
+        self.assertEqual(results[0]["action"], "precondition")
+        self.assertEqual(results[1]["result"], "passed")
+
+    def test_wait_for_url_accepts_a_same_page_reload(self) -> None:
+        page = _FakePage()
+        page.states["a.brand"] = {"value": "", "visible": True, "navigates": True}
+        results = _run_steps(
+            page,
+            [{"action": "click", "selector": "a.brand"}, {"action": "wait_for_url", "value": "/"}],
+            "http://127.0.0.1:3000/",
+        )
+        self.assertEqual(results[0]["result"], "passed")
+
+    def test_wait_for_url_matches_path_with_a_dynamic_query(self) -> None:
+        page = _FakePage()
+        page.states["#book"] = {"value": "", "visible": True}
+
+        def click_to_booking(locator, **_kwargs):
+            locator.page.url = "http://127.0.0.1:3000/booking?train=G532"
+            locator.page.time_origin += 1
+
+        with patch.object(_FakeLocator, "click", click_to_booking):
+            results = _run_steps(
+                page,
+                [{"action": "click", "selector": "#book"}, {"action": "wait_for_url", "value": "/booking"}],
+                "http://127.0.0.1:3000/",
+            )
+        self.assertEqual(results[0]["result"], "passed")
+
+    def test_coverage_allows_menu_items_hidden_until_they_are_opened(self) -> None:
+        page = _FakePage()
+        page.states["#menu-link"] = {"value": "", "visible": False}
+        with patch.object(page, "evaluate", return_value=[]):
+            uncovered = _assert_control_coverage(page, {"covers": ["#menu-link"]})
+        self.assertEqual(uncovered, [])
+
+    def test_hidden_control_fails_when_action_is_attempted(self) -> None:
+        page = _FakePage()
+        page.states["#menu-link"] = {"value": "", "visible": False}
+        with self.assertRaisesRegex(AssertionError, "visible and enabled"):
+            _run_steps(
+                page,
+                [{"action": "click", "selector": "#menu-link"}, {"action": "expect_navigation"}],
+                "http://127.0.0.1:3000/",
+            )
+
     def test_same_page_link_must_trigger_a_document_navigation(self) -> None:
         page = _FakePage()
         page.states["a[href='/login']"] = {"value": "", "visible": True, "text": "Login", "navigates": True}
@@ -178,11 +253,34 @@ class BrowserInteractionTransitionTests(unittest.TestCase):
             "http://127.0.0.1:3000/",
         )
 
+    def test_one_interaction_can_have_multiple_observable_assertions(self) -> None:
+        payload = valid_manifest()
+        payload["flows"][0]["steps"] = [
+            {"action": "click", "selector": "#submit"},
+            {"action": "expect_visible", "selector": "#error"},
+            {"action": "expect_hidden", "selector": "#loading"},
+        ]
+        payload["flows"][0]["covers"] = ["#submit"]
+        validate_manifest(payload, ["reference/login.png"])
+        page = _FakePage()
+        page.states["#submit"] = {"value": "", "visible": True, "shows": ["#error"]}
+        page.states["#error"] = {"value": "", "visible": False}
+        page.states["#loading"] = {"value": "", "visible": True}
+        original_click = _FakeLocator.click
+
+        def click_and_hide(locator, **kwargs):
+            original_click(locator, **kwargs)
+            locator.page.states["#loading"]["visible"] = False
+
+        with patch.object(_FakeLocator, "click", click_and_hide):
+            results = _run_steps(page, payload["flows"][0]["steps"], "http://127.0.0.1:3000/")
+        self.assertEqual(len(results[0]["assertions"]), 2)
+
     def test_click_without_a_state_change_fails(self) -> None:
         page = _FakePage()
         page.states["#submit"] = {"value": "", "visible": True, "text": ""}
         page.states["#error"] = {"value": "", "visible": True, "text": "Already visible"}
-        with self.assertRaisesRegex(AssertionError, "become visible"):
+        with self.assertRaisesRegex(AssertionError, "no observable state change"):
             _run_steps(
                 page,
                 [

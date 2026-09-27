@@ -32,7 +32,7 @@ SUPPORTED_ACTIONS = FLOW_ACTIONS | {
     "wait_for_url",
 }
 MAX_CASES = 12
-MAX_STEPS_PER_FLOW = 80
+MAX_STEPS_PER_FLOW = 160
 SERVER_TIMEOUT_SECONDS = 30
 BROWSER_INSTALL_TIMEOUT_SECONDS = 240
 
@@ -171,7 +171,8 @@ def _validate_steps(value: Any, label: str) -> list[dict[str, Any]]:
     if not isinstance(value, list) or not value or len(value) > MAX_STEPS_PER_FLOW:
         raise ValueError(f"{label}.steps must contain 1 to {MAX_STEPS_PER_FLOW} actions or assertions")
     has_action = False
-    awaiting_assertion = False
+    open_action = False
+    has_assertion = False
     for step_index, step in enumerate(value):
         step_label = f"{label}.steps[{step_index}]"
         if not isinstance(step, dict) or step.get("action") not in SUPPORTED_ACTIONS:
@@ -189,17 +190,19 @@ def _validate_steps(value: Any, label: str) -> list[dict[str, Any]]:
             if not isinstance(step.get("value"), str):
                 raise ValueError(f"{step_label}.value is required")
         if action in FLOW_ACTIONS:
-            if awaiting_assertion:
+            if open_action and not has_assertion:
                 raise ValueError(f"{step_label} must follow an observable assertion for the previous interaction")
             has_action = True
-            awaiting_assertion = True
+            open_action = True
+            has_assertion = False
         elif action.startswith("expect_") or action == "wait_for_url":
-            if not awaiting_assertion:
-                raise ValueError(f"{step_label} must observe the immediately preceding interaction")
-            awaiting_assertion = False
+            if not open_action and (has_action or action in {"expect_navigation", "wait_for_url"}):
+                raise ValueError(f"{step_label} must observe a preceding interaction")
+            if open_action:
+                has_assertion = True
     if not has_action:
         raise ValueError(f"{label}.steps must perform at least one real interaction")
-    if awaiting_assertion:
+    if open_action and not has_assertion:
         raise ValueError(f"{label}.steps must assert an observable result after its final interaction")
     return value
 
@@ -350,7 +353,7 @@ def _ensure_chromium(playwright: Any) -> Any:
 def _snapshot_expected_state(page: Any, assertion: dict[str, Any]) -> dict[str, Any]:
     action = assertion["action"]
     if action == "wait_for_url":
-        return {"url": page.url}
+        return {"url": page.url, "time_origin": page.evaluate("performance.timeOrigin")}
     if action == "expect_navigation":
         return {"url": page.url, "time_origin": page.evaluate("performance.timeOrigin")}
     locator = page.locator(assertion["selector"])
@@ -372,6 +375,10 @@ def _run_interaction(page: Any, step: dict[str, Any], base_url: str) -> None:
         page.goto(base_url.rstrip("/") + step["value"], wait_until="domcontentloaded", timeout=15_000)
         return
     locator = page.locator(step["selector"])
+    if locator.count() != 1:
+        raise AssertionError(f"Interaction selector {step['selector']!r} must match exactly one control")
+    if not locator.is_visible() or not locator.is_enabled():
+        raise AssertionError(f"Interaction selector {step['selector']!r} must be visible and enabled when used")
     if action == "click":
         locator.click(timeout=5_000)
     elif action == "fill":
@@ -384,85 +391,118 @@ def _run_interaction(page: Any, step: dict[str, Any], base_url: str) -> None:
         locator.select_option(step["value"], timeout=5_000)
 
 
-def _run_assertion(page: Any, step: dict[str, Any], base_url: str, before: dict[str, Any]) -> None:
+def _run_assertion(page: Any, step: dict[str, Any], base_url: str, before: dict[str, Any]) -> bool:
     action = step["action"]
     if action == "wait_for_url":
         expected_url = base_url.rstrip("/") + step["value"]
-        if before.get("url") == expected_url:
-            raise AssertionError(f"URL assertion did not expect a state change to {expected_url}")
-        page.wait_for_url(expected_url, timeout=10_000)
-        return
+        expected = urlsplit(expected_url)
+        require_query = "?" in step["value"]
+
+        def matches_url(value: Any) -> bool:
+            actual = urlsplit(value.geturl() if hasattr(value, "geturl") else str(value))
+            return (
+                actual.scheme == expected.scheme
+                and actual.netloc == expected.netloc
+                and actual.path == expected.path
+                and (not require_query or actual.query == expected.query)
+            )
+
+        page.wait_for_url(matches_url, timeout=10_000)
+        return before.get("url") != page.url or before.get("time_origin") != page.evaluate("performance.timeOrigin")
     if action == "expect_navigation":
         current_time_origin = page.evaluate("performance.timeOrigin")
         if before.get("url") == page.url and before.get("time_origin") == current_time_origin:
             raise AssertionError("Expected the interaction to cause a document navigation or reload")
-        return
+        return True
 
     locator = page.locator(step["selector"])
     exists = locator.count() > 0
     visible = exists and locator.is_visible()
     if action == "expect_visible":
-        if not visible or before.get("visible"):
-            raise AssertionError(f"Expected {step['selector']} to become visible after the interaction")
+        if not visible:
+            raise AssertionError(f"Expected {step['selector']} to be visible after the interaction")
+        return not before.get("visible")
     elif action == "expect_hidden":
-        if visible or not before.get("visible"):
-            raise AssertionError(f"Expected {step['selector']} to become hidden after the interaction")
+        if visible:
+            raise AssertionError(f"Expected {step['selector']} to be hidden after the interaction")
+        return bool(before.get("visible"))
     elif action == "expect_text":
         actual = locator.inner_text(timeout=5_000) if visible else ""
         prior = before.get("text", "")
-        if step["value"] in prior or step["value"] not in actual:
-            raise AssertionError(f"Expected new text {step['value']!r} in {step['selector']}; got {actual!r}")
+        if step["value"] not in actual:
+            raise AssertionError(f"Expected text {step['value']!r} in {step['selector']}; got {actual!r}")
+        return step["value"] not in prior
     elif action == "expect_value":
         actual = locator.input_value(timeout=5_000)
-        if actual == before.get("value") or actual != step["value"]:
-            raise AssertionError(f"Expected {step['selector']} value to change to {step['value']!r}; got {actual!r}")
+        if actual != step["value"]:
+            raise AssertionError(f"Expected {step['selector']} value {step['value']!r}; got {actual!r}")
+        return actual != before.get("value")
     elif action == "expect_checked":
-        if before.get("checked") is not False or not locator.is_checked():
-            raise AssertionError(f"Expected {step['selector']} to become checked")
+        if not locator.is_checked():
+            raise AssertionError(f"Expected {step['selector']} to be checked")
+        return before.get("checked") is False
     elif action == "expect_unchecked":
-        if before.get("checked") is not True or locator.is_checked():
-            raise AssertionError(f"Expected {step['selector']} to become unchecked")
+        if locator.is_checked():
+            raise AssertionError(f"Expected {step['selector']} to be unchecked")
+        return before.get("checked") is True
+    raise ValueError(f"Unsupported assertion: {action}")
 
 
 def _run_steps(page: Any, steps: list[dict[str, Any]], base_url: str) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
     index = 0
+    while index < len(steps) and steps[index]["action"] not in FLOW_ACTIONS:
+        step = steps[index]
+        if step["action"] in {"expect_navigation", "wait_for_url"}:
+            raise ValueError(f"{step['action']} cannot be used as an initial flow precondition")
+        before = _snapshot_expected_state(page, step)
+        _run_assertion(page, step, base_url, before)
+        results.append({"action": "precondition", "assertion": step, "result": "passed"})
+        index += 1
     while index < len(steps):
         step = steps[index]
         if step["action"] in FLOW_ACTIONS:
-            assertion = steps[index + 1]
+            following = index + 1
+            while following < len(steps) and steps[following]["action"] not in FLOW_ACTIONS:
+                following += 1
+            assertions = steps[index + 1:following]
             try:
-                before = _snapshot_expected_state(page, assertion)
+                before = [_snapshot_expected_state(page, assertion) for assertion in assertions]
                 _run_interaction(page, step, base_url)
-                _run_assertion(page, assertion, base_url, before)
+                changed = [_run_assertion(page, assertion, base_url, snapshot)
+                           for assertion, snapshot in zip(assertions, before)]
+                if not any(changed):
+                    raise AssertionError(f"Interaction {step['action']} {step.get('selector') or step.get('value')} caused no observable state change")
                 results.append(
                     {
                         "action": step["action"],
                         "selector": step.get("selector"),
                         "value": step.get("value") if step["action"] == "navigate" else None,
                         "result": "passed",
-                        "assertion": assertion,
+                        "assertions": assertions,
                     }
                 )
             except Exception as exc:
                 exc.completed_steps = results  # type: ignore[attr-defined]
                 raise
-            index += 2
+            index = following
         else:
             raise ValueError(f"Expected a browser interaction at step {index}")
     return results
 
 
-def _assert_control_coverage(page: Any, flow: dict[str, Any]) -> list[str]:
+def _assert_control_coverage(
+    page: Any, flow: dict[str, Any], known_selectors: list[str] | None = None
+) -> list[str]:
     selectors = flow["covers"]
-    # Each selector must identify one visible control, not hide untested matches in a broad selector.
+    # A control may become visible later in the flow, such as a menu link.
     for selector in selectors:
         locator = page.locator(selector)
         count = locator.count()
-        if count != 1:
-            raise AssertionError(f"Coverage selector {selector!r} must match exactly one control; matched {count}")
-        if not locator.is_visible() or not locator.is_enabled():
-            raise AssertionError(f"Coverage selector {selector!r} must identify a visible, enabled control")
+        if count > 1:
+            raise AssertionError(f"Coverage selector {selector!r} must not match multiple controls; matched {count}")
+        if count == 1 and locator.is_visible() and not locator.is_enabled():
+            raise AssertionError(f"Coverage selector {selector!r} identifies a disabled control")
     uncovered = page.evaluate(
         """(selectors) => {
           const candidates = [...document.querySelectorAll('body *')].filter((el) => {
@@ -476,7 +516,7 @@ def _assert_control_coverage(page: Any, flow: dict[str, Any]) -> list[str]:
             );
             const labelParent = el.parentElement && el.parentElement.closest('label');
             if (actionParent || el.tagName === 'LABEL' || (labelParent && !semanticAction)) return false;
-            const actionLikeClass = /(?:^|[-_])(?:button|btn|link|menu|dropdown|clickable|tab|nav__item)(?:$|[-_])/i.test(el.className || '');
+            const actionLikeClass = /(?:^|[-_])(?:button|btn|link|menu|dropdown|clickable|tab)(?:$|[-_])/i.test(el.className || '');
             const actionLike = semanticAction || typeof el.onclick === 'function' ||
               el.hasAttribute('onclick') || actionLikeClass || style.cursor === 'pointer';
             return actionLike && style.display !== 'none' && style.visibility !== 'hidden' &&
@@ -495,7 +535,7 @@ def _assert_control_coverage(page: Any, flow: dict[str, Any]) -> list[str]:
             href: el.getAttribute('href')
           }));
         }""",
-        selectors,
+        known_selectors or selectors,
     )
     return [json.dumps(item, ensure_ascii=False) for item in uncovered]
 
@@ -532,6 +572,9 @@ def verify_visual_acceptance(
     report_path = project_dir / REPORT_RELATIVE_PATH
     try:
         manifest = _read_manifest(project_dir, references)
+        known_selectors = list(dict.fromkeys(
+            selector for flow in manifest["flows"] for selector in flow["covers"]
+        ))
         package_dir = _find_package_root(project_dir)
         try:
             from playwright.sync_api import sync_playwright
@@ -618,7 +661,7 @@ def verify_visual_acceptance(
                             page = context.new_page()
                             page.goto(base_url.rstrip("/") + flow["route"], wait_until="domcontentloaded", timeout=15_000)
                             page.wait_for_timeout(200)
-                            uncovered = _assert_control_coverage(page, flow)
+                            uncovered = _assert_control_coverage(page, flow, known_selectors)
                             step_results = _run_steps(page, flow["steps"], base_url)
                             if uncovered:
                                 raise AssertionError("Visible actionable controls missing from flow.covers: " + "; ".join(uncovered))

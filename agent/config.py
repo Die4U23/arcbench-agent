@@ -12,8 +12,8 @@ class AgentConfig:
     output_dir: Path
     task_type: str
     demo_mode: bool
-    max_model_turns: int = 36
-    max_tool_calls: int = 96
+    max_model_turns: int | None = None
+    max_tool_calls: int | None = None
     command_timeout_seconds: int = 120
 
 
@@ -44,19 +44,19 @@ def parse_config() -> AgentConfig:
     parser.add_argument(
         "--max-model-turns",
         type=int,
-        default=os.environ.get("ARCBENCH_MAX_MODEL_TURNS", "36"),
-        help="Maximum model responses per implementation pass (default: 36).",
+        default=os.environ.get("ARCBENCH_MAX_MODEL_TURNS"),
+        help="Optional model response limit per implementation pass; unlimited by default.",
     )
     parser.add_argument(
         "--max-tool-calls",
         type=int,
-        default=os.environ.get("ARCBENCH_MAX_TOOL_CALLS", "96"),
-        help="Maximum project tool calls per run (default: 96).",
+        default=os.environ.get("ARCBENCH_MAX_TOOL_CALLS"),
+        help="Optional project tool-call limit per run; unlimited by default.",
     )
     args = parser.parse_args()
-    if args.max_model_turns < 1:
+    if args.max_model_turns is not None and args.max_model_turns < 1:
         parser.error("--max-model-turns must be at least 1")
-    if args.max_tool_calls < 1:
+    if args.max_tool_calls is not None and args.max_tool_calls < 1:
         parser.error("--max-tool-calls must be at least 1")
     return AgentConfig(
         requirement_dir=Path(args.requirement_path).expanduser().resolve(),

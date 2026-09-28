@@ -196,6 +196,49 @@ class ImplementBudgetTests(unittest.TestCase):
         self.assertEqual(model.last_budget_report.used, 2)
         self.assertEqual(model.last_budget_report.requested, 0)
 
+    def test_optional_pass_limits_do_not_crash_before_model_request(self) -> None:
+        model = _make_client(max_turns=None, max_tool_calls=None, scripted=[_FakeMessage(None, "done")])
+
+        self.assertFalse(self._implement(model))
+        self.assertEqual(model.client.completions.calls, 1)
+
+    def test_tool_call_limit_remains_global_across_implementation_passes(self) -> None:
+        model = _make_client(
+            max_turns=5,
+            max_tool_calls=2,
+            scripted=[
+                _FakeMessage([_write_call("first.js")]),
+                _FakeMessage(None, "first pass done"),
+                _FakeMessage([_write_call("second.js"), _write_call("third.js")]),
+            ],
+        )
+
+        self.assertFalse(self._implement(model))
+        self.assertTrue(self._implement(model))
+        self.assertEqual(model.tool_calls_used, 1)
+        self.assertEqual(model.last_budget_report.budget, "tool_call_budget")
+        self.assertTrue((self.project_dir / "first.js").exists())
+        self.assertFalse((self.project_dir / "second.js").exists())
+        self.assertFalse((self.project_dir / "third.js").exists())
+
+    def test_budget_notice_uses_remaining_global_requests(self) -> None:
+        model = _make_client(
+            max_turns=None,
+            max_tool_calls=None,
+            scripted=[
+                _FakeMessage([_write_call("first.js")]),
+                _FakeMessage([_write_call("second.js")]),
+                _FakeMessage(None, "done"),
+            ],
+        )
+        model.max_model_requests = 5
+
+        self.assertFalse(self._implement(model))
+        requests = model.client.completions.requests
+        self.assertEqual(len(requests), 3)
+        self.assertNotIn("Budget notice", json.dumps(requests[1]["messages"]))
+        self.assertIn("Budget notice", json.dumps(requests[2]["messages"]))
+
     def test_batching_related_reads_reduces_model_wakeups(self) -> None:
         paths = ["a.txt", "b.txt", "c.txt"]
         for path in paths:

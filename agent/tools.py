@@ -24,7 +24,10 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "list_files",
-            "description": "List project files under a relative directory, excluding generated and hidden runtime data.",
+            "description": (
+                "List project files under a relative directory, excluding generated and hidden runtime data. "
+                "Use when the project layout is unknown; batch related reads after locating paths."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {"path": {"type": "string", "description": "Relative directory; use '.' for project root."}},
@@ -52,7 +55,10 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "search_text",
-            "description": "Search project text files for a literal string and return matching paths and lines.",
+            "description": (
+                "Search project text for a literal identifier, label, or route and return matching paths and lines. "
+                "Use this to locate existing code before editing."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {"query": {"type": "string"}},
@@ -65,7 +71,10 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "write_files",
-            "description": "Create or replace several related UTF-8 project files in one tool call. All paths and size limits are checked before any file is written.",
+            "description": (
+                "Create or replace several related UTF-8 project files in one tool call. "
+                "Read existing files before replacing them; all paths and size limits are checked before writing."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -123,7 +132,10 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "run_project_scripts",
-            "description": "Run up to three existing build, test, lint, typecheck, or check npm scripts in one tool call and return all results together.",
+            "description": (
+                "Run up to three existing build, test, lint, typecheck, or check npm scripts in one call. "
+                "Use the returned exit codes to verify changes; a model summary is not proof of passing checks."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {

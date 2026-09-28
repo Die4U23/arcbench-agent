@@ -467,7 +467,8 @@ class ModelClient:
                     "requirement into observable acceptance criteria, then give a concise, "
                     "ordered implementation plan that covers every criterion. Include relevant "
                     "valid-input, invalid-input, boundary, and state-transition cases. Do not "
-                    "invent requirements, and do not claim code has been changed or tested. "
+                    "invent requirements or rename specified labels, routes, API paths, methods, "
+                    "response fields, or status codes. Do not claim code has been changed or tested. "
                     "Inspect every attached visual reference and describe the relevant layout, "
                     "controls, and visual states in the plan. Treat explicit textual behavior "
                     "as authoritative when an image is ambiguous. For each image, distinguish a "
@@ -520,6 +521,9 @@ class ModelClient:
         system_message = (
             "You are an implementation agent working in the current project directory. "
             "Implement only the supplied requirement subtree and preserve existing work. "
+            "Match explicit labels, routes, roles, API contracts, and fixed values exactly. "
+            "Write focused tests for observable behavior, and fix the implementation rather "
+            "than deleting, skipping, or weakening a failing test. "
             "Treat every requirement as an acceptance condition, not merely a visual suggestion. "
             "Before editing, inspect the project and map each leaf requirement to observable "
             "behavior. Implement and test valid, invalid, boundary, and state-transition cases "
@@ -601,7 +605,8 @@ class ModelClient:
                 "the Agent's browser verification, not a claim that verification has passed."
             )
         repair_text = (
-            f"Verification failed. Use this actual feedback to repair the project:\n{repair_feedback}"
+            "Verification failed. Fix the root cause without weakening tests, then rerun the "
+            f"relevant build and full existing test suite:\n{repair_feedback}"
             if repair_feedback else ""
         )
         first_dynamic_content: str | list[dict[str, Any]] | None = None
@@ -632,6 +637,7 @@ class ModelClient:
         epoch_exchanges: list[list[dict[str, Any]]] = []
         compacted_summaries: list[str] = []
         checkpoint_note = ""
+        budget_warned = False
 
         def compact_context() -> list[dict[str, Any]]:
             # Reset only at a context boundary. Between resets, append complete
@@ -698,6 +704,26 @@ class ModelClient:
                         conversation = compact_context()
                     else:
                         conversation.append({"role": "user", "content": "Latest checkpoint verification feedback:\n" + feedback})
+            remaining_requests = self.max_model_requests - getattr(self, "model_requests_used", 0)
+            remaining_turns = None if self.max_turns is None else self.max_turns - turn_index
+            remaining_tools = (
+                None if self.max_tool_calls is None
+                else self.max_tool_calls - getattr(self, "tool_calls_used", 0)
+            )
+            if not budget_warned and (
+                remaining_requests <= 3
+                or (remaining_turns is not None and remaining_turns <= max(1, min(3, self.max_turns // 5)))
+                or (remaining_tools is not None and remaining_tools <= max(1, min(5, self.max_tool_calls // 5)))
+            ):
+                budget_warned = True
+                conversation.append({
+                    "role": "user",
+                    "content": (
+                        "Budget notice: limited model requests or tool calls remain for this run. "
+                        "Finish required behavior and verification before optional work; "
+                        "do not claim completion unless the project checks pass."
+                    ),
+                })
             messages = list(conversation)
             try:
                 self._record_model_request()

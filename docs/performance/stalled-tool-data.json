@@ -1,0 +1,159 @@
+{
+  "observed_on": "2026-09-28",
+  "workload": "identical read_file failure on every tool turn; maximum 24 model requests",
+  "scenarios": {
+    "before": {
+      "source": "pre-stall-70b3c36.zip",
+      "method": "offline identical read_file failure replay; no provider request",
+      "requests": 24,
+      "cumulative_prompt_chars": 185070,
+      "stop_reason": "model_request_budget",
+      "samples": [
+        {
+          "request": 1,
+          "prompt_chars": 4586,
+          "cumulative_prompt_chars": 4586
+        },
+        {
+          "request": 2,
+          "prompt_chars": 4857,
+          "cumulative_prompt_chars": 9443
+        },
+        {
+          "request": 3,
+          "prompt_chars": 5128,
+          "cumulative_prompt_chars": 14571
+        },
+        {
+          "request": 4,
+          "prompt_chars": 5399,
+          "cumulative_prompt_chars": 19970
+        },
+        {
+          "request": 5,
+          "prompt_chars": 5670,
+          "cumulative_prompt_chars": 25640
+        },
+        {
+          "request": 6,
+          "prompt_chars": 5941,
+          "cumulative_prompt_chars": 31581
+        },
+        {
+          "request": 7,
+          "prompt_chars": 6212,
+          "cumulative_prompt_chars": 37793
+        },
+        {
+          "request": 8,
+          "prompt_chars": 6483,
+          "cumulative_prompt_chars": 44276
+        },
+        {
+          "request": 9,
+          "prompt_chars": 6754,
+          "cumulative_prompt_chars": 51030
+        },
+        {
+          "request": 10,
+          "prompt_chars": 7025,
+          "cumulative_prompt_chars": 58055
+        },
+        {
+          "request": 11,
+          "prompt_chars": 7298,
+          "cumulative_prompt_chars": 65353
+        },
+        {
+          "request": 12,
+          "prompt_chars": 7571,
+          "cumulative_prompt_chars": 72924
+        },
+        {
+          "request": 13,
+          "prompt_chars": 7844,
+          "cumulative_prompt_chars": 80768
+        },
+        {
+          "request": 14,
+          "prompt_chars": 8117,
+          "cumulative_prompt_chars": 88885
+        },
+        {
+          "request": 15,
+          "prompt_chars": 8390,
+          "cumulative_prompt_chars": 97275
+        },
+        {
+          "request": 16,
+          "prompt_chars": 8663,
+          "cumulative_prompt_chars": 105938
+        },
+        {
+          "request": 17,
+          "prompt_chars": 8936,
+          "cumulative_prompt_chars": 114874
+        },
+        {
+          "request": 18,
+          "prompt_chars": 9209,
+          "cumulative_prompt_chars": 124083
+        },
+        {
+          "request": 19,
+          "prompt_chars": 9482,
+          "cumulative_prompt_chars": 133565
+        },
+        {
+          "request": 20,
+          "prompt_chars": 9755,
+          "cumulative_prompt_chars": 143320
+        },
+        {
+          "request": 21,
+          "prompt_chars": 10028,
+          "cumulative_prompt_chars": 153348
+        },
+        {
+          "request": 22,
+          "prompt_chars": 10301,
+          "cumulative_prompt_chars": 163649
+        },
+        {
+          "request": 23,
+          "prompt_chars": 10574,
+          "cumulative_prompt_chars": 174223
+        },
+        {
+          "request": 24,
+          "prompt_chars": 10847,
+          "cumulative_prompt_chars": 185070
+        }
+      ]
+    },
+    "after": {
+      "source": "arc_agent",
+      "method": "offline identical read_file failure replay; no provider request",
+      "requests": 3,
+      "cumulative_prompt_chars": 14758,
+      "stop_reason": "identical_failed_tool_turn_limit",
+      "samples": [
+        {
+          "request": 1,
+          "prompt_chars": 4586,
+          "cumulative_prompt_chars": 4586
+        },
+        {
+          "request": 2,
+          "prompt_chars": 4857,
+          "cumulative_prompt_chars": 9443
+        },
+        {
+          "request": 3,
+          "prompt_chars": 5315,
+          "cumulative_prompt_chars": 14758
+        }
+      ]
+    }
+  }
+}

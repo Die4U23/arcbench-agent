@@ -196,6 +196,40 @@ class ImplementBudgetTests(unittest.TestCase):
         self.assertEqual(model.last_budget_report.used, 2)
         self.assertEqual(model.last_budget_report.requested, 0)
 
+    def test_identical_failed_tool_turns_stop_before_spending_more_requests(self) -> None:
+        model = _make_client(
+            max_turns=None,
+            max_tool_calls=None,
+            scripted=[_FakeMessage([_read_call("missing.txt")]) for _ in range(4)],
+        )
+        self.tools.call = lambda name, args: (_ for _ in ()).throw(FileNotFoundError("missing.txt"))
+
+        self.assertTrue(self._implement(model))
+        self.assertEqual(model.client.completions.calls, 3)
+        self.assertEqual(model.last_budget_report.budget, "identical_failed_tool_turn_limit")
+        self.assertIn("missing.txt", model.last_budget_report.summary())
+        self.assertIn("Change the tool arguments", json.dumps(model.client.completions.requests[2]["messages"]))
+
+    def test_changed_tool_call_recovers_after_repeated_failure_warning(self) -> None:
+        model = _make_client(
+            max_turns=None,
+            max_tool_calls=None,
+            scripted=[
+                _FakeMessage([_read_call("missing.txt")]),
+                _FakeMessage([_read_call("missing.txt")]),
+                _FakeMessage([_read_call("present.txt")]),
+                _FakeMessage(None, "done"),
+            ],
+        )
+        self.tools.call = lambda name, args: (
+            "contents" if args["path"] == "present.txt"
+            else (_ for _ in ()).throw(FileNotFoundError("missing.txt"))
+        )
+
+        self.assertFalse(self._implement(model))
+        self.assertEqual(model.client.completions.calls, 4)
+        self.assertIsNone(model.last_budget_report)
+
     def test_batching_related_reads_reduces_model_wakeups(self) -> None:
         paths = ["a.txt", "b.txt", "c.txt"]
         for path in paths:

@@ -9,12 +9,12 @@ from agent.config import parse_config
 
 
 class ParseConfigBudgetTests(unittest.TestCase):
-    def test_defaults_leave_room_for_multi_file_implementation(self) -> None:
+    def test_model_and_tool_calls_are_unlimited_by_default(self) -> None:
         with patch.object(sys, "argv", ["main.py"]), patch.dict(os.environ, {}, clear=True):
             config = parse_config()
 
-        self.assertEqual(config.max_model_turns, 36)
-        self.assertEqual(config.max_tool_calls, 96)
+        self.assertIsNone(config.max_model_turns)
+        self.assertIsNone(config.max_tool_calls)
 
     def test_budget_can_be_overridden_from_cli_and_environment(self) -> None:
         environment = {"ARCBENCH_MAX_MODEL_TURNS": "42", "ARCBENCH_MAX_TOOL_CALLS": "64"}

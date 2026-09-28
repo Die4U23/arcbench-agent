@@ -4,8 +4,9 @@ import json
 import os
 import tempfile
 import unittest
+from types import SimpleNamespace
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from agent.llm import ModelClient
 from agent.tools import ProjectTools
@@ -25,14 +26,22 @@ class _FakeToolCall:
 
 
 class _FakeMessage:
-    def __init__(self, tool_calls: list[_FakeToolCall] | None = None, content: str = "done") -> None:
+    def __init__(
+        self,
+        tool_calls: list[_FakeToolCall] | None = None,
+        content: str = "done",
+        reasoning_content: str | None = None,
+        finish_reason: str | None = None,
+    ) -> None:
         self.tool_calls = tool_calls
         self.content = content
+        self.reasoning_content = reasoning_content
+        self.finish_reason = finish_reason
 
     def model_dump(self, exclude_none: bool = True) -> dict:
         if self.tool_calls is None:
             return {"role": "assistant", "content": self.content}
-        return {
+        payload = {
             "role": "assistant",
             "content": self.content,
             "tool_calls": [
@@ -44,17 +53,30 @@ class _FakeMessage:
                 for call in self.tool_calls
             ],
         }
+        if self.reasoning_content is not None:
+            payload["reasoning_content"] = self.reasoning_content
+        return payload
 
 
 class _FakeCompletions:
     def __init__(self, scripted_messages: list[_FakeMessage]) -> None:
         self._messages = list(scripted_messages)
         self.calls = 0
+        self.requests = []
+        self.require_reasoning = False
 
     def create(self, **kwargs):
         self.calls += 1
+        self.requests.append(kwargs)
+        if self.require_reasoning and kwargs.get("tools"):
+            if any(
+                "reasoning_content" not in message
+                for message in kwargs["messages"]
+                if message.get("role") == "assistant"
+            ):
+                raise ValueError("reasoning_content must be passed back with tools")
         message = self._messages.pop(0)
-        choice = type("Choice", (), {"message": message})()
+        choice = type("Choice", (), {"message": message, "finish_reason": message.finish_reason})()
         return type("Response", (), {"choices": [choice]})()
 
 
@@ -69,8 +91,22 @@ def _write_call(path: str) -> _FakeToolCall:
     return _FakeToolCall(f"call-{path}", "write_file", arguments)
 
 
-def _make_client(max_turns: int, max_tool_calls: int, scripted: list[_FakeMessage]) -> ModelClient:
+def _read_call(path: str) -> _FakeToolCall:
+    return _FakeToolCall(f"call-{path}", "read_file", json.dumps({"path": path}))
+
+
+def _read_files_call(paths: list[str]) -> _FakeToolCall:
+    return _FakeToolCall("call-read-files", "read_files", json.dumps({"paths": paths}))
+
+
+def _make_client(
+    max_turns: int | None,
+    max_tool_calls: int | None,
+    scripted: list[_FakeMessage],
+    env_overrides: dict[str, str] | None = None,
+) -> ModelClient:
     environment = {"OPENAI_API_KEY": "test-key", "MODEL": "test-model"}
+    environment.update(env_overrides or {})
     with patch.dict(os.environ, environment, clear=True):
         model = ModelClient(max_turns=max_turns, max_tool_calls=max_tool_calls)
     model.client = _FakeClient(scripted)
@@ -104,7 +140,18 @@ class ImplementBudgetTests(unittest.TestCase):
 
         self.assertFalse(exhausted)
         self.assertEqual(model.client.completions.calls, 2)
+        self.assertEqual(model.model_requests_used, 2)
         self.assertTrue((self.project_dir / "a.js").is_file())
+
+    def test_truncated_implementation_is_not_treated_as_completion(self) -> None:
+        model = _make_client(
+            max_turns=2,
+            max_tool_calls=2,
+            scripted=[_FakeMessage(None, "partial", finish_reason="length")],
+        )
+        with self.assertRaisesRegex(RuntimeError, "output limit"):
+            self._implement(model)
+        self.assertEqual(model.client.completions.calls, 1)
 
     def test_turn_budget_falls_through_to_verification(self) -> None:
         scripted = [
@@ -118,10 +165,11 @@ class ImplementBudgetTests(unittest.TestCase):
 
         self.assertTrue(exhausted)
         self.assertEqual(model.client.completions.calls, 3)
+        self.assertEqual(model.model_requests_used, 3)
         for name in ("a.js", "b.js", "c.js"):
             self.assertTrue((self.project_dir / name).is_file())
 
-    def test_tool_call_budget_stops_mid_message_without_extra_api_call(self) -> None:
+    def test_tool_call_batch_over_budget_is_rejected_before_any_call_runs(self) -> None:
         scripted = [_FakeMessage([_write_call("a.js"), _write_call("b.js"), _write_call("c.js")])]
         model = _make_client(max_turns=5, max_tool_calls=2, scripted=scripted)
 
@@ -129,10 +177,221 @@ class ImplementBudgetTests(unittest.TestCase):
 
         self.assertTrue(exhausted)
         self.assertEqual(model.client.completions.calls, 1)
-        self.assertEqual(model.tool_calls_used, 2)
-        self.assertTrue((self.project_dir / "a.js").is_file())
-        self.assertTrue((self.project_dir / "b.js").is_file())
+        self.assertEqual(model.model_requests_used, 1)
+        self.assertEqual(model.tool_calls_used, 0)
+        self.assertFalse((self.project_dir / "a.js").exists())
+        self.assertFalse((self.project_dir / "b.js").exists())
         self.assertFalse((self.project_dir / "c.js").exists())
+        self.assertEqual(model.last_budget_report.requested, 3)
+        self.assertEqual(model.last_budget_report.tool_names, ("write_file", "write_file", "write_file"))
+
+    def test_does_not_wake_model_when_tool_budget_is_already_spent(self) -> None:
+        model = _make_client(max_turns=5, max_tool_calls=2, scripted=[])
+        model.tool_calls_used = 2
+
+        exhausted = self._implement(model)
+
+        self.assertTrue(exhausted)
+        self.assertEqual(model.client.completions.calls, 0)
+        self.assertEqual(model.last_budget_report.used, 2)
+        self.assertEqual(model.last_budget_report.requested, 0)
+
+    def test_batching_related_reads_reduces_model_wakeups(self) -> None:
+        paths = ["a.txt", "b.txt", "c.txt"]
+        for path in paths:
+            (self.project_dir / path).write_text(path, encoding="utf-8")
+
+        sequential = _make_client(
+            max_turns=8,
+            max_tool_calls=8,
+            scripted=[_FakeMessage([_read_call(path)]) for path in paths]
+            + [_FakeMessage(None, "inspection complete")],
+        )
+
+        batched = _make_client(
+            max_turns=8,
+            max_tool_calls=8,
+            scripted=[_FakeMessage([_read_files_call(paths)]), _FakeMessage(None, "inspection complete")],
+        )
+
+        self.assertFalse(self._implement(sequential))
+        self.assertFalse(self._implement(batched))
+
+        sequential_wakeups = sequential.model_requests_used
+        batched_wakeups = batched.model_requests_used
+        self.assertEqual(sequential_wakeups, 4)
+        self.assertEqual(batched_wakeups, 2)
+        self.assertEqual(batched.tool_calls_used, 1)
+        self.assertEqual(sequential_wakeups - batched_wakeups, 2)
+
+    def test_provider_token_usage_is_accumulated(self) -> None:
+        model = _make_client(max_turns=2, max_tool_calls=4, scripted=[])
+
+        model._record_usage(SimpleNamespace(usage=SimpleNamespace(prompt_tokens=120, completion_tokens=30)))
+        model._record_usage(SimpleNamespace(usage=None))
+
+        self.assertEqual(model.prompt_tokens_used, 120)
+        self.assertEqual(model.completion_tokens_used, 30)
+
+    def test_old_tool_payloads_are_compacted_but_task_and_recent_protocol_remain(self) -> None:
+        calls = [
+            _FakeToolCall(f"call-{index}", "read_files", json.dumps({"paths": [f"f{index}.txt"]}))
+            for index in range(6)
+        ]
+        scripted = [_FakeMessage([call]) for call in calls] + [_FakeMessage(None, "done")]
+        model = _make_client(max_turns=8, max_tool_calls=8, scripted=scripted)
+        self.subtree = {"id": "REQ-1", "name": "keep this requirement"}
+        self.tools.call = lambda name, args: ("x" * 24_000) + f" END-PAYLOAD-{args['paths'][0]}"
+
+        exhausted = self._implement(model)
+
+        self.assertFalse(exhausted)
+        requests = model.client.completions.requests
+        self.assertEqual(len(requests), 7)
+        later = requests[-1]["messages"]
+        serialized_later = json.dumps(later)
+        self.assertIn("keep this requirement", serialized_later)
+        self.assertIn("test plan", serialized_later)
+        self.assertIn("END-PAYLOAD-f5.txt", serialized_later)
+        self.assertNotIn("END-PAYLOAD-f0.txt", serialized_later)
+        self.assertLess(len(serialized_later), 75_000)
+
+        # Every retained assistant tool call has its matching tool result; compaction
+        # must never leave orphan tool messages that break Chat Completions requests.
+        for request in requests[1:]:
+            messages = request["messages"]
+            call_ids = {
+                call["id"]
+                for message in messages
+                if message.get("role") == "assistant"
+                for call in message.get("tool_calls", [])
+            }
+            result_ids = {message["tool_call_id"] for message in messages if message.get("role") == "tool"}
+            self.assertEqual(call_ids, result_ids)
+
+    def test_visual_payload_is_sent_once_while_text_task_context_persists(self) -> None:
+        model = _make_client(
+            max_turns=3,
+            max_tool_calls=3,
+            scripted=[_FakeMessage([_write_call("a.txt")]), _FakeMessage(None, "done")],
+        )
+        image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,REFERENCE"}}
+        with patch.object(model, "_visual_inputs", return_value=[{"type": "text", "text": "visual ref"}, image]):
+            self.assertFalse(self._implement(model))
+
+        requests = model.client.completions.requests
+        self.assertEqual(requests[0]["messages"][2]["content"][1], image)
+        self.assertIsInstance(requests[1]["messages"][1]["content"], str)
+        self.assertIn("test plan", requests[1]["messages"][1]["content"])
+        self.assertEqual(requests[0]["messages"][:2], requests[1]["messages"][:2])
+        self.assertNotIn("REFERENCE", json.dumps(requests[1]["messages"]))
+
+    def test_compaction_preserves_thinking_mode_tool_history(self) -> None:
+        calls = [
+            _FakeToolCall(f"reasoning-call-{index}", "read_files", json.dumps({"paths": [f"f{index}.txt"]}))
+            for index in range(4)
+        ]
+        scripted = [
+            _FakeMessage([call], reasoning_content=f"provider reasoning {index}")
+            for index, call in enumerate(calls)
+        ] + [_FakeMessage(None, "done", reasoning_content="final reasoning")]
+        model = _make_client(max_turns=6, max_tool_calls=6, scripted=scripted)
+        model.client.completions.require_reasoning = True
+        self.tools.call = lambda name, args: ("x" * 40_000) + f" Read {args['paths'][0]}"
+
+        self.assertFalse(self._implement(model))
+
+        final_messages = model.client.completions.requests[-1]["messages"]
+        self.assertIn("Compact progress ledger", final_messages[2]["content"])
+        retained_assistants = [message for message in final_messages if message["role"] == "assistant"]
+        self.assertLessEqual(len(retained_assistants), 2)
+        self.assertTrue(all(message.get("reasoning_content") for message in retained_assistants))
+
+    def test_deepseek_implementation_keeps_default_thinking(self) -> None:
+        model = _make_client(
+            max_turns=2,
+            max_tool_calls=2,
+            scripted=[_FakeMessage([_write_call("a.txt")]), _FakeMessage(None, "done")],
+            env_overrides={"MODEL": "deepseek-flash", "OPENAI_BASE_URL": "https://api.deepseek.com"},
+        )
+
+        self.assertFalse(self._implement(model))
+        self.assertTrue(all(
+            request["extra_body"] == {"thinking": {"type": "enabled"}}
+            for request in model.client.completions.requests
+        ))
+
+    def test_deepseek_thinking_can_be_disabled_explicitly(self) -> None:
+        model = _make_client(
+            max_turns=1,
+            max_tool_calls=2,
+            scripted=[_FakeMessage(None, "done")],
+            env_overrides={
+                "MODEL": "deepseek-flash",
+                "OPENAI_BASE_URL": "https://api.deepseek.com",
+                "ARCBENCH_IMPLEMENTATION_THINKING": "disabled",
+            },
+        )
+
+        self.assertFalse(self._implement(model))
+        self.assertEqual(
+            model.client.completions.requests[0]["extra_body"],
+            {"thinking": {"type": "disabled"}},
+        )
+
+    def test_checkpoint_failure_reaches_model_before_turn_budget_is_spent(self) -> None:
+        model = _make_client(
+            max_turns=5,
+            max_tool_calls=6,
+            scripted=[_FakeMessage([_write_call("a.txt")]), _FakeMessage(None, "fixed")],
+        )
+        checkpoint = MagicMock(return_value="frontend: npm run test FAILED: missing tests/*.test.js")
+
+        exhausted = model.implement(
+            task_type="web",
+            subtree=self.subtree,
+            plan="test plan",
+            project_tools=self.tools,
+            checkpoint_feedback=checkpoint,
+        )
+
+        self.assertFalse(exhausted)
+        checkpoint.assert_called_once_with()
+        second_request = model.client.completions.requests[1]["messages"]
+        self.assertTrue(any(
+            "missing tests/*.test.js" in message["content"]
+            for message in second_request
+            if message["role"] == "user" and isinstance(message["content"], str)
+        ))
+
+    def test_unlimited_run_continues_past_old_limit_and_replaces_checkpoint_feedback(self) -> None:
+        calls = [
+            _FakeToolCall(f"call-{index}", "list_files", json.dumps({"path": "."}))
+            for index in range(38)
+        ]
+        model = _make_client(
+            max_turns=None,
+            max_tool_calls=None,
+            scripted=[_FakeMessage([call]) for call in calls] + [_FakeMessage(None, "done")],
+            env_overrides={"ARCBENCH_MAX_MODEL_REQUESTS": "50"},
+        )
+        self.tools.call = lambda name, args: "ok"
+        checkpoint = MagicMock(side_effect=["first failure", "second failure"])
+
+        self.assertFalse(model.implement(
+            task_type="web",
+            subtree=self.subtree,
+            plan="test plan",
+            project_tools=self.tools,
+            checkpoint_feedback=checkpoint,
+        ))
+
+        self.assertEqual(model.model_requests_used, 39)
+        self.assertEqual(model.tool_calls_used, 38)
+        self.assertEqual(checkpoint.call_count, 2)
+        final_user_message = model.client.completions.requests[-1]["messages"][2]["content"]
+        self.assertIn("second failure", final_user_message)
+        self.assertNotIn("first failure", final_user_message)
 
 
 if __name__ == "__main__":

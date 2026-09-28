@@ -2,16 +2,18 @@ from __future__ import annotations
 
 import html
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
 from arcbench_agent_runtime import AgentRuntime
 
 from .config import AgentConfig
-from .llm import ModelClient
+from .llm import BudgetExhaustion, ModelBudgetExceeded, ModelClient
 from .requirements import RequirementModule, load_requirement_tree, root_modules, walk_requirement_ids
 from .tools import ProjectTools
 from .verify import (
+    CheckResult,
     VerificationResult,
     prepare_web_template_structure,
     verify_demo_page,
@@ -65,6 +67,63 @@ def _record_test(runtime: AgentRuntime, node_id: str, result: VerificationResult
     runtime.traceability.set_test_pass_status(test_id, result.passed)
 
 
+def _failure_signature(result: VerificationResult) -> tuple[tuple[str, int | None, tuple[str, ...]], ...]:
+    """Identify repeated verification failures without volatile test timings."""
+    markers = ("not ok", "error", "missing", "failed", "actual", "expected", "could not")
+    return tuple(
+        (
+            check.name,
+            check.exit_code,
+            tuple(
+                line.strip()
+                for line in check.output.splitlines()
+                if any(marker in line.casefold() for marker in markers)
+            ) or (check.output[:500],),
+        )
+        for check in result.checks
+        if not check.passed
+    )
+
+
+def _repair_feedback(result: VerificationResult) -> str:
+    failures = [check for check in result.checks if not check.passed]
+    passed = [check.name for check in result.checks if check.passed]
+    parts = []
+    for check in failures:
+        output = check.output
+        if len(output) > 4_000:
+            output = output[:2_000] + "\n...[middle truncated]\n" + output[-2_000:]
+        parts.append(f"{check.name}: FAILED (exit={check.exit_code})\n{output}")
+    if passed:
+        parts.append("Already passing checks: " + ", ".join(passed))
+    return "\n\n".join(parts)
+
+
+def _repair_modules(
+    result: VerificationResult,
+    modules: list[RequirementModule],
+    module_paths: dict[str, set[str]],
+) -> list[RequirementModule]:
+    failure_text = "\n".join(
+        f"{check.name}\n{check.output}" for check in result.checks if not check.passed
+    )
+    by_requirement = [
+        module for module in modules
+        if any(
+            re.search(rf"(?<![\w.-]){re.escape(node_id)}(?![\w.-])", failure_text)
+            for node_id in walk_requirement_ids(module.subtree)
+        )
+    ]
+    if by_requirement:
+        return by_requirement
+    normalized = failure_text.replace("\\", "/").casefold()
+    by_path = [
+        module for module in modules
+        if any(path.casefold() in normalized for path in module_paths.get(module.node_id, set()))
+    ]
+    return by_path or modules
+
+
 def run_offline_demo(runtime: AgentRuntime, config: AgentConfig, tree: dict[str, Any], modules: list[RequirementModule]) -> VerificationResult:
     module = modules[0]
     node_ids = walk_requirement_ids(module.subtree)
@@ -96,7 +155,26 @@ def run_model_agent(runtime: AgentRuntime, config: AgentConfig, tree: dict[str, 
     project_tools = ProjectTools(config.output_dir, timeout_seconds=120)
     plans: dict[str, str] = {}
     planning_subtrees: dict[str, dict[str, Any]] = {}
+    module_paths: dict[str, set[str]] = {}
+    budget_failure: BudgetExhaustion | None = None
+    budget_exhausted = False
     visual_references = collect_visual_references(tree)
+
+    def checkpoint_feedback() -> str:
+        checks = (
+            *verify_project(config.output_dir).checks,
+            *verify_web_template_structure(config.output_dir).checks,
+        )
+        failures = [check for check in checks if not check.passed]
+        if not failures:
+            LOGGER.info("Implementation checkpoint: current build and test scripts passed")
+            return "Current build and test scripts pass. Finish any uncovered requirements and run final checks."
+        LOGGER.warning("Implementation checkpoint found %d failing checks", len(failures))
+        return "\n\n".join(
+            f"{check.name}: FAILED (exit={check.exit_code})\n{check.output[-6000:]}"
+            for check in failures
+        )
+
     root_visual_references = tree.get("visual_reference", [])
     if isinstance(root_visual_references, str):
         root_visual_references = [root_visual_references]
@@ -111,11 +189,17 @@ def run_model_agent(runtime: AgentRuntime, config: AgentConfig, tree: dict[str, 
                 dict.fromkeys([*root_visual_references, *module_visual_references])
             )
         planning_subtrees[module.node_id] = planning_subtree
-        plan = model.plan(
-            config.task_type,
-            planning_subtree,
-            reference_dir=config.requirement_dir,
-        )
+        try:
+            plan = model.plan(
+                config.task_type,
+                planning_subtree,
+                reference_dir=config.requirement_dir,
+            )
+        except ModelBudgetExceeded as exc:
+            budget_exhausted = True
+            budget_failure = exc.report
+            LOGGER.warning("%s; preserving current files for verification", exc)
+            break
         plans[module.node_id] = plan
         runtime.events.mark_design_done(module.node_id, "Implementation plan prepared")
         runtime.events.mark_implementation_started(module.node_id, "Applying requirement subtree")
@@ -126,17 +210,28 @@ def run_model_agent(runtime: AgentRuntime, config: AgentConfig, tree: dict[str, 
             plan=plan,
             project_tools=project_tools,
             reference_dir=config.requirement_dir,
+            checkpoint_feedback=checkpoint_feedback,
         )
         if budget_exhausted:
-            LOGGER.warning(
-                "Model reached the turn/tool-call budget before signalling completion; "
-                "verifying the current project state instead of failing the run"
+            budget_exhausted = True
+            candidate_report = getattr(model, "last_budget_report", None)
+            budget_failure = candidate_report if isinstance(candidate_report, BudgetExhaustion) else None
+            message = (
+                budget_failure.summary()
+                if budget_failure is not None
+                else "Model implementation budget exhausted before completion"
             )
+            LOGGER.warning(
+                "%s; stopping further requirement generation and preserving current files for verification",
+                message,
+            )
+            break
         if len(project_tools.written_paths) == writes_before:
             raise RuntimeError(f"No project files were changed for requirement {module.node_id}")
+        module_paths.setdefault(module.node_id, set()).update(project_tools.written_paths[writes_before:])
         runtime.events.mark_implementation_done(module.node_id, "Implementation turn completed")
 
-    def verify_current_project() -> VerificationResult:
+    def verify_current_project(*, include_visual: bool = True) -> VerificationResult:
         project_result = verify_project(config.output_dir)
         structure_result = verify_web_template_structure(config.output_dir)
         visual_result = (
@@ -146,7 +241,7 @@ def run_model_agent(runtime: AgentRuntime, config: AgentConfig, tree: dict[str, 
                 visual_references,
                 model,
             )
-            if visual_references
+            if visual_references and include_visual and project_result.passed and structure_result.passed
             else None
         )
         checks = (*project_result.checks, *structure_result.checks)
@@ -159,11 +254,22 @@ def run_model_agent(runtime: AgentRuntime, config: AgentConfig, tree: dict[str, 
             checks,
         )
 
-    result = verify_current_project()
-    if not result.passed:
-        feedback = result.summary()
-        LOGGER.warning("Initial verification failed; starting one bounded repair pass")
-        for module in modules:
+    result = verify_current_project(include_visual=not budget_exhausted)
+    if isinstance(getattr(model, "last_budget_report", None), BudgetExhaustion):
+        budget_exhausted = True
+        budget_failure = model.last_budget_report
+    seen_failures: set[tuple[tuple[str, int | None, tuple[str, ...]], ...]] = set()
+    while not result.passed and not budget_exhausted:
+        signature = _failure_signature(result)
+        if signature in seen_failures:
+            LOGGER.warning("Verification failures did not change after repair; stopping repeated attempts")
+            break
+        seen_failures.add(signature)
+        feedback = _repair_feedback(result)
+        repair_modules = _repair_modules(result, modules, module_paths)
+        LOGGER.warning("Verification failed; repairing %d of %d requirement modules", len(repair_modules), len(modules))
+        for module in repair_modules:
+            writes_before = len(project_tools.written_paths)
             repair_budget_exhausted = model.implement(
                 task_type=config.task_type,
                 subtree=planning_subtrees[module.node_id],
@@ -172,11 +278,35 @@ def run_model_agent(runtime: AgentRuntime, config: AgentConfig, tree: dict[str, 
                 repair_feedback=feedback,
                 reference_dir=config.requirement_dir,
             )
+            module_paths.setdefault(module.node_id, set()).update(project_tools.written_paths[writes_before:])
             if repair_budget_exhausted:
-                LOGGER.warning(
-                    "Repair pass reached the model budget; re-verifying the current project state"
+                budget_exhausted = True
+                candidate_report = getattr(model, "last_budget_report", None)
+                budget_failure = candidate_report if isinstance(candidate_report, BudgetExhaustion) else None
+                message = (
+                    budget_failure.summary()
+                    if budget_failure is not None
+                    else "Model repair budget exhausted before completion"
                 )
-        result = verify_current_project()
+                LOGGER.warning(
+                    "%s; stopping further repair calls",
+                    message,
+                )
+                break
+        result = verify_current_project(include_visual=not budget_exhausted)
+        if isinstance(getattr(model, "last_budget_report", None), BudgetExhaustion):
+            budget_exhausted = True
+            budget_failure = model.last_budget_report
+
+    if budget_exhausted:
+        budget_check = CheckResult(
+            "agent generation budget",
+            False,
+            1,
+            (budget_failure.summary() if budget_failure is not None else "Model implementation budget exhausted.")
+            + "\nPartial project files were preserved and the available project checks were run.",
+        )
+        result = VerificationResult(False, (*result.checks, budget_check))
 
     for node_id in walk_requirement_ids(tree):
         if node_id == "ROOT":
@@ -187,6 +317,9 @@ def run_model_agent(runtime: AgentRuntime, config: AgentConfig, tree: dict[str, 
             runtime.events.mark_test_failed(node_id, result.summary())
         _record_test(runtime, node_id, result)
     _register_traceability(runtime, tree)
+    log_usage = getattr(model, "log_usage", None)
+    if callable(log_usage):
+        log_usage()
     return result
 
 

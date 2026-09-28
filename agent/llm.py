@@ -24,6 +24,7 @@ MAX_CONVERSATION_CHARS = 100_000
 DEFAULT_MAX_MODEL_REQUESTS = 24
 DEFAULT_MAX_TOTAL_TOKENS = 300_000
 MAX_COMPLETION_TOKENS_PER_REQUEST = 12_000
+MAX_IDENTICAL_FAILED_TOOL_TURNS = 3
 
 
 @dataclass(frozen=True)
@@ -38,15 +39,17 @@ class BudgetExhaustion:
     model_requests_used: int
     prompt_tokens_used: int = 0
     completion_tokens_used: int = 0
+    detail: str = ""
 
     def summary(self) -> str:
         tools = ", ".join(self.tool_names) or "unknown/not requested"
-        return (
+        summary = (
             f"{self.budget} exhausted before completion: configured_limit={self.limit}, already_used={self.used}, "
             f"requested_tool_calls={self.requested}, requested_tools=[{tools}], model_turns_used={self.turns_used}, "
             f"total_tool_calls_used={self.tool_calls_used}, total_model_requests={self.model_requests_used}, "
             f"prompt_tokens={self.prompt_tokens_used}, completion_tokens={self.completion_tokens_used}"
         )
+        return summary + (f", detail={self.detail}" if self.detail else "")
 
 
 class ModelBudgetExceeded(Exception):
@@ -638,6 +641,8 @@ class ModelClient:
         compacted_summaries: list[str] = []
         checkpoint_note = ""
         budget_warned = False
+        failed_tool_signature: tuple[tuple[str, str, str], ...] | None = None
+        identical_failed_turns = 0
 
         def compact_context() -> list[dict[str, Any]]:
             # Reset only at a context boundary. Between resets, append complete
@@ -796,8 +801,39 @@ class ModelClient:
             exchange = [assistant_payload, *tool_payloads]
             conversation.extend(exchange)
             epoch_exchanges.append(exchange)
+            failed_turn = tuple(
+                (call.function.name, call.function.arguments or "", payload["content"])
+                for call, payload in zip(tool_calls, tool_payloads)
+            ) if all(payload["content"].startswith("Tool error:") for payload in tool_payloads) else None
+            if failed_turn is not None:
+                identical_failed_turns = identical_failed_turns + 1 if failed_turn == failed_tool_signature else 1
+                failed_tool_signature = failed_turn
+            else:
+                identical_failed_turns = 0
+                failed_tool_signature = None
+            if identical_failed_turns >= MAX_IDENTICAL_FAILED_TOOL_TURNS:
+                self.last_budget_report = BudgetExhaustion(
+                    budget="identical_failed_tool_turn_limit",
+                    limit=MAX_IDENTICAL_FAILED_TOOL_TURNS,
+                    used=identical_failed_turns,
+                    requested=0,
+                    tool_names=tuple(call.function.name for call in tool_calls),
+                    turns_used=turn_index + 1,
+                    tool_calls_used=self.tool_calls_used,
+                    model_requests_used=self.model_requests_used,
+                    prompt_tokens_used=self.prompt_tokens_used,
+                    completion_tokens_used=self.completion_tokens_used,
+                    detail=failed_turn[0][2][:300],
+                )
+                return True
             if (visual_inputs and turn_index == 0) or self._message_context_chars(conversation) > MAX_CONVERSATION_CHARS:
                 conversation = compact_context()
+            if identical_failed_turns == MAX_IDENTICAL_FAILED_TOOL_TURNS - 1:
+                conversation.append({
+                    "role": "user",
+                    "content": "The previous tool call failed identically twice. Change the tool arguments or "
+                               "approach; repeating the same failed call will stop this implementation pass.",
+                })
             if self.max_tool_calls is not None and self.tool_calls_used >= self.max_tool_calls:
                 self.last_budget_report = BudgetExhaustion(
                     budget="tool_call_budget",

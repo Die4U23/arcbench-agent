@@ -3,19 +3,60 @@ from __future__ import annotations
 import base64
 import ipaddress
 import json
+import logging
 import mimetypes
 import os
+from dataclasses import dataclass
+from itertools import count
 from pathlib import Path
 import re
-from typing import Any
+import time
+from typing import Any, Callable
 from urllib.parse import unquote, urlsplit
 
-from .tools import ProjectTools, TOOL_SCHEMAS
+from .tools import MAX_BATCH_OUTPUT_CHARS, ProjectTools, TOOL_SCHEMAS
 from .visual_acceptance import REPORT_RELATIVE_PATH, SCREENSHOT_RELATIVE_DIR
+
+LOGGER = logging.getLogger(__name__)
+MAX_COMPACTED_EXCHANGES = 6
+MAX_EXCHANGE_SUMMARY_CHARS = 900
+MAX_CONVERSATION_CHARS = 100_000
+DEFAULT_MAX_MODEL_REQUESTS = 24
+DEFAULT_MAX_TOTAL_TOKENS = 300_000
+MAX_COMPLETION_TOKENS_PER_REQUEST = 12_000
+
+
+@dataclass(frozen=True)
+class BudgetExhaustion:
+    budget: str
+    limit: int
+    used: int
+    requested: int
+    tool_names: tuple[str, ...]
+    turns_used: int
+    tool_calls_used: int
+    model_requests_used: int
+    prompt_tokens_used: int = 0
+    completion_tokens_used: int = 0
+
+    def summary(self) -> str:
+        tools = ", ".join(self.tool_names) or "unknown/not requested"
+        return (
+            f"{self.budget} exhausted before completion: configured_limit={self.limit}, already_used={self.used}, "
+            f"requested_tool_calls={self.requested}, requested_tools=[{tools}], model_turns_used={self.turns_used}, "
+            f"total_tool_calls_used={self.tool_calls_used}, total_model_requests={self.model_requests_used}, "
+            f"prompt_tokens={self.prompt_tokens_used}, completion_tokens={self.completion_tokens_used}"
+        )
+
+
+class ModelBudgetExceeded(Exception):
+    def __init__(self, report: BudgetExhaustion) -> None:
+        self.report = report
+        super().__init__(report.summary())
 
 
 class ModelClient:
-    def __init__(self, *, max_turns: int, max_tool_calls: int) -> None:
+    def __init__(self, *, max_turns: int | None = None, max_tool_calls: int | None = None) -> None:
         api_key = os.environ.get("OPENAI_API_KEY", "").strip()
         self.model = os.environ.get("MODEL", "").strip()
         self.visual_model = os.environ.get("VISUAL_MODEL", "").strip() or self.model
@@ -27,13 +68,173 @@ class ModelClient:
         from openai import OpenAI
 
         base_url = os.environ.get("OPENAI_BASE_URL", "").strip()
+        self.is_deepseek = (
+            urlsplit(base_url).hostname == "api.deepseek.com"
+            or self.model.lower().startswith("deepseek-")
+        )
+        self.implementation_thinking = os.environ.get("ARCBENCH_IMPLEMENTATION_THINKING", "").strip().lower()
+        if self.implementation_thinking not in {"", "enabled", "disabled"}:
+            raise ValueError("ARCBENCH_IMPLEMENTATION_THINKING must be enabled or disabled")
         options: dict[str, Any] = {"api_key": api_key}
         if base_url:
             options["base_url"] = base_url
         self.client = OpenAI(**options)
         self.max_turns = max_turns
         self.max_tool_calls = max_tool_calls
+        self.max_model_requests = int(os.environ.get("ARCBENCH_MAX_MODEL_REQUESTS", DEFAULT_MAX_MODEL_REQUESTS))
+        self.max_total_tokens = int(os.environ.get("ARCBENCH_MAX_TOTAL_TOKENS", DEFAULT_MAX_TOTAL_TOKENS))
+        if self.max_model_requests < 1 or self.max_total_tokens < 1:
+            raise ValueError("ARCBENCH_MAX_MODEL_REQUESTS and ARCBENCH_MAX_TOTAL_TOKENS must be positive")
         self.tool_calls_used = 0
+        self.model_requests_used = 0
+        self.prompt_tokens_used = 0
+        self.completion_tokens_used = 0
+        self.cache_hit_tokens_used = 0
+        self.cache_miss_tokens_used = 0
+        self.cache_observed_requests = 0
+        self.model_seconds = 0.0
+        self.tool_seconds = 0.0
+        self.last_budget_report: BudgetExhaustion | None = None
+
+    def _create_completion(self, stage: str, **kwargs: Any) -> Any:
+        started = time.perf_counter()
+        try:
+            return self.client.chat.completions.create(**kwargs)
+        finally:
+            elapsed = time.perf_counter() - started
+            self.model_seconds = getattr(self, "model_seconds", 0.0) + elapsed
+            LOGGER.info("Model latency: stage=%s model=%s seconds=%.3f", stage, kwargs.get("model"), elapsed)
+
+    def _record_model_request(self) -> None:
+        requests_used = getattr(self, "model_requests_used", 0)
+        tokens_used = getattr(self, "prompt_tokens_used", 0) + getattr(self, "completion_tokens_used", 0)
+        for budget, limit, used in (
+            ("model_request_budget", self.max_model_requests, requests_used),
+            ("total_token_budget", self.max_total_tokens, tokens_used),
+        ):
+            if used >= limit:
+                report = BudgetExhaustion(
+                    budget=budget,
+                    limit=limit,
+                    used=used,
+                    requested=0,
+                    tool_names=(),
+                    turns_used=requests_used,
+                    tool_calls_used=self.tool_calls_used,
+                    model_requests_used=requests_used,
+                    prompt_tokens_used=self.prompt_tokens_used,
+                    completion_tokens_used=self.completion_tokens_used,
+                )
+                self.last_budget_report = report
+                raise ModelBudgetExceeded(report)
+        self.model_requests_used = getattr(self, "model_requests_used", 0) + 1
+
+    def _record_usage(self, response: Any, *, stage: str = "model", context_chars: int | None = None) -> None:
+        usage = getattr(response, "usage", None)
+        if usage is None:
+            LOGGER.info(
+                "Model request: stage=%s request=%d context_chars=%s token_counts=unavailable",
+                stage,
+                self.model_requests_used,
+                context_chars if context_chars is not None else "unknown",
+            )
+            return
+        prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
+        completion_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
+        details = getattr(usage, "completion_tokens_details", None)
+        reasoning_tokens = getattr(details, "reasoning_tokens", None)
+        cache_hit = getattr(usage, "prompt_cache_hit_tokens", None)
+        if cache_hit is None:
+            cache_hit = getattr(getattr(usage, "prompt_tokens_details", None), "cached_tokens", None)
+        cache_miss = getattr(usage, "prompt_cache_miss_tokens", None)
+        if cache_hit is not None and cache_miss is None:
+            cache_miss = max(0, prompt_tokens - int(cache_hit))
+        self.prompt_tokens_used += prompt_tokens
+        self.completion_tokens_used += completion_tokens
+        if cache_hit is not None and cache_miss is not None:
+            self.cache_hit_tokens_used += int(cache_hit)
+            self.cache_miss_tokens_used += int(cache_miss)
+            self.cache_observed_requests += 1
+        LOGGER.info(
+            "Model request: stage=%s request=%d context_chars=%s prompt_tokens=%d completion_tokens=%d "
+            "reasoning_tokens=%s cache_hit_tokens=%s cache_miss_tokens=%s",
+            stage,
+            self.model_requests_used,
+            context_chars if context_chars is not None else "unknown",
+            prompt_tokens,
+            completion_tokens,
+            reasoning_tokens if reasoning_tokens is not None else "unavailable",
+            cache_hit if cache_hit is not None else "unavailable",
+            cache_miss if cache_miss is not None else "unavailable",
+        )
+
+    @staticmethod
+    def _compact_tool_exchange(
+        assistant_message: dict[str, Any], tool_messages: list[dict[str, Any]],
+    ) -> str:
+        """Keep a small, useful ledger for an exchange whose raw payload is dropped."""
+        calls = assistant_message.get("tool_calls", [])
+        summaries: list[str] = []
+        for index, call in enumerate(calls):
+            function = call.get("function", {}) if isinstance(call, dict) else {}
+            name = function.get("name", "tool") if isinstance(function, dict) else "tool"
+            response = tool_messages[index].get("content", "") if index < len(tool_messages) else ""
+            if not isinstance(response, str):
+                response = str(response)
+            # Preserve useful errors/build outcomes, while dropping large file contents.
+            if name in {"run_project_script", "run_project_scripts"}:
+                detail = response[:500]
+            elif name in {"write_files", "write_file", "replace_text"}:
+                detail = response[:350]
+            elif name in {"read_files", "read_file", "list_files", "search_text"}:
+                detail = response[:240]
+            else:
+                detail = response[:180]
+            summaries.append(f"{name}: {detail}")
+        content = assistant_message.get("content")
+        if isinstance(content, str) and content.strip():
+            summaries.insert(0, f"Agent note: {content.strip()[:180]}")
+        return " | ".join(summaries)[:MAX_EXCHANGE_SUMMARY_CHARS]
+
+    @staticmethod
+    def _message_context_chars(messages: list[dict[str, Any]]) -> int:
+        # Measures serialized prompt size without logging project contents.
+        return len(json.dumps(messages, ensure_ascii=False, default=str))
+
+    @staticmethod
+    def _reject_truncated_response(response: Any, stage: str) -> None:
+        if getattr(response.choices[0], "finish_reason", None) == "length":
+            raise RuntimeError(
+                f"Model {stage} response reached its output limit before completion; "
+                "the partial result was not accepted."
+            )
+
+    def log_usage(self) -> None:
+        if self.prompt_tokens_used or self.completion_tokens_used:
+            LOGGER.info(
+                "Model usage: requests=%d prompt_tokens=%d completion_tokens=%d total_tokens=%d",
+                self.model_requests_used,
+                self.prompt_tokens_used,
+                self.completion_tokens_used,
+                self.prompt_tokens_used + self.completion_tokens_used,
+            )
+        else:
+            LOGGER.info("Model usage: requests=%d token counts unavailable from provider", self.model_requests_used)
+        if self.cache_observed_requests:
+            cache_input = self.cache_hit_tokens_used + self.cache_miss_tokens_used
+            LOGGER.info(
+                "Prompt cache: observed_requests=%d hit_tokens=%d miss_tokens=%d hit_rate=%.1f%%",
+                self.cache_observed_requests,
+                self.cache_hit_tokens_used,
+                self.cache_miss_tokens_used,
+                100 * self.cache_hit_tokens_used / cache_input if cache_input else 0.0,
+            )
+        else:
+            LOGGER.info("Prompt cache: hit/miss counts unavailable from provider")
+        LOGGER.info(
+            "Execution time: model_seconds=%.3f tool_seconds=%.3f",
+            getattr(self, "model_seconds", 0.0), getattr(self, "tool_seconds", 0.0),
+        )
 
     @staticmethod
     def _visual_references(subtree: dict[str, Any]) -> list[tuple[str, str]]:
@@ -206,8 +407,10 @@ class ModelClient:
                 "image_url": {"url": f"data:image/png;base64,{screenshot_data}"},
             },
         ]
-        response = self.client.chat.completions.create(
+        self._record_model_request()
+        response = self._create_completion("visual_review",
             model=self.visual_review_model,
+            max_tokens=MAX_COMPLETION_TOKENS_PER_REQUEST,
             messages=[
                 {
                     "role": "system",
@@ -221,6 +424,10 @@ class ModelClient:
                 {"role": "user", "content": user_content},
             ],
         )
+        self._record_usage(response, stage="visual_review", context_chars=self._message_context_chars(messages=[
+            {"role": "system", "content": "visual review"}, {"role": "user", "content": user_content}
+        ]))
+        self._reject_truncated_response(response, "visual review")
         raw = response.choices[0].message.content or ""
         match = re.search(r"\{[\s\S]*\}", raw)
         if not match:
@@ -276,8 +483,11 @@ class ModelClient:
                 "content": user_content,
             },
         ]
+        self._record_model_request()
         try:
-            response = self.client.chat.completions.create(model=model, messages=messages)
+            response = self._create_completion("planning",
+                model=model, messages=messages, max_tokens=MAX_COMPLETION_TOKENS_PER_REQUEST,
+            )
         except Exception as exc:
             if visual_inputs:
                 raise RuntimeError(
@@ -286,6 +496,8 @@ class ModelClient:
                     "provider can access remote reference URLs."
                 ) from exc
             raise
+        self._record_usage(response, stage="planning", context_chars=self._message_context_chars(messages))
+        self._reject_truncated_response(response, "planning")
         content = response.choices[0].message.content or ""
         if not content.strip():
             raise RuntimeError("Model returned an empty implementation plan")
@@ -300,13 +512,9 @@ class ModelClient:
         project_tools: ProjectTools,
         repair_feedback: str | None = None,
         reference_dir: Path | None = None,
+        checkpoint_feedback: Callable[[], str] | None = None,
     ) -> bool:
-        """Run implementation until completion or a configured budget is reached.
-
-        Returns True when the current project should be verified after a model
-        turn or tool-call budget is reached, and False when the model finishes
-        normally.
-        """
+        """Run until the model finishes, unless the caller explicitly set a limit."""
         visual_inputs = self._visual_inputs(subtree, reference_dir)
         model = self.visual_model if visual_inputs else self.model
         system_message = (
@@ -317,7 +525,9 @@ class ModelClient:
             "behavior. Implement and test valid, invalid, boundary, and state-transition cases "
             "that the requirement implies. Add meaningful automated tests whose assertions check "
             "behavior, not just element presence or a successful render; inspect the assertions and "
-            "run the relevant tests after changes. When writing DOM tests, follow the actual API "
+            "run the relevant tests after changes. If a package defines a test script, create the "
+            "referenced test files before finishing; an unmatched test glob is a failure. "
+            "When writing DOM tests, follow the actual API "
             "contracts of the test environment: EventTarget.dispatchEvent returns a boolean, not "
             "the Event object. Retain the Event instance to assert defaultPrevented, or assert the "
             "dispatchEvent boolean; never read defaultPrevented from its boolean return value. "
@@ -350,8 +560,16 @@ class ModelClient:
             "substitute `public/`, `server/`, or empty placeholder directories for the required "
             "frontend and backend implementation. "
             "Use tools to inspect before editing. Paths are relative to the project root. "
+            "Use `read_files` to inspect code, `write_files` to create files or replace related files, and "
+            "`replace_text` for a small edit in an existing file when old_text has one exact match. "
+            "If replacement reports zero or multiple matches, reread the relevant file before retrying. "
+            "Batch related file inspections into one `read_files` call and related file updates into one `write_files` call. "
+            "Each batch accepts at most 20 files; read_files returns at most 40,000 characters, and write_files accepts "
+            "at most 30,000 characters per file and 120,000 characters total. Keep batches within these limits and "
+            "do not split a related change into many small tool calls. Group up to three relevant build/test scripts "
+            "into one `run_project_scripts` call so you can inspect all results together. "
             "Do not access .arc, .git, dependencies, or files outside the project. "
-            "Do not claim a build or test passed unless run_project_script returned exit_code 0. "
+            "Do not claim a build or test passed unless its run_project_script(s) result has exit_code 0. "
             "The runner prepared the target project; do not copy or replace a starter template. "
             "When implementation is complete, provide a short summary."
         )
@@ -382,31 +600,125 @@ class ModelClient:
                 "when a captured page needs prior sign-in state. The manifest is runtime input for "
                 "the Agent's browser verification, not a claim that verification has passed."
             )
-            user_content: str | list[dict[str, Any]] = [
-                {"type": "text", "text": text_message},
-                *visual_inputs,
-            ]
-        else:
-            user_content = text_message
-        if repair_feedback:
-            repair_text = f"Verification failed. Use this actual feedback to repair the project:\n{repair_feedback}"
-            if isinstance(user_content, list):
-                user_content[0]["text"] += f"\n\n{repair_text}"
-                user_content.extend(self._repair_visual_inputs(subtree, project_tools))
-            else:
-                user_content += f"\n\n{repair_text}"
-        messages: list[dict[str, Any]] = [
-            {"role": "system", "content": system_message},
-            {"role": "user", "content": user_content},
-        ]
-        stopped_by_budget = False
-        for _ in range(self.max_turns):
+        repair_text = (
+            f"Verification failed. Use this actual feedback to repair the project:\n{repair_feedback}"
+            if repair_feedback else ""
+        )
+        first_dynamic_content: str | list[dict[str, Any]] | None = None
+        if visual_inputs:
+            first_dynamic_content = [*visual_inputs]
+            if repair_text:
+                first_dynamic_content.insert(0, {"type": "text", "text": repair_text})
+                first_dynamic_content.extend(self._repair_visual_inputs(subtree, project_tools))
+        elif repair_text:
+            first_dynamic_content = repair_text
+        # Keep the image payload only for the first implementation request. The plan
+        # already contains a textual visual checklist, so replaying base64 images on
+        # every tool turn adds substantial prompt cost without new information.
+        compact_user_content = repair_text
+        if visual_inputs:
+            compact_user_content += (
+                "\n\nThe visual references and any repair screenshots were supplied in the first "
+                "request. Use their analyzed constraints from the plan and this task; do not ask "
+                "for them to be resent."
+            )
+        system_msg = {"role": "system", "content": system_message}
+        # Keep the full task in an identical message at the front of every request.
+        # Dynamic images, verification feedback, and progress follow that prefix.
+        task_msg = {"role": "user", "content": text_message}
+        conversation: list[dict[str, Any]] = [system_msg, task_msg]
+        if first_dynamic_content:
+            conversation.append({"role": "user", "content": first_dynamic_content})
+        epoch_exchanges: list[list[dict[str, Any]]] = []
+        compacted_summaries: list[str] = []
+        checkpoint_note = ""
+
+        def compact_context() -> list[dict[str, Any]]:
+            # Reset only at a context boundary. Between resets, append complete
+            # turns so the provider can reuse the entire previous request prefix.
+            for older in epoch_exchanges:
+                summary = self._compact_tool_exchange(older[0], older[1:])
+                if summary:
+                    compacted_summaries.append(summary)
+            del compacted_summaries[:-MAX_COMPACTED_EXCHANGES]
+            epoch_exchanges.clear()
+            parts = [compact_user_content] if compact_user_content else []
+            if checkpoint_note:
+                parts.append("Latest checkpoint verification feedback:\n" + checkpoint_note)
+            if compacted_summaries:
+                ledger = "\n".join(
+                    f"{index + 1}. {summary}"
+                    for index, summary in enumerate(compacted_summaries)
+                )
+                written_paths = list(dict.fromkeys(getattr(project_tools, "written_paths", [])))
+                if written_paths:
+                    shown_paths = written_paths[-60:]
+                    ledger += "\nFiles already written: " + ", ".join(shown_paths)
+                    if len(written_paths) > len(shown_paths):
+                        ledger += f" (and {len(written_paths) - len(shown_paths)} earlier files)"
+                parts.append("Compact progress ledger from earlier tool exchanges:\n" + ledger)
+            compacted: list[dict[str, Any]] = [system_msg, task_msg]
+            if parts:
+                compacted.append({"role": "user", "content": "\n\n".join(parts)})
+            return compacted
+
+        self.last_budget_report = None
+        for turn_index in count():
+            if self.max_tool_calls is not None and self.tool_calls_used >= self.max_tool_calls:
+                self.last_budget_report = BudgetExhaustion(
+                    budget="tool_call_budget",
+                    limit=self.max_tool_calls,
+                    used=self.tool_calls_used,
+                    requested=0,
+                    tool_names=(),
+                    turns_used=turn_index,
+                    tool_calls_used=self.tool_calls_used,
+                    model_requests_used=self.model_requests_used,
+                    prompt_tokens_used=self.prompt_tokens_used,
+                    completion_tokens_used=self.completion_tokens_used,
+                )
+                return True
+            checkpoint_due = (
+                self.max_turns is None
+                and turn_index >= 16
+                and (turn_index - 16) % 12 == 0
+            ) or (
+                self.max_turns is not None
+                and turn_index == max(1, self.max_turns - 8)
+            )
+            if checkpoint_feedback is not None and checkpoint_due:
+                try:
+                    feedback = checkpoint_feedback()
+                except Exception as exc:
+                    feedback = f"Checkpoint verification could not run: {type(exc).__name__}: {exc}"
+                if feedback and feedback != checkpoint_note:
+                    old_note = checkpoint_note
+                    checkpoint_note = feedback
+                    if old_note:
+                        conversation = compact_context()
+                    else:
+                        conversation.append({"role": "user", "content": "Latest checkpoint verification feedback:\n" + feedback})
+            messages = list(conversation)
             try:
-                response = self.client.chat.completions.create(
+                self._record_model_request()
+            except ModelBudgetExceeded:
+                return True
+            context_chars = self._message_context_chars(messages)
+            request_options: dict[str, Any] = {}
+            if getattr(self, "is_deepseek", False):
+                # Keep DeepSeek thinking enabled for implementation by default.
+                # Retained tool-call turns must include their reasoning_content.
+                request_options["extra_body"] = {
+                    "thinking": {"type": getattr(self, "implementation_thinking", "") or "enabled"}
+                }
+            try:
+                response = self._create_completion("implementation",
                     model=model,
                     messages=messages,
                     tools=TOOL_SCHEMAS,
                     tool_choice="auto",
+                    max_tokens=MAX_COMPLETION_TOKENS_PER_REQUEST,
+                    **request_options,
                 )
             except Exception as exc:
                 if visual_inputs:
@@ -415,29 +727,76 @@ class ModelClient:
                         "(or MODEL) supports both image input and tool calling."
                     ) from exc
                 raise
+            self._record_usage(response, stage="implementation", context_chars=context_chars)
+            self._reject_truncated_response(response, "implementation")
             assistant_message = response.choices[0].message
             if not assistant_message.tool_calls:
                 return False
-            messages.append(assistant_message.model_dump(exclude_none=True))
-            for tool_call in assistant_message.tool_calls:
-                if self.tool_calls_used >= self.max_tool_calls:
-                    # Stop without another API call: the assistant message may
-                    # reference tool calls whose results were never appended.
-                    stopped_by_budget = True
-                    break
+            tool_calls = list(assistant_message.tool_calls)
+            remaining = None if self.max_tool_calls is None else self.max_tool_calls - self.tool_calls_used
+            if remaining is not None and len(tool_calls) > remaining:
+                self.last_budget_report = BudgetExhaustion(
+                    budget="tool_call_budget",
+                    limit=self.max_tool_calls,
+                    used=self.tool_calls_used,
+                    requested=len(tool_calls),
+                    tool_names=tuple(call.function.name for call in tool_calls),
+                    turns_used=turn_index + 1,
+                    tool_calls_used=self.tool_calls_used,
+                    model_requests_used=self.model_requests_used,
+                    prompt_tokens_used=self.prompt_tokens_used,
+                    completion_tokens_used=self.completion_tokens_used,
+                )
+                return True
+            assistant_payload = assistant_message.model_dump(exclude_none=True)
+            tool_payloads: list[dict[str, Any]] = []
+            for tool_call in tool_calls:
                 self.tool_calls_used += 1
+                tool_started = time.perf_counter()
                 try:
                     arguments = json.loads(tool_call.function.arguments or "{}")
                     result = project_tools.call(tool_call.function.name, arguments)
                 except Exception as exc:
                     result = f"Tool error: {type(exc).__name__}: {exc}"
-                messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "content": result[:20_000],
-                    }
+                elapsed = time.perf_counter() - tool_started
+                self.tool_seconds = getattr(self, "tool_seconds", 0.0) + elapsed
+                LOGGER.info(
+                    "Project tool: name=%s seconds=%.3f result_chars=%d",
+                    tool_call.function.name, elapsed, len(result),
                 )
-            if stopped_by_budget:
-                break
-        return True
+                tool_payloads.append(
+                    {"role": "tool", "tool_call_id": tool_call.id, "content": result[:MAX_BATCH_OUTPUT_CHARS]}
+                )
+            exchange = [assistant_payload, *tool_payloads]
+            conversation.extend(exchange)
+            epoch_exchanges.append(exchange)
+            if (visual_inputs and turn_index == 0) or self._message_context_chars(conversation) > MAX_CONVERSATION_CHARS:
+                conversation = compact_context()
+            if self.max_tool_calls is not None and self.tool_calls_used >= self.max_tool_calls:
+                self.last_budget_report = BudgetExhaustion(
+                    budget="tool_call_budget",
+                    limit=self.max_tool_calls,
+                    used=self.tool_calls_used,
+                    requested=0,
+                    tool_names=(),
+                    turns_used=turn_index + 1,
+                    tool_calls_used=self.tool_calls_used,
+                    model_requests_used=self.model_requests_used,
+                    prompt_tokens_used=self.prompt_tokens_used,
+                    completion_tokens_used=self.completion_tokens_used,
+                )
+                return True
+            if self.max_turns is not None and turn_index == self.max_turns - 1:
+                self.last_budget_report = BudgetExhaustion(
+                    budget="model_turn_budget",
+                    limit=self.max_turns,
+                    used=self.max_turns,
+                    requested=0,
+                    tool_names=(),
+                    turns_used=self.max_turns,
+                    tool_calls_used=self.tool_calls_used,
+                    model_requests_used=self.model_requests_used,
+                    prompt_tokens_used=self.prompt_tokens_used,
+                    completion_tokens_used=self.completion_tokens_used,
+                )
+                return True

@@ -1,0 +1,534 @@
+{
+  "observed_on": "2026-09-28",
+  "workload": "21 synthetic requests; 20 tool calls with 8000-character responses",
+  "scenarios": {
+    "10:43 append-only": {
+      "source": "append.json",
+      "rounds": 20,
+      "tool_result_chars": 8000,
+      "method": "exact serialized-message prefix versus previous request; offline proxy, not provider cache usage",
+      "samples": [
+        {
+          "request": 1,
+          "prompt_chars": 4310,
+          "shared_prefix_chars": 0,
+          "fresh_chars": 4310,
+          "cumulative_prompt_chars": 4310,
+          "cumulative_fresh_chars": 4310
+        },
+        {
+          "request": 2,
+          "prompt_chars": 13086,
+          "shared_prefix_chars": 4309,
+          "fresh_chars": 8777,
+          "cumulative_prompt_chars": 17396,
+          "cumulative_fresh_chars": 13087
+        },
+        {
+          "request": 3,
+          "prompt_chars": 21862,
+          "shared_prefix_chars": 13085,
+          "fresh_chars": 8777,
+          "cumulative_prompt_chars": 39258,
+          "cumulative_fresh_chars": 21864
+        },
+        {
+          "request": 4,
+          "prompt_chars": 30638,
+          "shared_prefix_chars": 21861,
+          "fresh_chars": 8777,
+          "cumulative_prompt_chars": 69896,
+          "cumulative_fresh_chars": 30641
+        },
+        {
+          "request": 5,
+          "prompt_chars": 39414,
+          "shared_prefix_chars": 30637,
+          "fresh_chars": 8777,
+          "cumulative_prompt_chars": 109310,
+          "cumulative_fresh_chars": 39418
+        },
+        {
+          "request": 6,
+          "prompt_chars": 48190,
+          "shared_prefix_chars": 39413,
+          "fresh_chars": 8777,
+          "cumulative_prompt_chars": 157500,
+          "cumulative_fresh_chars": 48195
+        },
+        {
+          "request": 7,
+          "prompt_chars": 56966,
+          "shared_prefix_chars": 48189,
+          "fresh_chars": 8777,
+          "cumulative_prompt_chars": 214466,
+          "cumulative_fresh_chars": 56972
+        },
+        {
+          "request": 8,
+          "prompt_chars": 65742,
+          "shared_prefix_chars": 56965,
+          "fresh_chars": 8777,
+          "cumulative_prompt_chars": 280208,
+          "cumulative_fresh_chars": 65749
+        },
+        {
+          "request": 9,
+          "prompt_chars": 74518,
+          "shared_prefix_chars": 65741,
+          "fresh_chars": 8777,
+          "cumulative_prompt_chars": 354726,
+          "cumulative_fresh_chars": 74526
+        },
+        {
+          "request": 10,
+          "prompt_chars": 83294,
+          "shared_prefix_chars": 74517,
+          "fresh_chars": 8777,
+          "cumulative_prompt_chars": 438020,
+          "cumulative_fresh_chars": 83303
+        },
+        {
+          "request": 11,
+          "prompt_chars": 92070,
+          "shared_prefix_chars": 83293,
+          "fresh_chars": 8777,
+          "cumulative_prompt_chars": 530090,
+          "cumulative_fresh_chars": 92080
+        },
+        {
+          "request": 12,
+          "prompt_chars": 100850,
+          "shared_prefix_chars": 92069,
+          "fresh_chars": 8781,
+          "cumulative_prompt_chars": 630940,
+          "cumulative_fresh_chars": 100861
+        },
+        {
+          "request": 13,
+          "prompt_chars": 109630,
+          "shared_prefix_chars": 100849,
+          "fresh_chars": 8781,
+          "cumulative_prompt_chars": 740570,
+          "cumulative_fresh_chars": 109642
+        },
+        {
+          "request": 14,
+          "prompt_chars": 118410,
+          "shared_prefix_chars": 109629,
+          "fresh_chars": 8781,
+          "cumulative_prompt_chars": 858980,
+          "cumulative_fresh_chars": 118423
+        },
+        {
+          "request": 15,
+          "prompt_chars": 127190,
+          "shared_prefix_chars": 118409,
+          "fresh_chars": 8781,
+          "cumulative_prompt_chars": 986170,
+          "cumulative_fresh_chars": 127204
+        },
+        {
+          "request": 16,
+          "prompt_chars": 135970,
+          "shared_prefix_chars": 127189,
+          "fresh_chars": 8781,
+          "cumulative_prompt_chars": 1122140,
+          "cumulative_fresh_chars": 135985
+        },
+        {
+          "request": 17,
+          "prompt_chars": 144750,
+          "shared_prefix_chars": 135969,
+          "fresh_chars": 8781,
+          "cumulative_prompt_chars": 1266890,
+          "cumulative_fresh_chars": 144766
+        },
+        {
+          "request": 18,
+          "prompt_chars": 153530,
+          "shared_prefix_chars": 144749,
+          "fresh_chars": 8781,
+          "cumulative_prompt_chars": 1420420,
+          "cumulative_fresh_chars": 153547
+        },
+        {
+          "request": 19,
+          "prompt_chars": 162310,
+          "shared_prefix_chars": 153529,
+          "fresh_chars": 8781,
+          "cumulative_prompt_chars": 1582730,
+          "cumulative_fresh_chars": 162328
+        },
+        {
+          "request": 20,
+          "prompt_chars": 171090,
+          "shared_prefix_chars": 162309,
+          "fresh_chars": 8781,
+          "cumulative_prompt_chars": 1753820,
+          "cumulative_fresh_chars": 171109
+        },
+        {
+          "request": 21,
+          "prompt_chars": 179870,
+          "shared_prefix_chars": 171089,
+          "fresh_chars": 8781,
+          "cumulative_prompt_chars": 1933690,
+          "cumulative_fresh_chars": 179890
+        }
+      ]
+    },
+    "12:56 rolling": {
+      "source": "rolling.json",
+      "rounds": 20,
+      "tool_result_chars": 8000,
+      "method": "exact serialized-message prefix versus previous request; offline proxy, not provider cache usage",
+      "samples": [
+        {
+          "request": 1,
+          "prompt_chars": 4310,
+          "shared_prefix_chars": 0,
+          "fresh_chars": 4310,
+          "cumulative_prompt_chars": 4310,
+          "cumulative_fresh_chars": 4310
+        },
+        {
+          "request": 2,
+          "prompt_chars": 13086,
+          "shared_prefix_chars": 4309,
+          "fresh_chars": 8777,
+          "cumulative_prompt_chars": 17396,
+          "cumulative_fresh_chars": 13087
+        },
+        {
+          "request": 3,
+          "prompt_chars": 21862,
+          "shared_prefix_chars": 13085,
+          "fresh_chars": 8777,
+          "cumulative_prompt_chars": 39258,
+          "cumulative_fresh_chars": 21864
+        },
+        {
+          "request": 4,
+          "prompt_chars": 22245,
+          "shared_prefix_chars": 4345,
+          "fresh_chars": 17900,
+          "cumulative_prompt_chars": 61503,
+          "cumulative_fresh_chars": 39764
+        },
+        {
+          "request": 5,
+          "prompt_chars": 22502,
+          "shared_prefix_chars": 4690,
+          "fresh_chars": 17812,
+          "cumulative_prompt_chars": 84005,
+          "cumulative_fresh_chars": 57576
+        },
+        {
+          "request": 6,
+          "prompt_chars": 22759,
+          "shared_prefix_chars": 4947,
+          "fresh_chars": 17812,
+          "cumulative_prompt_chars": 106764,
+          "cumulative_fresh_chars": 75388
+        },
+        {
+          "request": 7,
+          "prompt_chars": 23016,
+          "shared_prefix_chars": 5204,
+          "fresh_chars": 17812,
+          "cumulative_prompt_chars": 129780,
+          "cumulative_fresh_chars": 93200
+        },
+        {
+          "request": 8,
+          "prompt_chars": 23273,
+          "shared_prefix_chars": 5461,
+          "fresh_chars": 17812,
+          "cumulative_prompt_chars": 153053,
+          "cumulative_fresh_chars": 111012
+        },
+        {
+          "request": 9,
+          "prompt_chars": 23530,
+          "shared_prefix_chars": 5718,
+          "fresh_chars": 17812,
+          "cumulative_prompt_chars": 176583,
+          "cumulative_fresh_chars": 128824
+        },
+        {
+          "request": 10,
+          "prompt_chars": 23530,
+          "shared_prefix_chars": 6579,
+          "fresh_chars": 16951,
+          "cumulative_prompt_chars": 200113,
+          "cumulative_fresh_chars": 145775
+        },
+        {
+          "request": 11,
+          "prompt_chars": 23530,
+          "shared_prefix_chars": 6579,
+          "fresh_chars": 16951,
+          "cumulative_prompt_chars": 223643,
+          "cumulative_fresh_chars": 162726
+        },
+        {
+          "request": 12,
+          "prompt_chars": 23534,
+          "shared_prefix_chars": 6579,
+          "fresh_chars": 16955,
+          "cumulative_prompt_chars": 247177,
+          "cumulative_fresh_chars": 179681
+        },
+        {
+          "request": 13,
+          "prompt_chars": 23538,
+          "shared_prefix_chars": 6579,
+          "fresh_chars": 16959,
+          "cumulative_prompt_chars": 270715,
+          "cumulative_fresh_chars": 196640
+        },
+        {
+          "request": 14,
+          "prompt_chars": 23538,
+          "shared_prefix_chars": 6580,
+          "fresh_chars": 16958,
+          "cumulative_prompt_chars": 294253,
+          "cumulative_fresh_chars": 213598
+        },
+        {
+          "request": 15,
+          "prompt_chars": 23538,
+          "shared_prefix_chars": 6580,
+          "fresh_chars": 16958,
+          "cumulative_prompt_chars": 317791,
+          "cumulative_fresh_chars": 230556
+        },
+        {
+          "request": 16,
+          "prompt_chars": 23538,
+          "shared_prefix_chars": 6580,
+          "fresh_chars": 16958,
+          "cumulative_prompt_chars": 341329,
+          "cumulative_fresh_chars": 247514
+        },
+        {
+          "request": 17,
+          "prompt_chars": 23538,
+          "shared_prefix_chars": 6580,
+          "fresh_chars": 16958,
+          "cumulative_prompt_chars": 364867,
+          "cumulative_fresh_chars": 264472
+        },
+        {
+          "request": 18,
+          "prompt_chars": 23538,
+          "shared_prefix_chars": 6580,
+          "fresh_chars": 16958,
+          "cumulative_prompt_chars": 388405,
+          "cumulative_fresh_chars": 281430
+        },
+        {
+          "request": 19,
+          "prompt_chars": 23538,
+          "shared_prefix_chars": 6580,
+          "fresh_chars": 16958,
+          "cumulative_prompt_chars": 411943,
+          "cumulative_fresh_chars": 298388
+        },
+        {
+          "request": 20,
+          "prompt_chars": 23538,
+          "shared_prefix_chars": 6580,
+          "fresh_chars": 16958,
+          "cumulative_prompt_chars": 435481,
+          "cumulative_fresh_chars": 315346
+        },
+        {
+          "request": 21,
+          "prompt_chars": 23538,
+          "shared_prefix_chars": 6580,
+          "fresh_chars": 16958,
+          "cumulative_prompt_chars": 459019,
+          "cumulative_fresh_chars": 332304
+        }
+      ]
+    },
+    "current bounded epochs": {
+      "source": "current.json",
+      "rounds": 20,
+      "tool_result_chars": 8000,
+      "method": "exact serialized-message prefix versus previous request; offline proxy, not provider cache usage",
+      "samples": [
+        {
+          "request": 1,
+          "prompt_chars": 4592,
+          "shared_prefix_chars": 0,
+          "fresh_chars": 4592,
+          "cumulative_prompt_chars": 4592,
+          "cumulative_fresh_chars": 4592
+        },
+        {
+          "request": 2,
+          "prompt_chars": 13368,
+          "shared_prefix_chars": 4591,
+          "fresh_chars": 8777,
+          "cumulative_prompt_chars": 17960,
+          "cumulative_fresh_chars": 13369
+        },
+        {
+          "request": 3,
+          "prompt_chars": 22144,
+          "shared_prefix_chars": 13367,
+          "fresh_chars": 8777,
+          "cumulative_prompt_chars": 40104,
+          "cumulative_fresh_chars": 22146
+        },
+        {
+          "request": 4,
+          "prompt_chars": 30920,
+          "shared_prefix_chars": 22143,
+          "fresh_chars": 8777,
+          "cumulative_prompt_chars": 71024,
+          "cumulative_fresh_chars": 30923
+        },
+        {
+          "request": 5,
+          "prompt_chars": 39696,
+          "shared_prefix_chars": 30919,
+          "fresh_chars": 8777,
+          "cumulative_prompt_chars": 110720,
+          "cumulative_fresh_chars": 39700
+        },
+        {
+          "request": 6,
+          "prompt_chars": 48472,
+          "shared_prefix_chars": 39695,
+          "fresh_chars": 8777,
+          "cumulative_prompt_chars": 159192,
+          "cumulative_fresh_chars": 48477
+        },
+        {
+          "request": 7,
+          "prompt_chars": 57248,
+          "shared_prefix_chars": 48471,
+          "fresh_chars": 8777,
+          "cumulative_prompt_chars": 216440,
+          "cumulative_fresh_chars": 57254
+        },
+        {
+          "request": 8,
+          "prompt_chars": 66024,
+          "shared_prefix_chars": 57247,
+          "fresh_chars": 8777,
+          "cumulative_prompt_chars": 282464,
+          "cumulative_fresh_chars": 66031
+        },
+        {
+          "request": 9,
+          "prompt_chars": 74800,
+          "shared_prefix_chars": 66023,
+          "fresh_chars": 8777,
+          "cumulative_prompt_chars": 357264,
+          "cumulative_fresh_chars": 74808
+        },
+        {
+          "request": 10,
+          "prompt_chars": 83576,
+          "shared_prefix_chars": 74799,
+          "fresh_chars": 8777,
+          "cumulative_prompt_chars": 440840,
+          "cumulative_fresh_chars": 83585
+        },
+        {
+          "request": 11,
+          "prompt_chars": 92352,
+          "shared_prefix_chars": 83575,
+          "fresh_chars": 8777,
+          "cumulative_prompt_chars": 533192,
+          "cumulative_fresh_chars": 92362
+        },
+        {
+          "request": 12,
+          "prompt_chars": 6219,
+          "shared_prefix_chars": 4603,
+          "fresh_chars": 1616,
+          "cumulative_prompt_chars": 539411,
+          "cumulative_fresh_chars": 93978
+        },
+        {
+          "request": 13,
+          "prompt_chars": 14999,
+          "shared_prefix_chars": 6218,
+          "fresh_chars": 8781,
+          "cumulative_prompt_chars": 554410,
+          "cumulative_fresh_chars": 102759
+        },
+        {
+          "request": 14,
+          "prompt_chars": 23779,
+          "shared_prefix_chars": 14998,
+          "fresh_chars": 8781,
+          "cumulative_prompt_chars": 578189,
+          "cumulative_fresh_chars": 111540
+        },
+        {
+          "request": 15,
+          "prompt_chars": 32559,
+          "shared_prefix_chars": 23778,
+          "fresh_chars": 8781,
+          "cumulative_prompt_chars": 610748,
+          "cumulative_fresh_chars": 120321
+        },
+        {
+          "request": 16,
+          "prompt_chars": 41339,
+          "shared_prefix_chars": 32558,
+          "fresh_chars": 8781,
+          "cumulative_prompt_chars": 652087,
+          "cumulative_fresh_chars": 129102
+        },
+        {
+          "request": 17,
+          "prompt_chars": 50119,
+          "shared_prefix_chars": 41338,
+          "fresh_chars": 8781,
+          "cumulative_prompt_chars": 702206,
+          "cumulative_fresh_chars": 137883
+        },
+        {
+          "request": 18,
+          "prompt_chars": 58899,
+          "shared_prefix_chars": 50118,
+          "fresh_chars": 8781,
+          "cumulative_prompt_chars": 761105,
+          "cumulative_fresh_chars": 146664
+        },
+        {
+          "request": 19,
+          "prompt_chars": 67679,
+          "shared_prefix_chars": 58898,
+          "fresh_chars": 8781,
+          "cumulative_prompt_chars": 828784,
+          "cumulative_fresh_chars": 155445
+        },
+        {
+          "request": 20,
+          "prompt_chars": 76459,
+          "shared_prefix_chars": 67678,
+          "fresh_chars": 8781,
+          "cumulative_prompt_chars": 905243,
+          "cumulative_fresh_chars": 164226
+        },
+        {
+          "request": 21,
+          "prompt_chars": 85239,
+          "shared_prefix_chars": 76458,
+          "fresh_chars": 8781,
+          "cumulative_prompt_chars": 990482,
+          "cumulative_fresh_chars": 173007
+        }
+      ]
+    }
+  }
+}

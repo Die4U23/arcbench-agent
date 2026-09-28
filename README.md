@@ -29,7 +29,15 @@ Python 版本以 `.python-version` 为准（当前为 3.12.6，需 64 位）；`
 
 对含视觉参考的网页任务，Agent 还要求生成 `arcbench-visual-acceptance.json`，记录参考图对应的页面、视口、裁剪区域和浏览器交互流程。验证器启动生成的网站，用 Playwright/Chromium 截图并运行交互步骤，再让视觉模型对照参考图评审；有重大视觉差异或交互失败时，Agent 会把失败信息及对应的实际截图交给实现模型，进行一次有界修复。首次验收若没有 Chromium，Agent 会尝试下载；Runner 需允许访问 Playwright 浏览器下载源。截图与机器可读报告写入生成项目的 `artifacts/visual-acceptance/`。浏览器不可用或验收清单缺失时会明确报告未通过，不会只凭 build/test 标记完成。
 
-模型实现阶段默认最多进行 36 轮模型响应和 96 次项目工具调用。可用 `--max-model-turns`、`--max-tool-calls` 覆盖，或分别设置 `ARCBENCH_MAX_MODEL_TURNS`、`ARCBENCH_MAX_TOOL_CALLS` 环境变量。`examples/auth-interface-task/requirements.yaml` 是登录注册界面任务样例；`examples/auth-real-auth-task/requirements.yaml` 是本地真实认证任务样例。
+为控制费用，单次 Agent 运行默认最多发起 **24 次模型请求**、累计使用 **300,000 token**（输入与输出之和）；每次请求的输出上限为 12,000 token。请求次数覆盖规划、实现和视觉评审，token 用量以模型服务返回的统计为准，在下一次请求前检查，因此最后一次请求可能使实际总量超过阈值。可分别设置 `ARCBENCH_MAX_MODEL_REQUESTS` 和 `ARCBENCH_MAX_TOTAL_TOKENS` 为正整数调整；达到上限会停止继续生成、保留已有文件并报告未完成，不会把局部构建通过误报为任务完成。思考模式保持开启。实现阶段的 `--max-model-turns`、`--max-tool-calls`（或同名 `ARCBENCH_` 环境变量）仍可额外限制每次实现轮数和整次运行的工具调用数。`examples/auth-interface-task/requirements.yaml` 是登录注册界面任务样例；`examples/auth-real-auth-task/requirements.yaml` 是本地真实认证任务样例。
+
+实现阶段从第 16 轮开始定期运行现有构建和测试脚本，并把最新失败结果送回模型修复。最终会重新验证整个项目；若失败内容在修复后发生变化，Agent 会继续修复，直到验证通过或同一失败重复出现。中途检查通过不代表任务验收通过。
+
+使用 DeepSeek API 时，规划、实现和视觉评审默认保留思考模式。实现阶段会完整回传保留的工具调用轮次中的 `reasoning_content`，以符合 DeepSeek 的接口要求；旧轮次仍会做有界压缩。若要单独比较非思考模式，可设置 `ARCBENCH_IMPLEMENTATION_THINKING=disabled`。
+
+实现请求把系统指令、需求子树和实施计划保持为相同的消息前缀；之后连续追加完整工具调用轮次，让下一次请求复用上一轮的前缀。只有上下文超过 100,000 字符、检查反馈改变，或首次图片已经送达时，才把旧轮次压缩为简短进度并开始新的连续段。图片不会在每轮重复发送。运行日志逐次记录模型返回的 `cache_hit_tokens` 和 `cache_miss_tokens`，结束时汇总实际可观察的缓存命中率；若模型服务不提供这些字段，则显示 `unavailable`。缓存由服务商决定，不能保证命中率，也不能从输入 token 总数推断。
+
+模型返回 `finish_reason=length` 时会明确报告截断；工具支持唯一匹配的 `replace_text` 局部替换。修复时优先处理能关联到失败检查的需求模块，最后仍运行全量验收；基础构建或结构检查失败时不会启动视觉模型评审。日志会记录模型及工具调用耗时。优化范围、完整测试和离线曲线见 [性能报告](docs/PERFORMANCE_REPORT.md)；该离线对照不代表平台实测费用或完成率。
 
 ## ARC-Bench 运行
 

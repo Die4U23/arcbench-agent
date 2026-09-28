@@ -18,7 +18,11 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "list_files",
-            "description": "List project files under a relative directory, excluding generated and hidden runtime data.",
+            "description": (
+                "List project files under a relative directory, excluding generated and hidden "
+                "runtime data. When you are unsure of the project structure, call this tool on "
+                "'.' FIRST before any read or write."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {"path": {"type": "string", "description": "Relative directory; use '.' for project root."}},
@@ -31,7 +35,10 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "read_file",
-            "description": "Read a UTF-8 text file from the target project.",
+            "description": (
+                "Read a UTF-8 text file from the target project. Call this before editing an "
+                "existing file so changes preserve its current structure and conventions."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {"path": {"type": "string"}},
@@ -44,7 +51,11 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "search_text",
-            "description": "Search project text files for a literal string and return matching paths and lines.",
+            "description": (
+                "Search project text files for a literal string and return matching paths and "
+                "lines. Use this to locate existing code by an identifier, label, or route "
+                "before deciding which file to read or edit."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {"query": {"type": "string"}},
@@ -57,7 +68,12 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "write_file",
-            "description": "Create or replace a UTF-8 text file in the target project. Do not write to .git, .arc, or dependency directories.",
+            "description": (
+                "Create or replace a UTF-8 text file in the target project. Do not write to "
+                ".git, .arc, or dependency directories. When changing an existing file, read "
+                "it first and write back its full updated content; never clobber a file you "
+                "have not read."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
@@ -70,7 +86,12 @@ TOOL_SCHEMAS = [
         "type": "function",
         "function": {
             "name": "run_project_script",
-            "description": "Run an existing build, test, lint, typecheck, or check npm script in a project subdirectory.",
+            "description": (
+                "Run an existing build, test, lint, typecheck, or check npm script in a "
+                "project subdirectory. Use this to actually verify your work: run the build "
+                "early, and run the test suite after implementing or repairing anything. The "
+                "returned exit_code is the only proof that a build or test passed."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {

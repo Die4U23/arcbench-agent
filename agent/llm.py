@@ -220,6 +220,7 @@ class ModelClient:
                 },
                 {"role": "user", "content": user_content},
             ],
+            temperature=0.2,
         )
         raw = response.choices[0].message.content or ""
         match = re.search(r"\{[\s\S]*\}", raw)
@@ -243,41 +244,43 @@ class ModelClient:
         *,
         reference_dir: Path | None = None,
     ) -> str:
-        user_content: str | list[dict[str, Any]] = (
+        user_text = (
+            "You are planning one software requirement subtree. First turn each leaf "
+            "requirement into observable acceptance criteria, then give a concise, "
+            "ordered implementation plan that covers every criterion. Include relevant "
+            "valid-input, invalid-input, boundary, and state-transition cases. Do not "
+            "invent requirements, and do not claim code has been changed or tested. "
+            "Inspect every attached visual reference and describe the relevant layout, "
+            "controls, and visual states in the plan. Treat explicit textual behavior "
+            "as authoritative when an image is ambiguous. For each image, distinguish a "
+            "full-page reference from a component crop; do not infer unseen page content "
+            "from a crop. Include a concrete visual checklist covering hierarchy, major "
+            "regions, spacing/alignment, colors, typography, imagery, and controls. Call "
+            "out visible controls that need real behavior. Keep this checklist separate "
+            "from functional acceptance criteria.\n\n"
             f"Task type: {task_type}\nRequirement subtree:\n"
             f"{json.dumps(subtree, ensure_ascii=False, indent=2)}"
         )
         visual_inputs = self._visual_inputs(subtree, reference_dir)
         model = self.visual_model if visual_inputs else self.model
+        user_content: str | list[dict[str, Any]]
         if visual_inputs:
-            user_content = [{"type": "text", "text": user_content}, *visual_inputs]
+            user_content = [{"type": "text", "text": user_text}, *visual_inputs]
+        else:
+            user_content = user_text
 
         messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You are planning one software requirement subtree. First turn each leaf "
-                    "requirement into observable acceptance criteria, then give a concise, "
-                    "ordered implementation plan that covers every criterion. Include relevant "
-                    "valid-input, invalid-input, boundary, and state-transition cases. Do not "
-                    "invent requirements, and do not claim code has been changed or tested. "
-                    "Inspect every attached visual reference and describe the relevant layout, "
-                    "controls, and visual states in the plan. Treat explicit textual behavior "
-                    "as authoritative when an image is ambiguous. For each image, distinguish a "
-                    "full-page reference from a component crop; do not infer unseen page content "
-                    "from a crop. Include a concrete visual checklist covering hierarchy, major "
-                    "regions, spacing/alignment, colors, typography, imagery, and controls. Call "
-                    "out visible controls that need real behavior. Keep this checklist separate "
-                    "from functional acceptance criteria."
-                ),
-            },
             {
                 "role": "user",
                 "content": user_content,
             },
         ]
         try:
-            response = self.client.chat.completions.create(model=model, messages=messages)
+            response = self.client.chat.completions.create(
+                model=model,
+                messages=messages,
+                temperature=0.3,
+            )
         except Exception as exc:
             if visual_inputs:
                 raise RuntimeError(
@@ -309,13 +312,32 @@ class ModelClient:
         """
         visual_inputs = self._visual_inputs(subtree, reference_dir)
         model = self.visual_model if visual_inputs else self.model
-        system_message = (
+        instructions = (
             "You are an implementation agent working in the current project directory. "
             "Implement only the supplied requirement subtree and preserve existing work. "
+            "Before calling any tool, think step by step:\n"
+            "- we need to understand the current project structure\n"
+            "- we need to check what files already exist and how the app is wired\n"
+            "- we need to implement each requirement's literal observable behavior\n"
+            "- we need to verify with the build and the full test suite.\n"
+            "The tests you write are for your own verification; they are NOT the final "
+            "grader. The runner additionally evaluates the project with hidden external "
+            "tests written directly from the requirements. Therefore implement exactly "
+            "the observable behavior stated in the requirements: reproduce the exact "
+            "visible labels and messages, routes, element roles, API paths, HTTP methods, "
+            "request and response shapes, and status codes the task specifies, and do not "
+            "rename them, invent alternatives, or add contradicting behavior. Where the "
+            "requirement fixes a value or string, use it verbatim.\n"
+            "Work test-first for every leaf requirement: first write automated tests that "
+            "encode that requirement's literal acceptance criteria (including the exact "
+            "strings, routes, and contracts above), then implement until they pass. "
             "Treat every requirement as an acceptance condition, not merely a visual suggestion. "
             "Before editing, inspect the project and map each leaf requirement to observable "
             "behavior. Implement and test valid, invalid, boundary, and state-transition cases "
-            "that the requirement implies. Add meaningful automated tests whose assertions check "
+            "that the requirement implies, including empty or whitespace-only input, missing "
+            "fields, malformed formats, minimum and maximum lengths, duplicate or repeated "
+            "submission, error states, and recovery back to a valid state. Add meaningful "
+            "automated tests whose assertions check "
             "behavior, not just element presence or a successful render; inspect the assertions and "
             "run the relevant tests after changes. When writing DOM tests, follow the actual API "
             "contracts of the test environment: EventTarget.dispatchEvent returns a boolean, not "
@@ -352,8 +374,17 @@ class ModelClient:
             "Use tools to inspect before editing. Paths are relative to the project root. "
             "Do not access .arc, .git, dependencies, or files outside the project. "
             "Do not claim a build or test passed unless run_project_script returned exit_code 0. "
+            "Never make a failing test pass by deleting it, skipping it, or weakening its "
+            "assertions; fix the implementation instead. "
             "The runner prepared the target project; do not copy or replace a starter template. "
             "When implementation is complete, provide a short summary."
+        )
+        instructions += (
+            f"You have at most {self.max_turns} model responses and {self.max_tool_calls} "
+            "tool calls for this implementation pass. Plan accordingly: put the required "
+            "project structure and core requirements in place first, verify the build early, "
+            "keep tests focused on the acceptance criteria instead of exhaustive coverage, "
+            "and stop calling tools as soon as those criteria are met."
         )
         text_message = (
             f"Task type: {task_type}\n"
@@ -382,31 +413,64 @@ class ModelClient:
                 "when a captured page needs prior sign-in state. The manifest is runtime input for "
                 "the Agent's browser verification, not a claim that verification has passed."
             )
+            text_message = instructions + "\n\n" + text_message
             user_content: str | list[dict[str, Any]] = [
                 {"type": "text", "text": text_message},
                 *visual_inputs,
             ]
         else:
-            user_content = text_message
+            user_content = instructions + "\n\n" + text_message
         if repair_feedback:
-            repair_text = f"Verification failed. Use this actual feedback to repair the project:\n{repair_feedback}"
+            repair_text = (
+                "Verification failed. Use this actual feedback to repair the project:\n"
+                f"{repair_feedback}\n"
+                "Fix root causes in the implementation; do not delete, skip, or weaken "
+                "tests to make them pass. After the fix, run the COMPLETE existing test "
+                "suite and the build (not only the failing file) and make sure every "
+                "previously passing test still passes."
+            )
             if isinstance(user_content, list):
                 user_content[0]["text"] += f"\n\n{repair_text}"
                 user_content.extend(self._repair_visual_inputs(subtree, project_tools))
             else:
                 user_content += f"\n\n{repair_text}"
         messages: list[dict[str, Any]] = [
-            {"role": "system", "content": system_message},
             {"role": "user", "content": user_content},
         ]
+        # Each implementation pass gets its own tool-call budget, so a repair
+        # pass is never starved by calls spent in earlier passes.
+        self.tool_calls_used = 0
         stopped_by_budget = False
-        for _ in range(self.max_turns):
+        budget_warned = False
+        turn_warning_threshold = max(3, self.max_turns // 5)
+        call_warning_threshold = max(5, self.max_tool_calls // 5)
+        for turn_index in range(self.max_turns):
+            remaining_turns = self.max_turns - turn_index
+            remaining_calls = self.max_tool_calls - self.tool_calls_used
+            if not budget_warned and (
+                remaining_calls <= call_warning_threshold
+                or remaining_turns <= turn_warning_threshold
+            ):
+                budget_warned = True
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            f"Budget notice: about {remaining_calls} tool calls and "
+                            f"{remaining_turns} model responses remain for this pass. "
+                            "Stop adding new features or tests, make sure the required "
+                            "project structure is in place and the build passes, then "
+                            "finish with a short summary."
+                        ),
+                    }
+                )
             try:
                 response = self.client.chat.completions.create(
                     model=model,
                     messages=messages,
                     tools=TOOL_SCHEMAS,
                     tool_choice="auto",
+                    temperature=0.1,
                 )
             except Exception as exc:
                 if visual_inputs:

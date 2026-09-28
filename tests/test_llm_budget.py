@@ -50,9 +50,11 @@ class _FakeCompletions:
     def __init__(self, scripted_messages: list[_FakeMessage]) -> None:
         self._messages = list(scripted_messages)
         self.calls = 0
+        self.seen: list[list[dict]] = []
 
     def create(self, **kwargs):
         self.calls += 1
+        self.seen.append(list(kwargs.get("messages", [])))
         message = self._messages.pop(0)
         choice = type("Choice", (), {"message": message})()
         return type("Response", (), {"choices": [choice]})()
@@ -133,6 +135,63 @@ class ImplementBudgetTests(unittest.TestCase):
         self.assertTrue((self.project_dir / "a.js").is_file())
         self.assertTrue((self.project_dir / "b.js").is_file())
         self.assertFalse((self.project_dir / "c.js").exists())
+
+    def test_budget_is_reset_per_implementation_pass(self) -> None:
+        """Each implement() call must reset its tool-call budget so repair is not
+        starved by calls spent in an earlier pass."""
+        scripted = [
+            _FakeMessage([_write_call("a.js")]),
+            _FakeMessage(None, "done"),
+            _FakeMessage([_write_call("b.js")]),
+            _FakeMessage(None, "done"),
+        ]
+        model = _make_client(max_turns=3, max_tool_calls=2, scripted=scripted)
+        first = model.implement(
+            task_type="web",
+            subtree=self.subtree,
+            plan="pass 1",
+            project_tools=self.tools,
+        )
+        self.assertFalse(first)
+        self.assertEqual(model.tool_calls_used, 1)  # used 1 of 2
+        # Second pass must start with a fresh budget, or this would fail.
+        second = model.implement(
+            task_type="web",
+            subtree=self.subtree,
+            plan="pass 2",
+            project_tools=self.tools,
+        )
+        self.assertFalse(second)
+        self.assertEqual(model.tool_calls_used, 1)
+
+    def test_budget_warning_is_injected(self) -> None:
+        """When remaining calls or turns hit the threshold, a user message
+        reminding the model to wrap up is appended before the next API call."""
+        scripted = [
+            _FakeMessage([_write_call("a.js")]),
+            _FakeMessage([_write_call("b.js")]),
+            _FakeMessage(None, "done"),
+        ]
+        # 5 turns, threshold = max(3, 1) = 3 → warning at turn 2 (remaining=3)
+        # 10 calls, threshold = max(5, 2) = 5 → warning when remaining <= 5
+        model = _make_client(max_turns=5, max_tool_calls=10, scripted=scripted)
+        self._implement(model)
+        # The second API call is turn_index=1, remaining_turns=4 (>3)
+        # but first call used 1 tool (remaining=9 > 5), so no warning yet.
+        # Third API call is turn_index=2, remaining_turns=3 (<=3), warning fires.
+        self.assertEqual(model.client.completions.calls, 3)
+        # collect messages sent at each call
+        message_history = model.client.completions.seen
+        # call 1 (turn 0): system + user, no warning
+        self.assertNotIn("Budget notice", _serialize_messages(message_history[0]))
+        # call 2 (turn 1): system + user + assistant + tool, no warning
+        self.assertNotIn("Budget notice", _serialize_messages(message_history[1]))
+        # call 3 (turn 2): must contain budget notice
+        self.assertIn("Budget notice", _serialize_messages(message_history[2]))
+
+
+def _serialize_messages(msgs: list[dict]) -> str:
+    return "\n".join(str(m.get("content", "")) for m in msgs)
 
 
 if __name__ == "__main__":

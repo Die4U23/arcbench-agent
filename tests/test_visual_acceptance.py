@@ -401,7 +401,7 @@ class VisualImplementationContextTests(unittest.TestCase):
                     reference_dir=Path("task"),
                 )
 
-        content = recorded["messages"][1]["content"]
+        content = recorded["messages"][0]["content"]
         self.assertEqual(recorded["model"], "vision-model")
         self.assertEqual(sum(part["type"] == "image_url" for part in content), 2)
         self.assertIn("menu did not open", content[0]["text"])
@@ -437,10 +437,10 @@ class VisualImplementationContextTests(unittest.TestCase):
             )
 
         self.assertEqual(recorded["model"], "vision-model")
-        user_content = recorded["messages"][1]["content"]
+        user_content = recorded["messages"][0]["content"]
         self.assertIsInstance(user_content, list)
         self.assertTrue(any(part.get("type") == "image_url" for part in user_content))
-        self.assertIn("Every element styled or labeled", recorded["messages"][0]["content"])
+        self.assertIn("Every element styled or labeled", user_content[0]["text"])
 
 
 if __name__ == "__main__":

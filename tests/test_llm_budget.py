@@ -255,6 +255,54 @@ class ImplementBudgetTests(unittest.TestCase):
         self.assertEqual(model.client.completions.calls, 4)
         self.assertIsNone(model.last_budget_report)
 
+    def test_idle_tool_turns_handoff_after_writes_and_passing_checkpoint(self) -> None:
+        model = _make_client(
+            max_turns=None,
+            max_tool_calls=None,
+            scripted=[_FakeMessage([_write_call("a.js")])]
+            + [_FakeMessage([_read_call("a.js")]) for _ in range(12)],
+        )
+        checkpoint = MagicMock(return_value="Current build and test scripts pass. Finish uncovered requirements.")
+
+        self.assertFalse(model.implement(
+            task_type="web", subtree=self.subtree, plan="test plan",
+            project_tools=self.tools, checkpoint_feedback=checkpoint,
+        ))
+        self.assertEqual(model.model_requests_used, 13)
+        self.assertTrue(model.last_implementation_handoff)
+        self.assertIsNone(model.last_budget_report)
+        checkpoint.assert_called_once_with()
+
+    def test_idle_tool_turns_without_project_writes_fail(self) -> None:
+        model = _make_client(
+            max_turns=None,
+            max_tool_calls=None,
+            scripted=[_FakeMessage([_read_call("a.js")]) for _ in range(12)],
+        )
+        self.tools.call = lambda name, args: "ok"
+
+        self.assertTrue(self._implement(model))
+        self.assertEqual(model.model_requests_used, 12)
+        self.assertEqual(model.last_budget_report.budget, "no_progress_tool_turn_limit")
+        self.assertFalse(model.last_implementation_handoff)
+        self.assertIn("No project file has changed", json.dumps(model.client.completions.requests[6]["messages"]))
+
+    def test_idle_tool_turns_do_not_handoff_if_checkpoint_raises(self) -> None:
+        model = _make_client(
+            max_turns=None,
+            max_tool_calls=None,
+            scripted=[_FakeMessage([_write_call("a.js")])]
+            + [_FakeMessage([_read_call("a.js")]) for _ in range(12)],
+        )
+        checkpoint = MagicMock(side_effect=RuntimeError("build unavailable"))
+
+        self.assertTrue(model.implement(
+            task_type="web", subtree=self.subtree, plan="test plan",
+            project_tools=self.tools, checkpoint_feedback=checkpoint,
+        ))
+        self.assertEqual(model.last_budget_report.budget, "no_progress_tool_turn_limit")
+        self.assertIn("build unavailable", model.last_budget_report.summary())
+
     def test_budget_notice_uses_remaining_global_requests(self) -> None:
         model = _make_client(
             max_turns=None,
@@ -450,7 +498,7 @@ class ImplementBudgetTests(unittest.TestCase):
             max_turns=None,
             max_tool_calls=None,
             scripted=[_FakeMessage([call]) for call in calls] + [_FakeMessage(None, "done")],
-            env_overrides={"ARCBENCH_MAX_MODEL_REQUESTS": "50"},
+            env_overrides={"ARCBENCH_MAX_MODEL_REQUESTS": "50", "ARCBENCH_MAX_IDLE_TOOL_TURNS": "50"},
         )
         self.tools.call = lambda name, args: "ok"
         checkpoint = MagicMock(side_effect=["first failure", "second failure"])

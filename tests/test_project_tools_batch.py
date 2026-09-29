@@ -88,6 +88,25 @@ class ProjectToolsBatchTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "between 1 and"):
             self.tools.run_project_scripts(scripts)
 
+    def test_root_scripts_fail_fast_when_required_web_files_are_missing(self) -> None:
+        (self.project_dir / "frontend").mkdir()
+        (self.project_dir / "package.json").write_text(
+            json.dumps({"scripts": {"build": "npm --prefix frontend run build", "test": "node --test backend/tests"}}),
+            encoding="utf-8",
+        )
+        with patch("agent.tools.subprocess.run") as run:
+            with self.assertRaisesRegex(FileNotFoundError, "frontend/package.json"):
+                self.tools.run_project_script(".", "build")
+            (self.project_dir / "frontend" / "package.json").write_text(
+                json.dumps({"scripts": {"build": "node build.js"}}), encoding="utf-8",
+            )
+            with self.assertRaisesRegex(FileNotFoundError, "backend/tests"):
+                self.tools.run_project_script(".", "test")
+            (self.project_dir / "backend" / "tests").mkdir(parents=True)
+            with self.assertRaisesRegex(FileNotFoundError, "executable JavaScript tests"):
+                self.tools.run_project_script(".", "test")
+            run.assert_not_called()
+
     def test_read_files_rejects_unsafe_paths_before_returning_content(self) -> None:
         (self.project_dir / "safe.js").write_text("safe", encoding="utf-8")
 

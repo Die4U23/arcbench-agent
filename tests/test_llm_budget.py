@@ -308,7 +308,7 @@ class ImplementBudgetTests(unittest.TestCase):
             task_type="web", subtree=self.subtree, plan="test plan",
             project_tools=self.tools, checkpoint_feedback=checkpoint,
         ))
-        self.assertEqual(model.model_requests_used, 13)
+        self.assertEqual(model.model_requests_used, 5)
         self.assertTrue(model.last_implementation_handoff)
         self.assertIsNone(model.last_budget_report)
         checkpoint.assert_called_once_with()
@@ -326,6 +326,39 @@ class ImplementBudgetTests(unittest.TestCase):
         self.assertEqual(model.last_budget_report.budget, "no_progress_tool_turn_limit")
         self.assertFalse(model.last_implementation_handoff)
         self.assertIn("No project file has changed", json.dumps(model.client.completions.requests[6]["messages"]))
+
+    def test_identical_writes_do_not_keep_passing_module_alive(self) -> None:
+        model = _make_client(
+            max_turns=None,
+            max_tool_calls=None,
+            scripted=[_FakeMessage([_write_call("a.js")]) for _ in range(8)],
+        )
+        checkpoint = MagicMock(return_value="Current build and test scripts pass. Finish uncovered requirements.")
+
+        self.assertFalse(model.implement(
+            task_type="web", subtree=self.subtree, plan="test plan",
+            project_tools=self.tools, checkpoint_feedback=checkpoint,
+        ))
+        self.assertEqual(model.model_requests_used, 5)
+        self.assertEqual(self.tools.changed_paths, ["a.js"])
+        self.assertTrue(model.last_implementation_handoff)
+
+    def test_failed_checkpoint_does_not_trigger_early_handoff(self) -> None:
+        model = _make_client(
+            max_turns=None,
+            max_tool_calls=None,
+            scripted=[_FakeMessage([_write_call("a.js")])]
+            + [_FakeMessage([_read_call("a.js")]) for _ in range(12)],
+        )
+        checkpoint = MagicMock(return_value="web template structure: FAILED")
+
+        self.assertTrue(model.implement(
+            task_type="web", subtree=self.subtree, plan="test plan",
+            project_tools=self.tools, checkpoint_feedback=checkpoint,
+        ))
+        self.assertEqual(model.model_requests_used, 13)
+        self.assertEqual(model.last_budget_report.budget, "no_progress_tool_turn_limit")
+        self.assertFalse(model.last_implementation_handoff)
 
     def test_idle_tool_turns_do_not_handoff_if_checkpoint_raises(self) -> None:
         model = _make_client(
@@ -544,11 +577,13 @@ class ImplementBudgetTests(unittest.TestCase):
         model = _make_client(
             max_turns=None,
             max_tool_calls=None,
-            scripted=[_FakeMessage([call]) for call in calls] + [_FakeMessage(None, "done")],
+            scripted=[_FakeMessage([_write_call("a.js")])]
+            + [_FakeMessage([call]) for call in calls] + [_FakeMessage(None, "done")],
             env_overrides={"ARCBENCH_MAX_MODEL_REQUESTS": "50", "ARCBENCH_MAX_IDLE_TOOL_TURNS": "50"},
         )
-        self.tools.call = lambda name, args: "ok"
-        checkpoint = MagicMock(side_effect=["first failure", "second failure"])
+        original_call = self.tools.call
+        self.tools.call = lambda name, args: original_call(name, args) if name == "write_file" else "ok"
+        checkpoint = MagicMock(side_effect=[f"failure {index}" for index in range(6)])
 
         self.assertFalse(model.implement(
             task_type="web",
@@ -558,12 +593,12 @@ class ImplementBudgetTests(unittest.TestCase):
             checkpoint_feedback=checkpoint,
         ))
 
-        self.assertEqual(model.model_requests_used, 39)
-        self.assertEqual(model.tool_calls_used, 38)
-        self.assertEqual(checkpoint.call_count, 2)
+        self.assertEqual(model.model_requests_used, 40)
+        self.assertEqual(model.tool_calls_used, 39)
+        self.assertEqual(checkpoint.call_count, 6)
         final_user_message = model.client.completions.requests[-1]["messages"][2]["content"]
-        self.assertIn("second failure", final_user_message)
-        self.assertNotIn("first failure", final_user_message)
+        self.assertIn("failure 5", final_user_message)
+        self.assertNotIn("failure 0", final_user_message)
 
 
 if __name__ == "__main__":

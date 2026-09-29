@@ -373,6 +373,27 @@ class ProjectTools:
         scripts = package.get("scripts", {})
         if script not in scripts:
             raise ValueError(f"package.json does not define script `{script}`")
+        if (
+            package_dir == self.project_dir
+            and (self.project_dir / "frontend").is_dir()
+            and script in {"build", "test"}
+        ):
+            frontend_manifest = self.project_dir / "frontend" / "package.json"
+            if not frontend_manifest.is_file():
+                raise FileNotFoundError(
+                    "frontend/package.json is missing; create a frontend build manifest "
+                    "before running root build or test scripts"
+                )
+            if script == "test" and "backend/tests" in str(scripts[script]):
+                test_dir = self.project_dir / "backend" / "tests"
+                if not test_dir.is_dir() or not any(
+                    path.is_file() and path.suffix in {".js", ".mjs", ".cjs"}
+                    for path in test_dir.rglob("*")
+                ):
+                    raise FileNotFoundError(
+                        "backend/tests has no executable JavaScript tests; create real backend tests "
+                        "before running the root test script"
+                    )
         npm = shutil.which("npm") or shutil.which("npm.cmd")
         if not npm:
             raise RuntimeError("npm was not found on PATH")

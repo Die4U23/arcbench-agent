@@ -25,6 +25,7 @@ DEFAULT_MAX_MODEL_REQUESTS = 24
 DEFAULT_MAX_TOTAL_TOKENS = 300_000
 MAX_COMPLETION_TOKENS_PER_REQUEST = 12_000
 MAX_IDENTICAL_FAILED_TOOL_TURNS = 3
+DEFAULT_MAX_IDLE_TOOL_TURNS = 12
 
 
 @dataclass(frozen=True)
@@ -86,8 +87,9 @@ class ModelClient:
         self.max_tool_calls = max_tool_calls
         self.max_model_requests = int(os.environ.get("ARCBENCH_MAX_MODEL_REQUESTS", DEFAULT_MAX_MODEL_REQUESTS))
         self.max_total_tokens = int(os.environ.get("ARCBENCH_MAX_TOTAL_TOKENS", DEFAULT_MAX_TOTAL_TOKENS))
-        if self.max_model_requests < 1 or self.max_total_tokens < 1:
-            raise ValueError("ARCBENCH_MAX_MODEL_REQUESTS and ARCBENCH_MAX_TOTAL_TOKENS must be positive")
+        self.max_idle_tool_turns = int(os.environ.get("ARCBENCH_MAX_IDLE_TOOL_TURNS", DEFAULT_MAX_IDLE_TOOL_TURNS))
+        if self.max_model_requests < 1 or self.max_total_tokens < 1 or self.max_idle_tool_turns < 2:
+            raise ValueError("Model, token, and idle tool-turn limits must be positive; idle limit must be at least 2")
         self.tool_calls_used = 0
         self.model_requests_used = 0
         self.prompt_tokens_used = 0
@@ -643,6 +645,10 @@ class ModelClient:
         budget_warned = False
         failed_tool_signature: tuple[tuple[str, str, str], ...] | None = None
         identical_failed_turns = 0
+        initial_writes = len(getattr(project_tools, "written_paths", []))
+        observed_writes = initial_writes
+        idle_tool_turns = 0
+        self.last_implementation_handoff = False
 
         def compact_context() -> list[dict[str, Any]]:
             # Reset only at a context boundary. Between resets, append complete
@@ -824,6 +830,47 @@ class ModelClient:
                     prompt_tokens_used=self.prompt_tokens_used,
                     completion_tokens_used=self.completion_tokens_used,
                     detail=failed_turn[0][2][:300],
+                )
+                return True
+            current_writes = len(getattr(project_tools, "written_paths", []))
+            if current_writes > observed_writes:
+                observed_writes = current_writes
+                idle_tool_turns = 0
+            else:
+                idle_tool_turns += 1
+            if idle_tool_turns == self.max_idle_tool_turns // 2:
+                conversation.append({
+                    "role": "user",
+                    "content": (
+                        f"No project file has changed in the last {idle_tool_turns} tool turns. "
+                        "Make the next concrete change, or finish this requirement if its work "
+                        "is complete. Repeated inspection without a change will end this pass."
+                    ),
+                })
+            if idle_tool_turns >= self.max_idle_tool_turns:
+                try:
+                    feedback = checkpoint_feedback() if checkpoint_feedback is not None else "No checkpoint available"
+                except Exception as exc:
+                    feedback = f"Checkpoint verification failed: {type(exc).__name__}: {exc}"
+                if current_writes > initial_writes and feedback.startswith("Current build and test scripts pass."):
+                    self.last_implementation_handoff = True
+                    LOGGER.warning(
+                        "No project file changes for %d tool turns; local scripts pass, moving to the next requirement",
+                        idle_tool_turns,
+                    )
+                    return False
+                self.last_budget_report = BudgetExhaustion(
+                    budget="no_progress_tool_turn_limit",
+                    limit=self.max_idle_tool_turns,
+                    used=idle_tool_turns,
+                    requested=0,
+                    tool_names=tuple(call.function.name for call in tool_calls),
+                    turns_used=turn_index + 1,
+                    tool_calls_used=self.tool_calls_used,
+                    model_requests_used=self.model_requests_used,
+                    prompt_tokens_used=self.prompt_tokens_used,
+                    completion_tokens_used=self.completion_tokens_used,
+                    detail=feedback[:300],
                 )
                 return True
             if (visual_inputs and turn_index == 0) or self._message_context_chars(conversation) > MAX_CONVERSATION_CHARS:

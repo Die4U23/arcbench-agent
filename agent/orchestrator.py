@@ -229,7 +229,12 @@ def run_model_agent(runtime: AgentRuntime, config: AgentConfig, tree: dict[str, 
         if len(project_tools.written_paths) == writes_before:
             raise RuntimeError(f"No project files were changed for requirement {module.node_id}")
         module_paths.setdefault(module.node_id, set()).update(project_tools.written_paths[writes_before:])
-        runtime.events.mark_implementation_done(module.node_id, "Implementation turn completed")
+        message = (
+            "No file changes in recent tool turns; local scripts passed, continuing to the next requirement"
+            if getattr(model, "last_implementation_handoff", False)
+            else "Implementation turn completed"
+        )
+        runtime.events.mark_implementation_done(module.node_id, message)
 
     def verify_current_project(*, include_visual: bool = True) -> VerificationResult:
         project_result = verify_project(config.output_dir)

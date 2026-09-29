@@ -8,7 +8,11 @@ from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from agent.llm import ModelClient
+from agent.llm import (
+    DEEPSEEK_THINKING_IMPLEMENTATION_MAX_TOKENS,
+    MAX_COMPLETION_TOKENS_PER_REQUEST,
+    ModelClient,
+)
 from agent.tools import ProjectTools
 
 
@@ -196,6 +200,131 @@ class ImplementBudgetTests(unittest.TestCase):
         self.assertEqual(model.last_budget_report.used, 2)
         self.assertEqual(model.last_budget_report.requested, 0)
 
+    def test_optional_pass_limits_do_not_crash_before_model_request(self) -> None:
+        model = _make_client(max_turns=None, max_tool_calls=None, scripted=[_FakeMessage(None, "done")])
+
+        self.assertFalse(self._implement(model))
+        self.assertEqual(model.client.completions.calls, 1)
+
+    def test_tool_call_limit_remains_global_across_implementation_passes(self) -> None:
+        model = _make_client(
+            max_turns=5,
+            max_tool_calls=2,
+            scripted=[
+                _FakeMessage([_write_call("first.js")]),
+                _FakeMessage(None, "first pass done"),
+                _FakeMessage([_write_call("second.js"), _write_call("third.js")]),
+            ],
+        )
+
+        self.assertFalse(self._implement(model))
+        self.assertTrue(self._implement(model))
+        self.assertEqual(model.tool_calls_used, 1)
+        self.assertEqual(model.last_budget_report.budget, "tool_call_budget")
+        self.assertTrue((self.project_dir / "first.js").exists())
+        self.assertFalse((self.project_dir / "second.js").exists())
+        self.assertFalse((self.project_dir / "third.js").exists())
+
+    def test_identical_failed_tool_turns_stop_before_spending_more_requests(self) -> None:
+        model = _make_client(
+            max_turns=None,
+            max_tool_calls=None,
+            scripted=[_FakeMessage([_read_call("missing.txt")]) for _ in range(4)],
+        )
+        self.tools.call = lambda name, args: (_ for _ in ()).throw(FileNotFoundError("missing.txt"))
+
+        self.assertTrue(self._implement(model))
+        self.assertEqual(model.client.completions.calls, 3)
+        self.assertEqual(model.last_budget_report.budget, "identical_failed_tool_turn_limit")
+        self.assertIn("missing.txt", model.last_budget_report.summary())
+        self.assertIn("Change the tool arguments", json.dumps(model.client.completions.requests[2]["messages"]))
+
+    def test_changed_tool_call_recovers_after_repeated_failure_warning(self) -> None:
+        model = _make_client(
+            max_turns=None,
+            max_tool_calls=None,
+            scripted=[
+                _FakeMessage([_read_call("missing.txt")]),
+                _FakeMessage([_read_call("missing.txt")]),
+                _FakeMessage([_read_call("present.txt")]),
+                _FakeMessage(None, "done"),
+            ],
+        )
+        self.tools.call = lambda name, args: (
+            "contents" if args["path"] == "present.txt"
+            else (_ for _ in ()).throw(FileNotFoundError("missing.txt"))
+        )
+
+        self.assertFalse(self._implement(model))
+        self.assertEqual(model.client.completions.calls, 4)
+        self.assertIsNone(model.last_budget_report)
+
+    def test_idle_tool_turns_handoff_after_writes_and_passing_checkpoint(self) -> None:
+        model = _make_client(
+            max_turns=None,
+            max_tool_calls=None,
+            scripted=[_FakeMessage([_write_call("a.js")])]
+            + [_FakeMessage([_read_call("a.js")]) for _ in range(12)],
+        )
+        checkpoint = MagicMock(return_value="Current build and test scripts pass. Finish uncovered requirements.")
+
+        self.assertFalse(model.implement(
+            task_type="web", subtree=self.subtree, plan="test plan",
+            project_tools=self.tools, checkpoint_feedback=checkpoint,
+        ))
+        self.assertEqual(model.model_requests_used, 13)
+        self.assertTrue(model.last_implementation_handoff)
+        self.assertIsNone(model.last_budget_report)
+        checkpoint.assert_called_once_with()
+
+    def test_idle_tool_turns_without_project_writes_fail(self) -> None:
+        model = _make_client(
+            max_turns=None,
+            max_tool_calls=None,
+            scripted=[_FakeMessage([_read_call("a.js")]) for _ in range(12)],
+        )
+        self.tools.call = lambda name, args: "ok"
+
+        self.assertTrue(self._implement(model))
+        self.assertEqual(model.model_requests_used, 12)
+        self.assertEqual(model.last_budget_report.budget, "no_progress_tool_turn_limit")
+        self.assertFalse(model.last_implementation_handoff)
+        self.assertIn("No project file has changed", json.dumps(model.client.completions.requests[6]["messages"]))
+
+    def test_idle_tool_turns_do_not_handoff_if_checkpoint_raises(self) -> None:
+        model = _make_client(
+            max_turns=None,
+            max_tool_calls=None,
+            scripted=[_FakeMessage([_write_call("a.js")])]
+            + [_FakeMessage([_read_call("a.js")]) for _ in range(12)],
+        )
+        checkpoint = MagicMock(side_effect=RuntimeError("build unavailable"))
+
+        self.assertTrue(model.implement(
+            task_type="web", subtree=self.subtree, plan="test plan",
+            project_tools=self.tools, checkpoint_feedback=checkpoint,
+        ))
+        self.assertEqual(model.last_budget_report.budget, "no_progress_tool_turn_limit")
+        self.assertIn("build unavailable", model.last_budget_report.summary())
+
+    def test_budget_notice_uses_remaining_global_requests(self) -> None:
+        model = _make_client(
+            max_turns=None,
+            max_tool_calls=None,
+            scripted=[
+                _FakeMessage([_write_call("first.js")]),
+                _FakeMessage([_write_call("second.js")]),
+                _FakeMessage(None, "done"),
+            ],
+        )
+        model.max_model_requests = 5
+
+        self.assertFalse(self._implement(model))
+        requests = model.client.completions.requests
+        self.assertEqual(len(requests), 3)
+        self.assertNotIn("Budget notice", json.dumps(requests[1]["messages"]))
+        self.assertIn("Budget notice", json.dumps(requests[2]["messages"]))
+
     def test_batching_related_reads_reduces_model_wakeups(self) -> None:
         paths = ["a.txt", "b.txt", "c.txt"]
         for path in paths:
@@ -320,6 +449,11 @@ class ImplementBudgetTests(unittest.TestCase):
             request["extra_body"] == {"thinking": {"type": "enabled"}}
             for request in model.client.completions.requests
         ))
+        self.assertTrue(all(
+            request["reasoning_effort"] == "low"
+            and request["max_tokens"] == DEEPSEEK_THINKING_IMPLEMENTATION_MAX_TOKENS
+            for request in model.client.completions.requests
+        ))
 
     def test_deepseek_thinking_can_be_disabled_explicitly(self) -> None:
         model = _make_client(
@@ -338,6 +472,8 @@ class ImplementBudgetTests(unittest.TestCase):
             model.client.completions.requests[0]["extra_body"],
             {"thinking": {"type": "disabled"}},
         )
+        self.assertNotIn("reasoning_effort", model.client.completions.requests[0])
+        self.assertEqual(model.client.completions.requests[0]["max_tokens"], MAX_COMPLETION_TOKENS_PER_REQUEST)
 
     def test_checkpoint_failure_reaches_model_before_turn_budget_is_spent(self) -> None:
         model = _make_client(
@@ -373,7 +509,7 @@ class ImplementBudgetTests(unittest.TestCase):
             max_turns=None,
             max_tool_calls=None,
             scripted=[_FakeMessage([call]) for call in calls] + [_FakeMessage(None, "done")],
-            env_overrides={"ARCBENCH_MAX_MODEL_REQUESTS": "50"},
+            env_overrides={"ARCBENCH_MAX_MODEL_REQUESTS": "50", "ARCBENCH_MAX_IDLE_TOOL_TURNS": "50"},
         )
         self.tools.call = lambda name, args: "ok"
         checkpoint = MagicMock(side_effect=["first failure", "second failure"])

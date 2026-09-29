@@ -24,6 +24,7 @@ MAX_CONVERSATION_CHARS = 100_000
 DEFAULT_MAX_MODEL_REQUESTS = 24
 DEFAULT_MAX_TOTAL_TOKENS = 300_000
 MAX_COMPLETION_TOKENS_PER_REQUEST = 12_000
+DEEPSEEK_THINKING_IMPLEMENTATION_MAX_TOKENS = 24_000
 MAX_IDENTICAL_FAILED_TOOL_TURNS = 3
 DEFAULT_MAX_IDLE_TOOL_TURNS = 12
 
@@ -742,19 +743,26 @@ class ModelClient:
                 return True
             context_chars = self._message_context_chars(messages)
             request_options: dict[str, Any] = {}
+            max_tokens = MAX_COMPLETION_TOKENS_PER_REQUEST
             if getattr(self, "is_deepseek", False):
                 # Keep DeepSeek thinking enabled for implementation by default.
                 # Retained tool-call turns must include their reasoning_content.
+                thinking = getattr(self, "implementation_thinking", "") or "enabled"
                 request_options["extra_body"] = {
-                    "thinking": {"type": getattr(self, "implementation_thinking", "") or "enabled"}
+                    "thinking": {"type": thinking}
                 }
+                if thinking == "enabled":
+                    # DeepSeek counts reasoning and visible output against the same limit.
+                    # Low effort preserves thinking while leaving room for tool calls.
+                    request_options["reasoning_effort"] = "low"
+                    max_tokens = DEEPSEEK_THINKING_IMPLEMENTATION_MAX_TOKENS
             try:
                 response = self._create_completion("implementation",
                     model=model,
                     messages=messages,
                     tools=TOOL_SCHEMAS,
                     tool_choice="auto",
-                    max_tokens=MAX_COMPLETION_TOKENS_PER_REQUEST,
+                    max_tokens=max_tokens,
                     **request_options,
                 )
             except Exception as exc:

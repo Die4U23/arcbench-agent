@@ -8,7 +8,11 @@ from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from agent.llm import ModelClient
+from agent.llm import (
+    DEEPSEEK_THINKING_IMPLEMENTATION_MAX_TOKENS,
+    MAX_COMPLETION_TOKENS_PER_REQUEST,
+    ModelClient,
+)
 from agent.tools import ProjectTools
 
 
@@ -445,6 +449,11 @@ class ImplementBudgetTests(unittest.TestCase):
             request["extra_body"] == {"thinking": {"type": "enabled"}}
             for request in model.client.completions.requests
         ))
+        self.assertTrue(all(
+            request["reasoning_effort"] == "low"
+            and request["max_tokens"] == DEEPSEEK_THINKING_IMPLEMENTATION_MAX_TOKENS
+            for request in model.client.completions.requests
+        ))
 
     def test_deepseek_thinking_can_be_disabled_explicitly(self) -> None:
         model = _make_client(
@@ -463,6 +472,8 @@ class ImplementBudgetTests(unittest.TestCase):
             model.client.completions.requests[0]["extra_body"],
             {"thinking": {"type": "disabled"}},
         )
+        self.assertNotIn("reasoning_effort", model.client.completions.requests[0])
+        self.assertEqual(model.client.completions.requests[0]["max_tokens"], MAX_COMPLETION_TOKENS_PER_REQUEST)
 
     def test_checkpoint_failure_reaches_model_before_turn_budget_is_spent(self) -> None:
         model = _make_client(

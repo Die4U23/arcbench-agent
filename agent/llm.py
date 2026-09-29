@@ -24,6 +24,9 @@ MAX_CONVERSATION_CHARS = 100_000
 DEFAULT_MAX_MODEL_REQUESTS = 24
 DEFAULT_MAX_TOTAL_TOKENS = 300_000
 MAX_COMPLETION_TOKENS_PER_REQUEST = 12_000
+DEEPSEEK_THINKING_IMPLEMENTATION_MAX_TOKENS = 24_000
+MAX_IDENTICAL_FAILED_TOOL_TURNS = 3
+DEFAULT_MAX_IDLE_TOOL_TURNS = 12
 
 
 @dataclass(frozen=True)
@@ -38,15 +41,17 @@ class BudgetExhaustion:
     model_requests_used: int
     prompt_tokens_used: int = 0
     completion_tokens_used: int = 0
+    detail: str = ""
 
     def summary(self) -> str:
         tools = ", ".join(self.tool_names) or "unknown/not requested"
-        return (
+        summary = (
             f"{self.budget} exhausted before completion: configured_limit={self.limit}, already_used={self.used}, "
             f"requested_tool_calls={self.requested}, requested_tools=[{tools}], model_turns_used={self.turns_used}, "
             f"total_tool_calls_used={self.tool_calls_used}, total_model_requests={self.model_requests_used}, "
             f"prompt_tokens={self.prompt_tokens_used}, completion_tokens={self.completion_tokens_used}"
         )
+        return summary + (f", detail={self.detail}" if self.detail else "")
 
 
 class ModelBudgetExceeded(Exception):
@@ -83,8 +88,9 @@ class ModelClient:
         self.max_tool_calls = max_tool_calls
         self.max_model_requests = int(os.environ.get("ARCBENCH_MAX_MODEL_REQUESTS", DEFAULT_MAX_MODEL_REQUESTS))
         self.max_total_tokens = int(os.environ.get("ARCBENCH_MAX_TOTAL_TOKENS", DEFAULT_MAX_TOTAL_TOKENS))
-        if self.max_model_requests < 1 or self.max_total_tokens < 1:
-            raise ValueError("ARCBENCH_MAX_MODEL_REQUESTS and ARCBENCH_MAX_TOTAL_TOKENS must be positive")
+        self.max_idle_tool_turns = int(os.environ.get("ARCBENCH_MAX_IDLE_TOOL_TURNS", DEFAULT_MAX_IDLE_TOOL_TURNS))
+        if self.max_model_requests < 1 or self.max_total_tokens < 1 or self.max_idle_tool_turns < 2:
+            raise ValueError("Model, token, and idle tool-turn limits must be positive; idle limit must be at least 2")
         self.tool_calls_used = 0
         self.model_requests_used = 0
         self.prompt_tokens_used = 0
@@ -467,7 +473,8 @@ class ModelClient:
                     "requirement into observable acceptance criteria, then give a concise, "
                     "ordered implementation plan that covers every criterion. Include relevant "
                     "valid-input, invalid-input, boundary, and state-transition cases. Do not "
-                    "invent requirements, and do not claim code has been changed or tested. "
+                    "invent requirements or rename specified labels, routes, API paths, methods, "
+                    "response fields, or status codes. Do not claim code has been changed or tested. "
                     "Inspect every attached visual reference and describe the relevant layout, "
                     "controls, and visual states in the plan. Treat explicit textual behavior "
                     "as authoritative when an image is ambiguous. For each image, distinguish a "
@@ -520,6 +527,9 @@ class ModelClient:
         system_message = (
             "You are an implementation agent working in the current project directory. "
             "Implement only the supplied requirement subtree and preserve existing work. "
+            "Match explicit labels, routes, roles, API contracts, and fixed values exactly. "
+            "Write focused tests for observable behavior, and fix the implementation rather "
+            "than deleting, skipping, or weakening a failing test. "
             "Treat every requirement as an acceptance condition, not merely a visual suggestion. "
             "Before editing, inspect the project and map each leaf requirement to observable "
             "behavior. Implement and test valid, invalid, boundary, and state-transition cases "
@@ -601,7 +611,8 @@ class ModelClient:
                 "the Agent's browser verification, not a claim that verification has passed."
             )
         repair_text = (
-            f"Verification failed. Use this actual feedback to repair the project:\n{repair_feedback}"
+            "Verification failed. Fix the root cause without weakening tests, then rerun the "
+            f"relevant build and full existing test suite:\n{repair_feedback}"
             if repair_feedback else ""
         )
         first_dynamic_content: str | list[dict[str, Any]] | None = None
@@ -632,6 +643,13 @@ class ModelClient:
         epoch_exchanges: list[list[dict[str, Any]]] = []
         compacted_summaries: list[str] = []
         checkpoint_note = ""
+        budget_warned = False
+        failed_tool_signature: tuple[tuple[str, str, str], ...] | None = None
+        identical_failed_turns = 0
+        initial_writes = len(getattr(project_tools, "written_paths", []))
+        observed_writes = initial_writes
+        idle_tool_turns = 0
+        self.last_implementation_handoff = False
 
         def compact_context() -> list[dict[str, Any]]:
             # Reset only at a context boundary. Between resets, append complete
@@ -698,6 +716,26 @@ class ModelClient:
                         conversation = compact_context()
                     else:
                         conversation.append({"role": "user", "content": "Latest checkpoint verification feedback:\n" + feedback})
+            remaining_requests = self.max_model_requests - getattr(self, "model_requests_used", 0)
+            remaining_turns = None if self.max_turns is None else self.max_turns - turn_index
+            remaining_tools = (
+                None if self.max_tool_calls is None
+                else self.max_tool_calls - getattr(self, "tool_calls_used", 0)
+            )
+            if not budget_warned and (
+                remaining_requests <= 3
+                or (remaining_turns is not None and remaining_turns <= max(1, min(3, self.max_turns // 5)))
+                or (remaining_tools is not None and remaining_tools <= max(1, min(5, self.max_tool_calls // 5)))
+            ):
+                budget_warned = True
+                conversation.append({
+                    "role": "user",
+                    "content": (
+                        "Budget notice: limited model requests or tool calls remain for this run. "
+                        "Finish required behavior and verification before optional work; "
+                        "do not claim completion unless the project checks pass."
+                    ),
+                })
             messages = list(conversation)
             try:
                 self._record_model_request()
@@ -705,19 +743,26 @@ class ModelClient:
                 return True
             context_chars = self._message_context_chars(messages)
             request_options: dict[str, Any] = {}
+            max_tokens = MAX_COMPLETION_TOKENS_PER_REQUEST
             if getattr(self, "is_deepseek", False):
                 # Keep DeepSeek thinking enabled for implementation by default.
                 # Retained tool-call turns must include their reasoning_content.
+                thinking = getattr(self, "implementation_thinking", "") or "enabled"
                 request_options["extra_body"] = {
-                    "thinking": {"type": getattr(self, "implementation_thinking", "") or "enabled"}
+                    "thinking": {"type": thinking}
                 }
+                if thinking == "enabled":
+                    # DeepSeek counts reasoning and visible output against the same limit.
+                    # Low effort preserves thinking while leaving room for tool calls.
+                    request_options["reasoning_effort"] = "low"
+                    max_tokens = DEEPSEEK_THINKING_IMPLEMENTATION_MAX_TOKENS
             try:
                 response = self._create_completion("implementation",
                     model=model,
                     messages=messages,
                     tools=TOOL_SCHEMAS,
                     tool_choice="auto",
-                    max_tokens=MAX_COMPLETION_TOKENS_PER_REQUEST,
+                    max_tokens=max_tokens,
                     **request_options,
                 )
             except Exception as exc:
@@ -770,8 +815,80 @@ class ModelClient:
             exchange = [assistant_payload, *tool_payloads]
             conversation.extend(exchange)
             epoch_exchanges.append(exchange)
+            failed_turn = tuple(
+                (call.function.name, call.function.arguments or "", payload["content"])
+                for call, payload in zip(tool_calls, tool_payloads)
+            ) if all(payload["content"].startswith("Tool error:") for payload in tool_payloads) else None
+            if failed_turn is not None:
+                identical_failed_turns = identical_failed_turns + 1 if failed_turn == failed_tool_signature else 1
+                failed_tool_signature = failed_turn
+            else:
+                identical_failed_turns = 0
+                failed_tool_signature = None
+            if identical_failed_turns >= MAX_IDENTICAL_FAILED_TOOL_TURNS:
+                self.last_budget_report = BudgetExhaustion(
+                    budget="identical_failed_tool_turn_limit",
+                    limit=MAX_IDENTICAL_FAILED_TOOL_TURNS,
+                    used=identical_failed_turns,
+                    requested=0,
+                    tool_names=tuple(call.function.name for call in tool_calls),
+                    turns_used=turn_index + 1,
+                    tool_calls_used=self.tool_calls_used,
+                    model_requests_used=self.model_requests_used,
+                    prompt_tokens_used=self.prompt_tokens_used,
+                    completion_tokens_used=self.completion_tokens_used,
+                    detail=failed_turn[0][2][:300],
+                )
+                return True
+            current_writes = len(getattr(project_tools, "written_paths", []))
+            if current_writes > observed_writes:
+                observed_writes = current_writes
+                idle_tool_turns = 0
+            else:
+                idle_tool_turns += 1
+            if idle_tool_turns == self.max_idle_tool_turns // 2:
+                conversation.append({
+                    "role": "user",
+                    "content": (
+                        f"No project file has changed in the last {idle_tool_turns} tool turns. "
+                        "Make the next concrete change, or finish this requirement if its work "
+                        "is complete. Repeated inspection without a change will end this pass."
+                    ),
+                })
+            if idle_tool_turns >= self.max_idle_tool_turns:
+                try:
+                    feedback = checkpoint_feedback() if checkpoint_feedback is not None else "No checkpoint available"
+                except Exception as exc:
+                    feedback = f"Checkpoint verification failed: {type(exc).__name__}: {exc}"
+                if current_writes > initial_writes and feedback.startswith("Current build and test scripts pass."):
+                    self.last_implementation_handoff = True
+                    LOGGER.warning(
+                        "No project file changes for %d tool turns; local scripts pass, moving to the next requirement",
+                        idle_tool_turns,
+                    )
+                    return False
+                self.last_budget_report = BudgetExhaustion(
+                    budget="no_progress_tool_turn_limit",
+                    limit=self.max_idle_tool_turns,
+                    used=idle_tool_turns,
+                    requested=0,
+                    tool_names=tuple(call.function.name for call in tool_calls),
+                    turns_used=turn_index + 1,
+                    tool_calls_used=self.tool_calls_used,
+                    model_requests_used=self.model_requests_used,
+                    prompt_tokens_used=self.prompt_tokens_used,
+                    completion_tokens_used=self.completion_tokens_used,
+                    detail=feedback[:300],
+                )
+                return True
             if (visual_inputs and turn_index == 0) or self._message_context_chars(conversation) > MAX_CONVERSATION_CHARS:
                 conversation = compact_context()
+            if identical_failed_turns == MAX_IDENTICAL_FAILED_TOOL_TURNS - 1:
+                conversation.append({
+                    "role": "user",
+                    "content": "The previous tool call failed identically twice. Change the tool arguments or "
+                               "approach; repeating the same failed call will stop this implementation pass.",
+                })
             if self.max_tool_calls is not None and self.tool_calls_used >= self.max_tool_calls:
                 self.last_budget_report = BudgetExhaustion(
                     budget="tool_call_budget",

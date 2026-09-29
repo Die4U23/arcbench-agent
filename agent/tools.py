@@ -167,6 +167,7 @@ class ProjectTools:
         self.project_dir = project_dir.resolve()
         self.timeout_seconds = timeout_seconds
         self.written_paths: list[str] = []
+        self.changed_paths: list[str] = []
 
     def _resolve(self, raw_path: str, *, allow_root: bool = False) -> Path:
         candidate = Path(raw_path)
@@ -299,10 +300,14 @@ class ProjectTools:
 
     def write_file(self, path: str, content: str) -> str:
         target = self._resolve(path)
+        changed = not target.is_file() or target.read_text(encoding="utf-8") != content
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content, encoding="utf-8", newline="\n")
+        if changed:
+            target.write_text(content, encoding="utf-8", newline="\n")
         relative = target.relative_to(self.project_dir).as_posix()
         self.written_paths.append(relative)
+        if changed:
+            self.changed_paths.append(relative)
         return f"Wrote {relative} ({len(content)} characters)"
 
     def write_files(self, files: list[dict[str, str]]) -> str:
@@ -328,8 +333,11 @@ class ProjectTools:
             prepared.append((relative, target, content))
 
         for relative, target, content in prepared:
+            changed = not target.is_file() or target.read_text(encoding="utf-8") != content
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(content, encoding="utf-8", newline="\n")
+            if changed:
+                target.write_text(content, encoding="utf-8", newline="\n")
+                self.changed_paths.append(relative)
         self.written_paths.extend(relative for relative, _, _ in prepared)
         return json.dumps(
             {"written": [{"path": relative, "characters": len(content)} for relative, _, content in prepared]},
@@ -345,16 +353,19 @@ class ProjectTools:
         if matches != 1:
             raise ValueError(f"replace_text requires one exact match in {path}; found {matches}")
         updated = original.replace(old_text, new_text, 1)
-        file_descriptor, temporary_path = tempfile.mkstemp(prefix=".arc-replace-", dir=target.parent)
-        try:
-            with os.fdopen(file_descriptor, "w", encoding="utf-8", newline="\n") as stream:
-                stream.write(updated)
-            os.replace(temporary_path, target)
-        finally:
-            if os.path.exists(temporary_path):
-                os.unlink(temporary_path)
+        if updated != original:
+            file_descriptor, temporary_path = tempfile.mkstemp(prefix=".arc-replace-", dir=target.parent)
+            try:
+                with os.fdopen(file_descriptor, "w", encoding="utf-8", newline="\n") as stream:
+                    stream.write(updated)
+                os.replace(temporary_path, target)
+            finally:
+                if os.path.exists(temporary_path):
+                    os.unlink(temporary_path)
         relative = target.relative_to(self.project_dir).as_posix()
         self.written_paths.append(relative)
+        if updated != original:
+            self.changed_paths.append(relative)
         return json.dumps({
             "path": relative,
             "old_chars": len(old_text),

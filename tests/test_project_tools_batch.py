@@ -167,6 +167,16 @@ class ProjectToolsBatchTests(unittest.TestCase):
         self.assertEqual((self.project_dir / "frontend" / "style.css").read_text(encoding="utf-8"), "body {}")
         self.assertEqual(self.tools.written_paths, ["frontend/app.js", "frontend/style.css"])
 
+    def test_rewriting_identical_content_does_not_count_as_progress(self) -> None:
+        self.tools.write_files([{"path": "frontend/app.js", "content": "first"}])
+        self.tools.write_files([{"path": "frontend/app.js", "content": "first"}])
+        self.tools.replace_text("frontend/app.js", "first", "first")
+        self.tools.write_file("frontend/app.js", "second")
+
+        self.assertEqual(self.tools.changed_paths, ["frontend/app.js", "frontend/app.js"])
+        self.assertEqual(len(self.tools.written_paths), 4)
+        self.assertEqual((self.project_dir / "frontend" / "app.js").read_text(encoding="utf-8"), "second")
+
 
 if __name__ == "__main__":
     unittest.main()

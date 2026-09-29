@@ -773,6 +773,43 @@ class ModelClient:
                     ) from exc
                 raise
             self._record_usage(response, stage="implementation", context_chars=context_chars)
+            if (
+                getattr(response.choices[0], "finish_reason", None) == "length"
+                and getattr(self, "is_deepseek", False)
+                and thinking == "enabled"
+            ):
+                # Discard the incomplete output and allow one smaller, focused
+                # continuation. Never execute tool calls from a truncated reply.
+                LOGGER.warning("DeepSeek implementation output was truncated; retrying one focused tool turn")
+                try:
+                    self._record_model_request()
+                except ModelBudgetExceeded:
+                    return True
+                retry_note = {
+                    "role": "user",
+                    "content": (
+                        "Your previous response exceeded the output limit and was discarded. "
+                        "Use the files already inspected. Make one concrete, small tool call now "
+                        "(prefer write_files or replace_text), with at most 4,000 characters of "
+                        "new content. Do not repeat the analysis or reread the whole project."
+                    ),
+                }
+                conversation.append(retry_note)
+                retry_messages = [*messages, retry_note]
+                response = self._create_completion(
+                    "implementation-retry",
+                    model=model,
+                    messages=retry_messages,
+                    tools=TOOL_SCHEMAS,
+                    tool_choice="auto",
+                    max_tokens=MAX_COMPLETION_TOKENS_PER_REQUEST,
+                    **request_options,
+                )
+                self._record_usage(
+                    response,
+                    stage="implementation-retry",
+                    context_chars=self._message_context_chars(retry_messages),
+                )
             self._reject_truncated_response(response, "implementation")
             assistant_message = response.choices[0].message
             if not assistant_message.tool_calls:

@@ -157,6 +157,42 @@ class ImplementBudgetTests(unittest.TestCase):
             self._implement(model)
         self.assertEqual(model.client.completions.calls, 1)
 
+    def test_deepseek_truncation_retries_once_without_using_partial_output(self) -> None:
+        model = _make_client(
+            max_turns=2,
+            max_tool_calls=2,
+            scripted=[
+                _FakeMessage([_write_call("partial.js")], finish_reason="length"),
+                _FakeMessage([_write_call("complete.js")]),
+                _FakeMessage(None, "done"),
+            ],
+            env_overrides={"MODEL": "deepseek-flash", "OPENAI_BASE_URL": "https://api.deepseek.com"},
+        )
+
+        self.assertFalse(self._implement(model))
+        self.assertFalse((self.project_dir / "partial.js").exists())
+        self.assertTrue((self.project_dir / "complete.js").exists())
+        self.assertEqual(model.model_requests_used, 3)
+        self.assertEqual(model.client.completions.requests[1]["max_tokens"], MAX_COMPLETION_TOKENS_PER_REQUEST)
+        self.assertIn("previous response exceeded", model.client.completions.requests[1]["messages"][-1]["content"])
+
+    def test_deepseek_second_truncation_stops_without_tool_side_effects(self) -> None:
+        model = _make_client(
+            max_turns=2,
+            max_tool_calls=2,
+            scripted=[
+                _FakeMessage([_write_call("partial.js")], finish_reason="length"),
+                _FakeMessage([_write_call("still-partial.js")], finish_reason="length"),
+            ],
+            env_overrides={"MODEL": "deepseek-flash", "OPENAI_BASE_URL": "https://api.deepseek.com"},
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "output limit"):
+            self._implement(model)
+        self.assertEqual(model.client.completions.calls, 2)
+        self.assertFalse((self.project_dir / "partial.js").exists())
+        self.assertFalse((self.project_dir / "still-partial.js").exists())
+
     def test_turn_budget_falls_through_to_verification(self) -> None:
         scripted = [
             _FakeMessage([_write_call("a.js")]),

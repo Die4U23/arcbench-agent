@@ -1,0 +1,90 @@
+{
+  "method": "offline fixed sequence: one file write, then repeated reads; checkpoint always passes",
+  "unit": "serialized prompt characters, not provider tokens or cost",
+  "scenarios": {
+    "before": {
+      "requests": 13,
+      "cumulative_prompt_chars": 85593,
+      "samples": [
+        {
+          "request": 1,
+          "cumulative_prompt_chars": 5013
+        },
+        {
+          "request": 2,
+          "cumulative_prompt_chars": 10311
+        },
+        {
+          "request": 3,
+          "cumulative_prompt_chars": 15846
+        },
+        {
+          "request": 4,
+          "cumulative_prompt_chars": 21618
+        },
+        {
+          "request": 5,
+          "cumulative_prompt_chars": 27627
+        },
+        {
+          "request": 6,
+          "cumulative_prompt_chars": 33873
+        },
+        {
+          "request": 7,
+          "cumulative_prompt_chars": 40356
+        },
+        {
+          "request": 8,
+          "cumulative_prompt_chars": 47302
+        },
+        {
+          "request": 9,
+          "cumulative_prompt_chars": 54485
+        },
+        {
+          "request": 10,
+          "cumulative_prompt_chars": 61905
+        },
+        {
+          "request": 11,
+          "cumulative_prompt_chars": 69562
+        },
+        {
+          "request": 12,
+          "cumulative_prompt_chars": 77458
+        },
+        {
+          "request": 13,
+          "cumulative_prompt_chars": 85593
+        }
+      ]
+    },
+    "after": {
+      "requests": 5,
+      "cumulative_prompt_chars": 27769,
+      "samples": [
+        {
+          "request": 1,
+          "cumulative_prompt_chars": 5013
+        },
+        {
+          "request": 2,
+          "cumulative_prompt_chars": 10311
+        },
+        {
+          "request": 3,
+          "cumulative_prompt_chars": 15846
+        },
+        {
+          "request": 4,
+          "cumulative_prompt_chars": 21618
+        },
+        {
+          "request": 5,
+          "cumulative_prompt_chars": 27769
+        }
+      ]
+    }
+  }
+}

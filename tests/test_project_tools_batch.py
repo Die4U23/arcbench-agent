@@ -88,6 +88,25 @@ class ProjectToolsBatchTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "between 1 and"):
             self.tools.run_project_scripts(scripts)
 
+    def test_root_scripts_fail_fast_when_required_web_files_are_missing(self) -> None:
+        (self.project_dir / "frontend").mkdir()
+        (self.project_dir / "package.json").write_text(
+            json.dumps({"scripts": {"build": "npm --prefix frontend run build", "test": "node --test backend/tests"}}),
+            encoding="utf-8",
+        )
+        with patch("agent.tools.subprocess.run") as run:
+            with self.assertRaisesRegex(FileNotFoundError, "frontend/package.json"):
+                self.tools.run_project_script(".", "build")
+            (self.project_dir / "frontend" / "package.json").write_text(
+                json.dumps({"scripts": {"build": "node build.js"}}), encoding="utf-8",
+            )
+            with self.assertRaisesRegex(FileNotFoundError, "backend/tests"):
+                self.tools.run_project_script(".", "test")
+            (self.project_dir / "backend" / "tests").mkdir(parents=True)
+            with self.assertRaisesRegex(FileNotFoundError, "executable JavaScript tests"):
+                self.tools.run_project_script(".", "test")
+            run.assert_not_called()
+
     def test_read_files_rejects_unsafe_paths_before_returning_content(self) -> None:
         (self.project_dir / "safe.js").write_text("safe", encoding="utf-8")
 
@@ -147,6 +166,16 @@ class ProjectToolsBatchTests(unittest.TestCase):
         self.assertEqual((self.project_dir / "frontend" / "app.js").read_text(encoding="utf-8"), "app")
         self.assertEqual((self.project_dir / "frontend" / "style.css").read_text(encoding="utf-8"), "body {}")
         self.assertEqual(self.tools.written_paths, ["frontend/app.js", "frontend/style.css"])
+
+    def test_rewriting_identical_content_does_not_count_as_progress(self) -> None:
+        self.tools.write_files([{"path": "frontend/app.js", "content": "first"}])
+        self.tools.write_files([{"path": "frontend/app.js", "content": "first"}])
+        self.tools.replace_text("frontend/app.js", "first", "first")
+        self.tools.write_file("frontend/app.js", "second")
+
+        self.assertEqual(self.tools.changed_paths, ["frontend/app.js", "frontend/app.js"])
+        self.assertEqual(len(self.tools.written_paths), 4)
+        self.assertEqual((self.project_dir / "frontend" / "app.js").read_text(encoding="utf-8"), "second")
 
 
 if __name__ == "__main__":

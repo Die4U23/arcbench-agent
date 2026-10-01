@@ -153,6 +153,7 @@ def run_model_agent(runtime: AgentRuntime, config: AgentConfig, tree: dict[str, 
     prepare_web_template_structure(config.output_dir)
     model = ModelClient(max_turns=config.max_model_turns, max_tool_calls=config.max_tool_calls)
     project_tools = ProjectTools(config.output_dir, timeout_seconds=120)
+    changed_paths = getattr(project_tools, "changed_paths", project_tools.written_paths)
     plans: dict[str, str] = {}
     planning_subtrees: dict[str, dict[str, Any]] = {}
     module_paths: dict[str, set[str]] = {}
@@ -203,7 +204,7 @@ def run_model_agent(runtime: AgentRuntime, config: AgentConfig, tree: dict[str, 
         plans[module.node_id] = plan
         runtime.events.mark_design_done(module.node_id, "Implementation plan prepared")
         runtime.events.mark_implementation_started(module.node_id, "Applying requirement subtree")
-        writes_before = len(project_tools.written_paths)
+        writes_before = len(changed_paths)
         budget_exhausted = model.implement(
             task_type=config.task_type,
             subtree=planning_subtree,
@@ -226,9 +227,9 @@ def run_model_agent(runtime: AgentRuntime, config: AgentConfig, tree: dict[str, 
                 message,
             )
             break
-        if len(project_tools.written_paths) == writes_before:
+        if len(changed_paths) == writes_before:
             raise RuntimeError(f"No project files were changed for requirement {module.node_id}")
-        module_paths.setdefault(module.node_id, set()).update(project_tools.written_paths[writes_before:])
+        module_paths.setdefault(module.node_id, set()).update(changed_paths[writes_before:])
         message = (
             "No file changes in recent tool turns; local scripts passed, continuing to the next requirement"
             if getattr(model, "last_implementation_handoff", False)
@@ -274,7 +275,7 @@ def run_model_agent(runtime: AgentRuntime, config: AgentConfig, tree: dict[str, 
         repair_modules = _repair_modules(result, modules, module_paths)
         LOGGER.warning("Verification failed; repairing %d of %d requirement modules", len(repair_modules), len(modules))
         for module in repair_modules:
-            writes_before = len(project_tools.written_paths)
+            writes_before = len(changed_paths)
             repair_budget_exhausted = model.implement(
                 task_type=config.task_type,
                 subtree=planning_subtrees[module.node_id],
@@ -283,7 +284,7 @@ def run_model_agent(runtime: AgentRuntime, config: AgentConfig, tree: dict[str, 
                 repair_feedback=feedback,
                 reference_dir=config.requirement_dir,
             )
-            module_paths.setdefault(module.node_id, set()).update(project_tools.written_paths[writes_before:])
+            module_paths.setdefault(module.node_id, set()).update(changed_paths[writes_before:])
             if repair_budget_exhausted:
                 budget_exhausted = True
                 candidate_report = getattr(model, "last_budget_report", None)

@@ -8,6 +8,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from .command_output import compact_command_output
 
 
 OUTPUT_LIMIT = 10_000
@@ -39,10 +40,7 @@ class VerificationResult:
 
 
 def _truncate(text: str) -> str:
-    if len(text) <= OUTPUT_LIMIT:
-        return text
-    half = OUTPUT_LIMIT // 2
-    return text[:half] + "\n...[middle truncated]\n" + text[-half:]
+    return compact_command_output(text, OUTPUT_LIMIT)
 
 
 def _run_npm_script(package_dir: Path, script: str) -> CheckResult:
@@ -77,7 +75,7 @@ def _run_npm_script(package_dir: Path, script: str) -> CheckResult:
         return CheckResult(f"{package_dir.name}: npm run {script}", False, None, f"Timed out after {TIMEOUT_SECONDS}s\n{output}")
 
 
-def verify_project(project_dir: Path) -> VerificationResult:
+def verify_project(project_dir: Path, *, include_root: bool = True) -> VerificationResult:
     checks: list[CheckResult] = []
     package_files: list[Path] = []
     for current, dirs, files in os.walk(project_dir):
@@ -89,6 +87,8 @@ def verify_project(project_dir: Path) -> VerificationResult:
             package_files.append(Path(current) / "package.json")
     npm_scripts: list[tuple[Path, str]] = []
     for package_file in sorted(package_files):
+        if not include_root and package_file.parent == project_dir:
+            continue
         try:
             package = json.loads(package_file.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:

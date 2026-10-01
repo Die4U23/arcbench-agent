@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import json
 import hashlib
+import fnmatch
 import os
 import shutil
 import subprocess
 import tempfile
 from pathlib import Path
 from typing import Any
+from .command_output import compact_command_output
 
 
 MAX_FILE_CHARS = 30_000
@@ -20,6 +22,23 @@ IGNORED_DIRS = {".git", ".arc", "node_modules", "dist", "build", ".venv", "venv"
 ALLOWED_PROJECT_SCRIPTS = {"build", "test", "lint", "typecheck", "check"}
 
 TOOL_SCHEMAS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "read_file",
+            "description": "Read one UTF-8 project file or a bounded line range. Use start_line/end_line to inspect stack-trace locations beyond a truncated batch read. Lines are one-based and inclusive.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "start_line": {"type": "integer", "minimum": 1},
+                    "end_line": {"type": "integer", "minimum": 1},
+                },
+                "required": ["path"],
+                "additionalProperties": False,
+            },
+        },
+    },
     {
         "type": "function",
         "function": {
@@ -72,8 +91,10 @@ TOOL_SCHEMAS = [
         "function": {
             "name": "write_files",
             "description": (
-                "Create or replace several related UTF-8 project files in one tool call. "
-                "Read existing files before replacing them; all paths and size limits are checked before writing."
+                "Create several related UTF-8 project files in one tool call; small files may be replaced. "
+                "Use replace_text to edit existing source files longer than 6,000 characters. "
+                "All paths and size limits are checked before writing. "
+                "Existing package.json dependencies are retained unless replaced with a newer version."
             ),
             "parameters": {
                 "type": "object",
@@ -205,11 +226,15 @@ class ProjectTools:
                     return "\n".join(items) + "\n...[truncated at 300 files]"
         return "\n".join(items) or "(no files found)"
 
-    def read_file(self, path: str) -> str:
+    def read_file(self, path: str, start_line: int = 1, end_line: int | None = None) -> str:
+        if start_line < 1 or (end_line is not None and end_line < start_line):
+            raise ValueError("Invalid one-based line range")
         target = self._resolve(path)
         if not target.is_file():
             raise FileNotFoundError(f"File not found: {path}")
         content = target.read_text(encoding="utf-8")
+        if start_line != 1 or end_line is not None:
+            content = "\n".join(content.splitlines()[start_line - 1:end_line])
         if len(content) > MAX_FILE_CHARS:
             return content[:MAX_FILE_CHARS] + "\n...[truncated]"
         return content
@@ -230,7 +255,8 @@ class ProjectTools:
             resolved.append((relative, target))
 
         files: list[dict[str, str]] = []
-        remaining = MAX_BATCH_OUTPUT_CHARS
+        read_limit = min(MAX_BATCH_OUTPUT_CHARS, max(1_000, int(os.environ.get("ARCBENCH_MAX_READ_OUTPUT_CHARS", MAX_BATCH_OUTPUT_CHARS))))
+        remaining = read_limit
         truncated = False
         for relative, target in resolved:
             if remaining <= 0:
@@ -251,7 +277,7 @@ class ProjectTools:
         truncated = truncated or len(files) < len(resolved)
         payload = {"files": files, "truncated": truncated}
         encoded = json.dumps(payload, ensure_ascii=False)
-        while len(encoded) > MAX_BATCH_OUTPUT_CHARS and files:
+        while len(encoded) > read_limit and files:
             payload["truncated"] = True
             last = files[-1]
             original = last["content"]
@@ -263,7 +289,7 @@ class ProjectTools:
                 candidate = original[:middle] + (marker if middle < len(original) else "")
                 last["content"] = candidate
                 candidate_json = json.dumps(payload, ensure_ascii=False)
-                if len(candidate_json) <= MAX_BATCH_OUTPUT_CHARS:
+                if len(candidate_json) <= read_limit:
                     best = candidate
                     encoded = candidate_json
                     low = middle + 1
@@ -287,6 +313,10 @@ class ProjectTools:
             dirs[:] = sorted(d for d in dirs if d not in IGNORED_DIRS and not d.startswith("."))
             for filename in files:
                 path = Path(current) / filename
+                try:
+                    self._resolve(path.relative_to(self.project_dir).as_posix())
+                except ValueError:
+                    continue
                 try:
                     lines = path.read_text(encoding="utf-8").splitlines()
                 except (UnicodeDecodeError, OSError):
@@ -325,6 +355,41 @@ class ProjectTools:
                 raise ValueError(f"Duplicate path in write_files: {relative}")
             seen.add(relative)
             content = item["content"]
+            if relative == "arcbench-visual-acceptance.json" and target.is_file():
+                try:
+                    previous = json.loads(target.read_text(encoding="utf-8"))
+                    replacement = json.loads(content)
+                except json.JSONDecodeError:
+                    pass
+                else:
+                    if isinstance(previous, dict) and isinstance(replacement, dict) and previous.get("version") == replacement.get("version") == 1:
+                        for field, key in (("cases", "reference"), ("flows", "name")):
+                            old_items, new_items = previous.get(field), replacement.get(field)
+                            if isinstance(old_items, list) and isinstance(new_items, list):
+                                merged = {item[key]: item for item in old_items if isinstance(item, dict) and isinstance(item.get(key), str)}
+                                merged.update({item[key]: item for item in new_items if isinstance(item, dict) and isinstance(item.get(key), str)})
+                                replacement[field] = list(merged.values())
+                        content = json.dumps(replacement, ensure_ascii=False, indent=2) + "\n"
+            if target.is_file() and target.suffix in {".js", ".jsx", ".ts", ".tsx"}:
+                original = target.read_text(encoding="utf-8")
+                if len(original) > 6_000 and original != content:
+                    raise ValueError(
+                        f"Existing source file requires replace_text for focused edits: {relative}"
+                    )
+            if target.name == "package.json" and target.is_file():
+                try:
+                    previous = json.loads(target.read_text(encoding="utf-8"))
+                    replacement = json.loads(content)
+                except json.JSONDecodeError:
+                    pass
+                else:
+                    if isinstance(previous, dict) and isinstance(replacement, dict):
+                        for field in ("dependencies", "devDependencies"):
+                            old_items = previous.get(field)
+                            new_items = replacement.get(field)
+                            if isinstance(old_items, dict):
+                                replacement[field] = {**old_items, **(new_items if isinstance(new_items, dict) else {})}
+                        content = json.dumps(replacement, ensure_ascii=False, indent=2) + "\n"
             if len(content) > MAX_FILE_CHARS:
                 raise ValueError(f"File exceeds {MAX_FILE_CHARS} characters: {relative}")
             total_chars += len(content)
@@ -373,6 +438,49 @@ class ProjectTools:
             "sha256": hashlib.sha256(updated.encode("utf-8")).hexdigest(),
         }, ensure_ascii=False)
 
+    def ensure_dependencies(self) -> None:
+        manifests = []
+        for folder in (".", "frontend", "backend"):
+            directory = self._resolve(folder, allow_root=True)
+            manifest = directory / "package.json"
+            if manifest.is_file():
+                package = json.loads(manifest.read_text(encoding="utf-8"))
+                manifests.append((directory, package))
+        dependencies = {
+            str(directory.relative_to(self.project_dir)): {
+                key: package.get(key, {}) for key in ("dependencies", "devDependencies", "optionalDependencies", "workspaces")
+            } for directory, package in manifests
+        }
+        fingerprint = hashlib.sha256(json.dumps(dependencies, sort_keys=True).encode()).hexdigest()
+        if fingerprint == getattr(self, "_installed_dependencies", None):
+            return
+        targets = [directory for directory, package in manifests if any(package.get(key) for key in ("dependencies", "devDependencies", "optionalDependencies"))]
+        root_package = next((package for directory, package in manifests if directory == self.project_dir), {})
+        workspaces = root_package.get("workspaces", [])
+        if isinstance(workspaces, dict):
+            workspaces = workspaces.get("packages", [])
+        if targets and isinstance(workspaces, list) and workspaces:
+            targets = [self.project_dir, *[
+                directory for directory in targets if directory != self.project_dir
+                and not any(isinstance(pattern, str) and fnmatch.fnmatchcase(
+                    directory.relative_to(self.project_dir).as_posix(), pattern.removeprefix("./").rstrip("/"))
+                    for pattern in workspaces)
+            ]]
+        npm = shutil.which("npm") or shutil.which("npm.cmd")
+        if targets and not npm:
+            raise RuntimeError("npm was not found on PATH")
+        for directory in targets:
+            command: Any = [npm, "install", "--no-audit", "--no-fund"]
+            use_shell = os.name == "nt" and npm.lower().endswith((".cmd", ".bat"))
+            if use_shell:
+                command = f'"{npm}" install --no-audit --no-fund'
+            result = subprocess.run(command, cwd=directory, capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=self.timeout_seconds, check=False, shell=use_shell)
+            if result.returncode:
+                output = compact_command_output((result.stdout or "") + (result.stderr or ""), MAX_OUTPUT_CHARS)
+                raise RuntimeError(f"Dependency installation failed under {directory.name}:\n{output}")
+        self._installed_dependencies = fingerprint
+
     def run_project_script(self, directory: str, script: str) -> str:
         if script not in ALLOWED_PROJECT_SCRIPTS:
             raise ValueError(f"Script is not allowed: {script}")
@@ -405,6 +513,7 @@ class ProjectTools:
                         "backend/tests has no executable JavaScript tests; create real backend tests "
                         "before running the root test script"
                     )
+        self.ensure_dependencies()
         npm = shutil.which("npm") or shutil.which("npm.cmd")
         if not npm:
             raise RuntimeError("npm was not found on PATH")
@@ -427,8 +536,7 @@ class ProjectTools:
         stdout = result.stdout or ""
         stderr = result.stderr or ""
         combined = (stdout + ("\n" if stdout and stderr else "") + stderr).strip()
-        if len(combined) > MAX_OUTPUT_CHARS:
-            combined = combined[: MAX_OUTPUT_CHARS // 2] + "\n...[middle truncated]\n" + combined[-MAX_OUTPUT_CHARS // 2 :]
+        combined = compact_command_output(combined, MAX_OUTPUT_CHARS)
         return json.dumps(
             {
                 "command": f"npm run {script}",

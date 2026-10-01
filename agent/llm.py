@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import ipaddress
 import json
 import logging
@@ -15,14 +16,15 @@ from typing import Any, Callable
 from urllib.parse import unquote, urlsplit
 
 from .tools import MAX_BATCH_OUTPUT_CHARS, ProjectTools, TOOL_SCHEMAS
-from .visual_acceptance import REPORT_RELATIVE_PATH, SCREENSHOT_RELATIVE_DIR
+from .ticketbooking_contract import public_acceptance_context
+from .visual_acceptance import REPORT_RELATIVE_PATH, SCREENSHOT_RELATIVE_DIR, collect_visual_references
 
 LOGGER = logging.getLogger(__name__)
 MAX_COMPACTED_EXCHANGES = 6
 MAX_EXCHANGE_SUMMARY_CHARS = 900
-MAX_CONVERSATION_CHARS = 100_000
-DEFAULT_MAX_MODEL_REQUESTS = 24
-DEFAULT_MAX_TOTAL_TOKENS = 300_000
+MAX_CONVERSATION_CHARS = 240_000
+DEFAULT_MAX_MODEL_REQUESTS = 250
+DEFAULT_MAX_TOTAL_TOKENS = 8_000_000
 MAX_COMPLETION_TOKENS_PER_REQUEST = 12_000
 DEEPSEEK_THINKING_IMPLEMENTATION_MAX_TOKENS = 24_000
 MAX_IDENTICAL_FAILED_TOOL_TURNS = 3
@@ -69,6 +71,9 @@ class ModelClient:
         self.model = os.environ.get("MODEL", "").strip()
         self.visual_model = os.environ.get("VISUAL_MODEL", "").strip() or self.model
         self.visual_review_model = os.environ.get("VISUAL_REVIEW_MODEL", "").strip() or self.visual_model
+        self.visual_implementation = os.environ.get("ARCBENCH_VISUAL_IMPLEMENTATION", "enabled").strip().lower()
+        if self.visual_implementation not in {"enabled", "disabled"}:
+            raise ValueError("ARCBENCH_VISUAL_IMPLEMENTATION must be enabled or disabled")
         if not api_key:
             raise RuntimeError("OPENAI_API_KEY is not set. Pass --demo with a supported local task file for deterministic offline mode.")
         if not self.model:
@@ -76,6 +81,7 @@ class ModelClient:
         from openai import OpenAI
 
         base_url = os.environ.get("OPENAI_BASE_URL", "").strip()
+        self.is_glm = urlsplit(base_url).hostname == "open.bigmodel.cn"
         self.is_deepseek = (
             urlsplit(base_url).hostname == "api.deepseek.com"
             or self.model.lower().startswith("deepseek-")
@@ -104,6 +110,7 @@ class ModelClient:
         self.model_seconds = 0.0
         self.tool_seconds = 0.0
         self.last_budget_report: BudgetExhaustion | None = None
+        self._requirement_review_cache: tuple[str, str] | None = None
 
     def _create_completion(self, stage: str, **kwargs: Any) -> Any:
         started = time.perf_counter()
@@ -114,14 +121,14 @@ class ModelClient:
             self.model_seconds = getattr(self, "model_seconds", 0.0) + elapsed
             LOGGER.info("Model latency: stage=%s model=%s seconds=%.3f", stage, kwargs.get("model"), elapsed)
 
-    def _record_model_request(self) -> None:
+    def _check_model_budget(self) -> None:
         requests_used = getattr(self, "model_requests_used", 0)
         tokens_used = getattr(self, "prompt_tokens_used", 0) + getattr(self, "completion_tokens_used", 0)
         for budget, limit, used in (
-            ("model_request_budget", self.max_model_requests, requests_used),
-            ("total_token_budget", self.max_total_tokens, tokens_used),
+            ("model_request_budget", getattr(self, "max_model_requests", None), requests_used),
+            ("total_token_budget", getattr(self, "max_total_tokens", None), tokens_used),
         ):
-            if used >= limit:
+            if isinstance(limit, int) and used >= limit:
                 report = BudgetExhaustion(
                     budget=budget,
                     limit=limit,
@@ -136,6 +143,9 @@ class ModelClient:
                 )
                 self.last_budget_report = report
                 raise ModelBudgetExceeded(report)
+
+    def _record_model_request(self) -> None:
+        self._check_model_budget()
         self.model_requests_used = getattr(self, "model_requests_used", 0) + 1
 
     def _record_usage(self, response: Any, *, stage: str = "model", context_chars: int | None = None) -> None:
@@ -176,6 +186,14 @@ class ModelClient:
             cache_hit if cache_hit is not None else "unavailable",
             cache_miss if cache_miss is not None else "unavailable",
         )
+        token_limit = getattr(self, "max_total_tokens", None)
+        if isinstance(token_limit, int) and self.prompt_tokens_used + self.completion_tokens_used > token_limit:
+            try:
+                self._check_model_budget()
+            except ModelBudgetExceeded:
+                # Preserve the final response and mark overshoot even if the
+                # model finishes without requesting another turn.
+                pass
 
     @staticmethod
     def _compact_tool_exchange(
@@ -257,6 +275,11 @@ class ModelClient:
             refs = node.get("visual_reference", [])
             if isinstance(refs, str):
                 refs = [refs]
+            optional_refs = node.get("optional_visual_reference", [])
+            if isinstance(optional_refs, str):
+                optional_refs = [optional_refs]
+            if isinstance(refs, list) and isinstance(optional_refs, list):
+                refs = [*refs, *optional_refs]
             if isinstance(refs, list):
                 for ref in refs:
                     reference = str(ref).strip()
@@ -452,6 +475,121 @@ class ModelClient:
             raise RuntimeError("Visual reviewer returned an invalid verdict schema")
         return {"verdict": verdict, "issues": issues, "matched": matched}
 
+    def review_requirements(self, subtree: dict[str, Any], project_tools: ProjectTools) -> str:
+        """Fresh-context source audit; script success is not requirement coverage."""
+        sources = []
+        source_contents = {}
+        remaining = 120_000
+        audit_complete = True
+        for name in project_tools.list_files(".").splitlines():
+            parts = Path(name).parts
+            if any(part in {"test", "tests", "__tests__"} for part in parts):
+                continue
+            if ".test." in name or ".spec." in name or Path(name).suffix not in {".js", ".jsx", ".ts", ".tsx", ".json"}:
+                continue
+            if Path(name).suffix == ".json" and Path(name).name != "package.json":
+                continue
+            try:
+                content = project_tools.read_file(name)
+            except (ValueError, FileNotFoundError):
+                continue
+            if len(content) > remaining:
+                audit_complete = False
+                sources.append(f"{name}: [omitted: audit size limit]")
+                continue
+            if content.endswith("\n...[truncated]"):
+                audit_complete = False
+            sources.append(f"--- {name} ---\n{content}")
+            source_contents[name] = content
+            remaining -= len(content)
+        messages = [{"role": "system", "content": (
+            "Audit production source against every supplied requirement. Green self-tests are not evidence of "
+            "coverage. Trace actual entry points, route wiring, mutation APIs and durable state. Check that "
+            "reload reconstructs the required visible state from the same stored record, not merely that a "
+            "database file exists; verify ownership and duplicate confirmation. "
+            "For user or selected-journey changes, check that prior owned booking/confirmation state is cleared "
+            "before rendering and that delayed API responses cannot restore a previous account's state. "
+            "Treat the supplied requirements as the complete contract. Do not invent additional obligations "
+            "such as persisting an unconfirmed draft unless the supplied text explicitly requires it. "
+            "Report only concrete missing REQUIRED behavior. Exclude satisfied behavior, observations marked "
+            "OK or not a defect, optional refactoring, styling, extra tests, and hypothetical future bypasses. "
+            "Trace frontend and backend together; server-side enforcement can satisfy a requirement. "
+            "For each issue quote the exact requirement text and an exact excerpt from the supplied production "
+            "source that establishes the gap. State the failing user action and missing observable behavior. "
+            "Return JSON only: {\"verdict\":\"pass\"|\"repair\",\"issues\":[{\"requirement_id\":string,"
+            "\"requirement_quote\":string,\"path\":string,\"evidence\":string,\"missing_behavior\":string}]}. "
+            "Pass requires an empty issues array; repair requires at least one evidenced issue. "
+            "Use repair if required behavior cannot be established from the source supplied."
+        )}, {"role": "user", "content": json.dumps(subtree, ensure_ascii=False) + "\n" + "\n".join(sources)
+             + public_acceptance_context(subtree)}]
+        fingerprint = hashlib.sha256(json.dumps(messages, ensure_ascii=False,
+            sort_keys=True).encode("utf-8")).hexdigest()
+        cached = getattr(self, "_requirement_review_cache", None)
+        if audit_complete and cached is not None and cached[0] == fingerprint:
+            LOGGER.info("Requirement source unchanged; reusing the preceding audit verdict")
+            return cached[1]
+        self._record_model_request()
+        # This is a bounded verdict, not an implementation turn. Prevent an
+        # entire output allowance being consumed by hidden reasoning with no
+        # usable verdict, as observed in the local acceptance audit.
+        options = {"extra_body": {"thinking": {"type": "disabled"}}} if getattr(self, "is_deepseek", False) else {}
+        response = self._create_completion("requirement_review", model=self.model, messages=messages,
+                                           max_tokens=6000, **options)
+        self._record_usage(response, stage="requirement_review", context_chars=self._message_context_chars(messages))
+        self._reject_truncated_response(response, "requirement review")
+        raw = response.choices[0].message.content or ""
+        match = re.search(r"\{[\s\S]*\}", raw)
+        review = json.loads(match.group(0)) if match else {}
+        if review.get("verdict") not in {"pass", "repair"} or not isinstance(review.get("issues"), list):
+            raise RuntimeError("Requirement reviewer returned an invalid verdict")
+        if (review["verdict"] == "pass") != (not review["issues"]):
+            raise RuntimeError("Requirement reviewer returned a contradictory verdict")
+        requirement_nodes = {}
+        def collect_nodes(value):
+            if isinstance(value, dict):
+                if isinstance(value.get("id"), str):
+                    requirement_nodes[value["id"]] = value
+                for child in value.values():
+                    collect_nodes(child)
+            elif isinstance(value, list):
+                for child in value:
+                    collect_nodes(child)
+        def text_values(value):
+            if isinstance(value, str):
+                yield value
+            elif isinstance(value, dict):
+                for key, child in value.items():
+                    if key != "children":
+                        yield from text_values(child)
+            elif isinstance(value, list):
+                for child in value:
+                    yield from text_values(child)
+        collect_nodes(subtree)
+        missing_items = []
+        for issue in review["issues"]:
+            fields = ("requirement_id", "requirement_quote", "path", "evidence", "missing_behavior")
+            if not isinstance(issue, dict) or any(
+                not isinstance(issue.get(key), str) or not issue[key].strip() for key in fields
+            ):
+                raise RuntimeError("Requirement reviewer returned an unevidenced issue")
+            node = requirement_nodes.get(issue["requirement_id"])
+            quote = " ".join(issue["requirement_quote"].split())
+            if node is None or not any(quote in " ".join(text.split()) for text in text_values(node)):
+                raise RuntimeError("Requirement reviewer cited text outside the supplied requirement")
+            source = source_contents.get(issue["path"])
+            evidence = " ".join(issue["evidence"].split())
+            if source is None or evidence not in " ".join(source.split()):
+                raise RuntimeError("Requirement reviewer cited evidence outside the supplied production source")
+            missing_items.append(
+                f"{issue['requirement_id']} {issue['path']}: {issue['missing_behavior']}\n"
+                f"Required: {issue['requirement_quote']}\nSource evidence: {issue['evidence']}"
+            )
+        missing = "\n".join(missing_items)
+        # An unseen tail or omitted file can change while the supplied prefix
+        # stays identical. Never reuse an audit of an incomplete source view.
+        self._requirement_review_cache = (fingerprint, missing) if audit_complete else None
+        return missing
+
     def plan(
         self,
         task_type: str,
@@ -462,6 +600,7 @@ class ModelClient:
         user_content: str | list[dict[str, Any]] = (
             f"Task type: {task_type}\nRequirement subtree:\n"
             f"{json.dumps(subtree, ensure_ascii=False, indent=2)}"
+            + public_acceptance_context(subtree)
         )
         visual_inputs = self._visual_inputs(subtree, reference_dir)
         model = self.visual_model if visual_inputs else self.model
@@ -478,6 +617,9 @@ class ModelClient:
                     "valid-input, invalid-input, boundary, and state-transition cases. Do not "
                     "invent requirements or rename specified labels, routes, API paths, methods, "
                     "response fields, or status codes. Do not claim code has been changed or tested. "
+                    "Required system data and stated valid examples must pass. Resolve ambiguous "
+                    "validation wording consistently with those examples: a count of non-whitespace "
+                    "characters does not ban internal spaces when required names contain spaces. "
                     "Inspect every attached visual reference and describe the relevant layout, "
                     "controls, and visual states in the plan. Treat explicit textual behavior "
                     "as authoritative when an image is ambiguous. For each image, distinguish a "
@@ -485,7 +627,8 @@ class ModelClient:
                     "from a crop. Include a concrete visual checklist covering hierarchy, major "
                     "regions, spacing/alignment, colors, typography, imagery, and controls. Call "
                     "out visible controls that need real behavior. Keep this checklist separate "
-                    "from functional acceptance criteria."
+                    "from functional acceptance criteria. Group related scenarios and keep the "
+                    "whole plan below 1,500 words; avoid restating the full requirement text."
                 ),
             },
             {
@@ -495,8 +638,10 @@ class ModelClient:
         ]
         self._record_model_request()
         try:
+            request_options = {"reasoning_effort": "low"} if getattr(self, "is_deepseek", False) else {}
             response = self._create_completion("planning",
                 model=model, messages=messages, max_tokens=MAX_COMPLETION_TOKENS_PER_REQUEST,
+                **request_options,
             )
         except Exception as exc:
             if visual_inputs:
@@ -507,6 +652,25 @@ class ModelClient:
                 ) from exc
             raise
         self._record_usage(response, stage="planning", context_chars=self._message_context_chars(messages))
+        if getattr(response.choices[0], "finish_reason", None) == "length":
+            LOGGER.warning("Planning output was truncated; retrying once with a shorter plan request")
+            self._record_model_request()
+            retry_messages = [
+                *messages,
+                {"role": "user", "content": (
+                    "The previous plan exceeded the output limit and was discarded. "
+                    "Return an ordered plan below 900 words. Group similar scenarios, "
+                    "preserve every explicit requirement, and omit repeated task wording."
+                )},
+            ]
+            response = self._create_completion(
+                "planning-retry", model=model, messages=retry_messages,
+                max_tokens=MAX_COMPLETION_TOKENS_PER_REQUEST, **request_options,
+            )
+            self._record_usage(
+                response, stage="planning-retry",
+                context_chars=self._message_context_chars(retry_messages),
+            )
         self._reject_truncated_response(response, "planning")
         content = response.choices[0].message.content or ""
         if not content.strip():
@@ -523,25 +687,52 @@ class ModelClient:
         repair_feedback: str | None = None,
         reference_dir: Path | None = None,
         checkpoint_feedback: Callable[[], str] | None = None,
+        token_allowance: int | None = None,
+        request_allowance: int | None = None,
     ) -> bool:
         """Run until the model finishes, unless the caller explicitly set a limit."""
         visual_inputs = self._visual_inputs(subtree, reference_dir)
+        if getattr(self, "visual_implementation", "enabled") == "disabled":
+            visual_inputs = []
         model = self.visual_model if visual_inputs else self.model
         system_message = (
             "You are an implementation agent working in the current project directory. "
             "Implement only the supplied requirement subtree and preserve existing work. "
             "Match explicit labels, routes, roles, API contracts, and fixed values exactly. "
+            "Required system data and valid examples must pass unchanged. If name length counts "
+            "non-whitespace characters and required names contain spaces, count characters excluding "
+            "whitespace; do not forbid internal spaces. Test the exact required example values. "
             "Write focused tests for observable behavior, and fix the implementation rather "
             "than deleting, skipping, or weakening a failing test. "
+            "If a generated test contradicts the original requirement, correct its expected behavior "
+            "to the requirement while retaining meaningful assertions. Fix stale mocks, relative imports "
+            "and setup helpers instead of changing correct product behavior to satisfy a faulty test. "
+            "Reconcile access rules across all supplied scenarios: public read-only information must remain "
+            "visible when required, while protected forms and mutations still require authentication. "
+            "Do not apply a page-wide authentication guard that hides information another requirement "
+            "explicitly makes public. Preserve selected journey context across these boundaries. "
             "Treat every requirement as an acceptance condition, not merely a visual suggestion. "
+            "When project_requirements is supplied, it describes the whole application. Preserve previously "
+            "implemented modules, routes, providers, API handlers and tests when integrating this subtree. "
+            "Tests must mount the actual application entry point as well as individual components; green "
+            "isolated tests cannot prove a page is reachable or connected to the backend. "
             "Before editing, inspect the project and map each leaf requirement to observable "
             "behavior. Implement and test valid, invalid, boundary, and state-transition cases "
             "that the requirement implies. Add meaningful automated tests whose assertions check "
             "behavior, not just element presence or a successful render; inspect the assertions and "
+            "For persistence requirements, a React remount is not a browser reload. An in-memory Map "
+            "does not persist. Connect UI confirmation to the authenticated backend and durable storage; "
+            "verify records after a fresh browser load and a server restart. "
             "run the relevant tests after changes. If a package defines a test script, create the "
             "referenced test files before finishing; an unmatched test glob is a failure. "
+            "For a CommonJS backend using Vitest, do not require('vitest') inside tests: "
+            "use globals enabled in vitest.config.js, or write ESM tests with imports. "
             "When writing DOM tests, follow the actual API "
-            "contracts of the test environment: EventTarget.dispatchEvent returns a boolean, not "
+            "contracts: getByLabelText matches the rendered label, not the input id or name. "
+            "Use selectOptions for selects, not type; use change events for date inputs when user typing "
+            "does not work in jsdom. Reread both the failing test helper and the component before editing "
+            "a shared helper, and update every call site when changing its argument shape. "
+            "EventTarget.dispatchEvent returns a boolean, not "
             "the Event object. Retain the Event instance to assert defaultPrevented, or assert the "
             "dispatchEvent boolean; never read defaultPrevented from its boolean return value. "
             "Follow the authentication mode explicitly stated "
@@ -555,7 +746,8 @@ class ModelClient:
             "be a crop: reproduce that component without treating the crop as a whole-page design. "
             "Every element styled or labeled as a link, menu, button, selector, or form control "
             "must have working behavior; use semantic interactive elements, and do not leave "
-            "action-looking text or images inert. For visual-reference tasks, write a root-level "
+            "action-looking text or images inert. Optional visual references guide appearance and do not "
+            "create additional mandatory acceptance conditions. For mandatory visual-reference tasks, write a root-level "
             "`arcbench-visual-acceptance.json` manifest following the schema supplied in the user "
             "message. It must map each reference to its route and viewport, record visual "
             "expectations, and define browser interaction flows with observable assertions. "
@@ -576,16 +768,34 @@ class ModelClient:
             "substitute `public/`, `server/`, or empty placeholder directories for the required "
             "frontend and backend implementation. "
             "Use tools to inspect before editing. Paths are relative to the project root. "
-            "Use `read_files` to inspect code, `write_files` to create files or replace related files, and "
-            "`replace_text` for a small edit in an existing file when old_text has one exact match. "
+            "Use `read_files` to inspect code, `write_files` to create related files, and "
+            "`replace_text` to edit an existing source file when old_text has one exact match. "
             "If replacement reports zero or multiple matches, reread the relevant file before retrying. "
             "Batch related file inspections into one `read_files` call and related file updates into one `write_files` call. "
-            "Each batch accepts at most 20 files; read_files returns at most 40,000 characters, and write_files accepts "
+            "If a batch read is truncated, use read_file with start_line/end_line around the reported failure; "
+            "do not infer unseen code or repeatedly read only the beginning of a large file. "
+            "Each batch accepts at most 20 files; read_files returns at most 40,000 characters (or the configured lower limit), and write_files accepts "
             "at most 30,000 characters per file and 120,000 characters total. Keep batches within these limits and "
             "do not split a related change into many small tool calls. Group up to three relevant build/test scripts "
             "into one `run_project_scripts` call so you can inspect all results together. "
+            "During edits, run frontend/build and backend/test directly; leave the root scripts "
+            "for final verification so delegated scripts are not run twice each checkpoint. "
+            "Root build/test scripts must run on both Windows and Linux. Node spawnSync/execFileSync "
+            "cannot directly launch npm.cmd on Windows: use a compatible launch with safe fixed arguments, "
+            "and propagate spawn errors as well as nonzero status. A green child script does not prove "
+            "its root wrapper succeeds. "
             "Do not access .arc, .git, dependencies, or files outside the project. "
             "Do not claim a build or test passed unless its run_project_script(s) result has exit_code 0. "
+            "Before changing production behavior for a failed test, inspect its assertion and setup against "
+            "the supplied requirement. Fix an incorrect assertion while preserving the intended behavioral "
+            "coverage; never add hidden UI just to satisfy a selector, skip tests, or weaken required behavior. "
+            "Tests that assert an element is absent must use a non-throwing query. For browser-state tests, "
+            "isolate localStorage, sessionStorage, mocks and pending async work between independent tests; "
+            "preserve storage only within the same explicit reload scenario. Run the failing test alone and "
+            "then the complete suite to distinguish a business defect from order-dependent test pollution. "
+            "Clear account-owned booking/confirmation state when signing out or switching users, and clear "
+            "previous journey state when changing a selected train/date. Cancel or ignore stale API responses "
+            "so old account or journey details cannot reappear. "
             "The runner prepared the target project; do not copy or replace a starter template. "
             "When implementation is complete, provide a short summary."
         )
@@ -593,8 +803,9 @@ class ModelClient:
             f"Task type: {task_type}\n"
             f"Requirement subtree:\n{json.dumps(subtree, ensure_ascii=False, indent=2)}\n\n"
             f"Implementation plan:\n{plan}"
+            + public_acceptance_context(subtree)
         )
-        if visual_inputs:
+        if collect_visual_references(subtree):
             text_message += (
                 "\n\nVisual acceptance manifest schema (required at project root):\n"
                 '{"version":1,"cases":[{"name":"stable-case-id","reference":"exact task image reference",'
@@ -606,6 +817,8 @@ class ModelClient:
                 '"covers":["#selector-for-every-visible-actionable-control"],'
                 '"steps":[{"action":"fill|click|check|uncheck|select_option|navigate|expect_navigation|expect_visible|expect_hidden|expect_text|expect_value|expect_checked|expect_unchecked|wait_for_url",'
                 '"selector":"CSS selector when needed","value":"value or expected text when needed"}]}]}\n'
+                "In setup.steps use the same action-object schema as flows.steps; never use plain strings. "
+                "When an existing manifest is present, retain its cases and flows for earlier modules. "
                 "Use only references from the supplied task, list every reference exactly once, and include "
                 "all visible actionable controls in tested flows, with one unique selector per control. "
                 "Pair every action immediately with an assertion that proves a state change (for example, "
@@ -647,6 +860,8 @@ class ModelClient:
         if first_dynamic_content:
             conversation.append({"role": "user", "content": first_dynamic_content})
         epoch_exchanges: list[list[dict[str, Any]]] = []
+        epoch_reads: set[tuple[str, str]] = set()
+        epoch_file_reads: dict[str, str] = {}
         compacted_summaries: list[str] = []
         checkpoint_note = ""
         budget_warned = False
@@ -654,12 +869,26 @@ class ModelClient:
         identical_failed_turns = 0
         progress_paths = getattr(project_tools, "changed_paths", getattr(project_tools, "written_paths", []))
         initial_writes = len(progress_paths)
+        project_dir = getattr(project_tools, "project_dir", None)
+        resumed_project = isinstance(project_dir, Path) and any(
+            path.is_file()
+            for folder in ("frontend", "backend")
+            for path in (project_dir / folder / "src").rglob("*")
+        )
         observed_writes = initial_writes
         idle_tool_turns = 0
         passing_checkpoint = False
+        passing_checkpoint_turn: int | None = None
+        write_only_prompted = False
+        thinking_disabled_epoch = False
         self.last_implementation_handoff = False
+        self.last_implementation_deferred = False
+        starting_tokens = getattr(self, "prompt_tokens_used", 0) + getattr(self, "completion_tokens_used", 0)
+        starting_requests = getattr(self, "model_requests_used", 0)
+        allowance_warned = False
 
         def compact_context() -> list[dict[str, Any]]:
+            nonlocal thinking_disabled_epoch
             # Reset only at a context boundary. Between resets, append complete
             # turns so the provider can reuse the entire previous request prefix.
             for older in epoch_exchanges:
@@ -668,6 +897,9 @@ class ModelClient:
                     compacted_summaries.append(summary)
             del compacted_summaries[:-MAX_COMPACTED_EXCHANGES]
             epoch_exchanges.clear()
+            epoch_reads.clear()
+            epoch_file_reads.clear()
+            thinking_disabled_epoch = False
             parts = [compact_user_content] if compact_user_content else []
             if checkpoint_note:
                 parts.append("Latest checkpoint verification feedback:\n" + checkpoint_note)
@@ -690,6 +922,34 @@ class ModelClient:
 
         self.last_budget_report = None
         for turn_index in count():
+            try:
+                self._check_model_budget()
+            except ModelBudgetExceeded:
+                return True
+            phase_tokens = getattr(self, "prompt_tokens_used", 0) + getattr(self, "completion_tokens_used", 0) - starting_tokens
+            phase_requests = getattr(self, "model_requests_used", 0) - starting_requests
+            if (token_allowance is not None and phase_tokens >= token_allowance) or (request_allowance is not None and phase_requests >= request_allowance):
+                self.last_implementation_deferred = True
+                LOGGER.warning("Module allocation reached (tokens=%d requests=%d); deferring unfinished work to whole-project integration", phase_tokens, phase_requests)
+                return False
+            if token_allowance is not None and not allowance_warned and phase_tokens >= token_allowance * .75:
+                allowance_warned = True
+                conversation.append({"role": "user", "content": "This module has little allocated budget left. Finish its required application wiring now; leave unresolved failures for whole-project integration. Avoid expanding tests or optional styling."})
+            # Give a green module two final turns, then verify its latest files.
+            # Optional edits must not indefinitely postpone the next module.
+            if passing_checkpoint_turn is not None and turn_index >= passing_checkpoint_turn + 2:
+                try:
+                    feedback = checkpoint_feedback() if checkpoint_feedback is not None else "No checkpoint available"
+                except Exception as exc:
+                    feedback = f"Checkpoint verification failed: {type(exc).__name__}: {exc}"
+                if feedback.startswith("Current build and test scripts pass."):
+                    self.last_implementation_handoff = True
+                    LOGGER.info("Implementation final checkpoint passed; moving to the next requirement")
+                    return False
+                passing_checkpoint_turn = None
+                passing_checkpoint = False
+                checkpoint_note = feedback
+                conversation.append({"role": "user", "content": "Final module checkpoint failed; repair these failures:\n" + feedback})
             if self.max_tool_calls is not None and self.tool_calls_used >= self.max_tool_calls:
                 self.last_budget_report = BudgetExhaustion(
                     budget="tool_call_budget",
@@ -719,13 +979,19 @@ class ModelClient:
                 except Exception as exc:
                     feedback = f"Checkpoint verification could not run: {type(exc).__name__}: {exc}"
                 passing_checkpoint = feedback.startswith("Current build and test scripts pass.")
+                if passing_checkpoint and repair_feedback:
+                    self.last_implementation_handoff = True
+                    LOGGER.info("Repair checkpoint passed; returning to whole-project verification and coverage audit")
+                    return False
+                if passing_checkpoint and passing_checkpoint_turn is None:
+                    passing_checkpoint_turn = turn_index
+                    conversation.append({"role": "user", "content": "Local module checks pass. You have two final turns to finish required behavior and report any uncovered acceptance criteria. Defer optional test expansion or styling polish; the agent will recheck the files and proceed to the next module."})
                 if feedback and feedback != checkpoint_note:
-                    old_note = checkpoint_note
                     checkpoint_note = feedback
-                    if old_note:
-                        conversation = compact_context()
-                    else:
-                        conversation.append({"role": "user", "content": "Latest checkpoint verification feedback:\n" + feedback})
+                    # Keep the existing request prefix cacheable across checkpoints.
+                    # A new feedback message supersedes older feedback without
+                    # forcing every file read back into an uncached summary.
+                    conversation.append({"role": "user", "content": "Latest checkpoint verification feedback (supersedes earlier feedback):\n" + feedback})
             remaining_requests = self.max_model_requests - getattr(self, "model_requests_used", 0)
             remaining_turns = None if self.max_turns is None else self.max_turns - turn_index
             remaining_tools = (
@@ -746,6 +1012,19 @@ class ModelClient:
                         "do not claim completion unless the project checks pass."
                     ),
                 })
+            write_only = idle_tool_turns >= getattr(self, "max_idle_tool_turns", DEFAULT_MAX_IDLE_TOOL_TURNS) // 2 and not passing_checkpoint
+            edit_tool = "replace_text" if (resumed_project or repair_text or checkpoint_note or len(progress_paths) > initial_writes) else "write_files"
+            if write_only and not write_only_prompted:
+                write_only_prompted = True
+                conversation.append({
+                    "role": "user",
+                    "content": (
+                        "You have inspected the project repeatedly without changing a file. "
+                        "The next step must be a concrete source or behavior-test edit for this "
+                        f"requirement. Use {edit_tool} now; do not read or list files "
+                        "again. Current check failures:\n" + checkpoint_note[:2_000]
+                    ),
+                })
             messages = list(conversation)
             try:
                 self._record_model_request()
@@ -757,7 +1036,7 @@ class ModelClient:
             if getattr(self, "is_deepseek", False):
                 # Keep DeepSeek thinking enabled for implementation by default.
                 # Retained tool-call turns must include their reasoning_content.
-                thinking = getattr(self, "implementation_thinking", "") or "enabled"
+                thinking = "disabled" if thinking_disabled_epoch else (getattr(self, "implementation_thinking", "") or "enabled")
                 request_options["extra_body"] = {
                     "thinking": {"type": thinking}
                 }
@@ -766,12 +1045,21 @@ class ModelClient:
                     # Low effort preserves thinking while leaving room for tool calls.
                     request_options["reasoning_effort"] = "low"
                     max_tokens = DEEPSEEK_THINKING_IMPLEMENTATION_MAX_TOKENS
+                if write_only:
+                    # DeepSeek only supports required tool choice outside thinking mode.
+                    # Keep the focused edit bounded while retaining the inspected source.
+                    thinking = "disabled"
+                    request_options["extra_body"] = {"thinking": {"type": thinking}}
+                    request_options.pop("reasoning_effort", None)
+                    max_tokens = MAX_COMPLETION_TOKENS_PER_REQUEST
+            if getattr(self, "is_glm", False) and self.implementation_thinking:
+                request_options["extra_body"] = {"thinking": {"type": self.implementation_thinking}}
             try:
                 response = self._create_completion("implementation",
                     model=model,
                     messages=messages,
                     tools=TOOL_SCHEMAS,
-                    tool_choice="auto",
+                    tool_choice={"type": "function", "function": {"name": edit_tool}} if write_only else "auto",
                     max_tokens=max_tokens,
                     **request_options,
                 )
@@ -823,7 +1111,13 @@ class ModelClient:
             self._reject_truncated_response(response, "implementation")
             assistant_message = response.choices[0].message
             if not assistant_message.tool_calls:
+                if write_only:
+                    LOGGER.warning("Focused edit request returned no file edit tool call; handing off for verification")
                 return False
+            if getattr(self, "is_deepseek", False) and thinking == "disabled":
+                # A non-thinking tool call has no reasoning_content. Keep this
+                # conversation segment non-thinking until compaction discards it.
+                thinking_disabled_epoch = True
             tool_calls = list(assistant_message.tool_calls)
             remaining = None if self.max_tool_calls is None else self.max_tool_calls - self.tool_calls_used
             if remaining is not None and len(tool_calls) > remaining:
@@ -847,9 +1141,46 @@ class ModelClient:
                 tool_started = time.perf_counter()
                 try:
                     arguments = json.loads(tool_call.function.arguments or "{}")
-                    result = project_tools.call(tool_call.function.name, arguments)
+                    read_key = (
+                        tool_call.function.name,
+                        json.dumps(arguments, sort_keys=True, ensure_ascii=False),
+                    )
+                    if write_only and tool_call.function.name != edit_tool:
+                        result = f"Only {edit_tool} is available for this focused edit. Make a concrete change now."
+                    elif tool_call.function.name in {"list_files", "read_files", "search_text"} and read_key in epoch_reads:
+                        result = (
+                            "The same read already returned in this conversation and no project file "
+                            "has changed. Use its earlier result to make the next concrete edit."
+                        )
+                    else:
+                        result = project_tools.call(tool_call.function.name, arguments)
+                        if tool_call.function.name == "read_files":
+                            try:
+                                read_payload = json.loads(result)
+                                files = read_payload.get("files", [])
+                                if isinstance(files, list):
+                                    for file in files:
+                                        if not isinstance(file, dict):
+                                            continue
+                                        path, content = file.get("path"), file.get("content")
+                                        if not isinstance(path, str) or not isinstance(content, str):
+                                            continue
+                                        digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+                                        if epoch_file_reads.get(path) == digest:
+                                            file["content"] = "[unchanged since earlier read in this conversation]"
+                                        else:
+                                            epoch_file_reads[path] = digest
+                                    result = json.dumps(read_payload, ensure_ascii=False)
+                            except (TypeError, ValueError):
+                                pass
+                        if tool_call.function.name in {"list_files", "read_files", "search_text"}:
+                            epoch_reads.add(read_key)
+                        elif len(progress_paths) > observed_writes:
+                            epoch_reads.clear()
+                            epoch_file_reads.clear()
                 except Exception as exc:
                     result = f"Tool error: {type(exc).__name__}: {exc}"
+                    LOGGER.warning("Project tool failed: name=%s error=%s", tool_call.function.name, result[:300])
                 elapsed = time.perf_counter() - tool_started
                 self.tool_seconds = getattr(self, "tool_seconds", 0.0) + elapsed
                 LOGGER.info(
@@ -892,6 +1223,7 @@ class ModelClient:
                 observed_writes = current_writes
                 idle_tool_turns = 0
                 passing_checkpoint = False
+                write_only_prompted = False
             else:
                 idle_tool_turns += 1
             if (
@@ -906,21 +1238,19 @@ class ModelClient:
                     idle_tool_turns,
                 )
                 return False
-            if idle_tool_turns == self.max_idle_tool_turns // 2:
-                conversation.append({
-                    "role": "user",
-                    "content": (
-                        f"No project file has changed in the last {idle_tool_turns} tool turns. "
-                        "Make the next concrete change, or finish this requirement if its work "
-                        "is complete. Repeated inspection without a change will end this pass."
-                    ),
-                })
             if idle_tool_turns >= self.max_idle_tool_turns:
+                if checkpoint_feedback is None and resumed_project:
+                    # Integration must return to the orchestrator's real checks
+                    # instead of turning an unverified idle pass into a fatal
+                    # global budget failure. The checks decide what to repair.
+                    self.last_implementation_deferred = True
+                    LOGGER.warning("Idle implementation pass deferred to whole-project verification")
+                    return False
                 try:
                     feedback = checkpoint_feedback() if checkpoint_feedback is not None else "No checkpoint available"
                 except Exception as exc:
                     feedback = f"Checkpoint verification failed: {type(exc).__name__}: {exc}"
-                if current_writes > initial_writes and feedback.startswith("Current build and test scripts pass."):
+                if (current_writes > initial_writes or resumed_project) and feedback.startswith("Current build and test scripts pass."):
                     self.last_implementation_handoff = True
                     LOGGER.warning(
                         "No project file changes for %d tool turns; local scripts pass, moving to the next requirement",

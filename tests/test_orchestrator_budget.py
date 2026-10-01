@@ -7,12 +7,148 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from agent.llm import BudgetExhaustion
-from agent.orchestrator import run_model_agent
+from agent.orchestrator import _repair_modules, run_model_agent
 from agent.requirements import RequirementModule
 from agent.verify import CheckResult, VerificationResult
 
 
 class BudgetExhaustionOrchestratorTests(unittest.TestCase):
+    def test_root_script_failure_is_not_hidden_by_green_module_checkpoint(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            node = {'id': 'REQ-1'}
+            tree = {'id': 'ROOT', 'children': [node]}
+            modules = [RequirementModule(node_id='REQ-1', name='Example', subtree=node)]
+            config = SimpleNamespace(task_type='web', max_model_turns=None, max_tool_calls=None,
+                output_dir=Path(temp_dir) / 'output', requirement_dir=Path(temp_dir) / 'requirements')
+            model = MagicMock()
+            model.plan.return_value = 'plan'
+            model.review_requirements.return_value = ''
+            tools = SimpleNamespace(written_paths=[], ensure_dependencies=lambda: None)
+            observed = []
+            def implement(**kwargs):
+                tools.written_paths.append('frontend/App.jsx')
+                if kwargs.get('repair_feedback'):
+                    observed.append(kwargs['checkpoint_feedback']())
+                return False
+            model.implement.side_effect = implement
+            failed = VerificationResult(False, (CheckResult('project: npm run build', False, 1,
+                'Error: spawnSync npm.cmd EINVAL'),))
+            passed = VerificationResult(True, (CheckResult('frontend build', True, 0, 'ok'),))
+            with (patch('agent.orchestrator.ModelClient', return_value=model),
+                  patch('agent.orchestrator.ProjectTools', return_value=tools),
+                  patch('agent.orchestrator.verify_project', side_effect=[failed, failed, passed]) as verify,
+                  patch('agent.orchestrator.verify_web_template_structure', return_value=passed)):
+                result = run_model_agent(SimpleNamespace(events=MagicMock(), traceability=MagicMock()), config, tree, modules)
+            self.assertTrue(result.passed)
+            self.assertIn('spawnSync npm.cmd EINVAL', observed[0])
+            self.assertEqual(verify.call_args_list[1].kwargs, {'include_root': True})
+
+    def test_root_scripts_use_whole_project_repair_context(self):
+        modules = [RequirementModule(node_id=f'REQ-{i}', name=str(i), subtree={'id': f'REQ-{i}'})
+                   for i in (1, 2, 3)]
+        failed = VerificationResult(False, (CheckResult('project: npm run build', False, 1,
+            'Error: frontend/register.jsx missing'),))
+        self.assertEqual(_repair_modules(failed, modules, {'REQ-1': {'frontend/register.jsx'}}), modules)
+
+    def test_passing_tests_do_not_broaden_repair_to_other_modules(self):
+        modules = [RequirementModule(node_id=f"REQ-{i}", name=str(i), subtree={"id": f"REQ-{i}"})
+                   for i in (1, 2, 3)]
+        failed = VerificationResult(False, (CheckResult('frontend: npm run test', False, 1,
+            ' ✓ REQ-1 authentication\n ✓ REQ-3 booking\n'
+            ' FAIL tests/search.test.jsx > REQ-2 selected journey\nError: missing summary\n⎯⎯⎯[1/1]⎯'),))
+        self.assertEqual([m.node_id for m in _repair_modules(failed, modules, {})], ['REQ-2'])
+
+    def test_ambiguous_shared_failure_is_repaired_once_with_complete_requirements(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            nodes = [{"id": "REQ-1"}, {"id": "REQ-2"}]
+            tree = {"id": "ROOT", "children": nodes}
+            modules = [RequirementModule(node_id=n['id'], name=n['id'], subtree=n) for n in nodes]
+            config = SimpleNamespace(task_type='web', max_model_turns=None, max_tool_calls=None,
+                output_dir=Path(temp_dir) / 'output', requirement_dir=Path(temp_dir) / 'requirements')
+            runtime = SimpleNamespace(events=MagicMock(), traceability=MagicMock())
+            model = MagicMock()
+            model.plan.return_value = 'plan'
+            model.review_requirements.return_value = ''
+            tools = SimpleNamespace(written_paths=[], ensure_dependencies=lambda: None)
+            def implement(**kwargs):
+                tools.written_paths.append('frontend/App.jsx')
+                return False
+            model.implement.side_effect = implement
+            failed = VerificationResult(False, (CheckResult('frontend tests', False, 1,
+                'FAIL tests/search.test.jsx > public journey\nError: missing summary\n'),))
+            passed = VerificationResult(True, (CheckResult('build', True, 0, 'ok'),))
+            with (patch('agent.orchestrator.ModelClient', return_value=model),
+                  patch('agent.orchestrator.ProjectTools', return_value=tools),
+                  patch('agent.orchestrator.verify_project', side_effect=[failed, passed]),
+                  patch('agent.orchestrator.verify_web_template_structure', return_value=passed)):
+                result = run_model_agent(runtime, config, tree, modules)
+            self.assertTrue(result.passed)
+            self.assertEqual([c.kwargs['subtree']['id'] for c in model.implement.call_args_list],
+                             ['REQ-1', 'REQ-2', 'ROOT', 'ROOT'])
+            self.assertEqual(model.implement.call_args.kwargs['subtree'], tree)
+
+    def test_green_scripts_with_missing_coverage_trigger_repair(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            node = {"id": "REQ-3", "name": "Booking"}
+            tree = {"id": "ROOT", "children": [node]}
+            modules = [RequirementModule(node_id="REQ-3", name="Booking", subtree=node)]
+            config = SimpleNamespace(task_type="web", max_model_turns=None, max_tool_calls=None,
+                                     output_dir=Path(temp_dir) / "output", requirement_dir=Path(temp_dir) / "requirements")
+            runtime = SimpleNamespace(events=MagicMock(), traceability=MagicMock())
+            model = MagicMock()
+            model.plan.return_value = "plan"
+            model.review_requirements.side_effect = ["REQ-3: confirmation disappears after reload", ""]
+            tools = SimpleNamespace(written_paths=[], ensure_dependencies=lambda: None)
+            def implement(**kwargs):
+                tools.written_paths.append("frontend/Booking.jsx")
+                return False
+            model.implement.side_effect = implement
+            passed = VerificationResult(True, (CheckResult("build and test", True, 0, "ok"),))
+            with (patch("agent.orchestrator.ModelClient", return_value=model),
+                  patch("agent.orchestrator.ProjectTools", return_value=tools),
+                  patch("agent.orchestrator.verify_project", return_value=passed),
+                  patch("agent.orchestrator.verify_web_template_structure", return_value=passed)):
+                result = run_model_agent(runtime, config, tree, modules)
+            self.assertTrue(result.passed)
+            self.assertEqual(model.implement.call_count, 2)
+            self.assertIn("confirmation disappears", model.implement.call_args.kwargs["repair_feedback"])
+
+    def test_coverage_repair_checkpoint_stays_failed_until_source_audit_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            node = {"id": "REQ-3", "name": "Booking"}
+            tree = {"id": "ROOT", "children": [node]}
+            modules = [RequirementModule(node_id="REQ-3", name="Booking", subtree=node)]
+            config = SimpleNamespace(task_type="web", max_model_turns=None, max_tool_calls=None,
+                output_dir=Path(temp_dir) / "output", requirement_dir=Path(temp_dir) / "requirements")
+            model = MagicMock()
+            model.plan.return_value = "plan"
+            missing = "REQ-3: frontend/Booking.jsx retains a previous account's confirmed booking"
+            model.review_requirements.side_effect = [missing, missing, "", ""]
+            tools = SimpleNamespace(written_paths=[], ensure_dependencies=lambda: None)
+            checkpoints = []
+            def implement(**kwargs):
+                tools.written_paths.append("frontend/Booking.jsx")
+                if kwargs.get("repair_feedback"):
+                    checkpoints.append(kwargs["checkpoint_feedback"]())
+                    checkpoints.append(kwargs["checkpoint_feedback"]())
+                return False
+            model.implement.side_effect = implement
+            passed = VerificationResult(True, (CheckResult("build and test", True, 0, "ok"),))
+            with (patch("agent.orchestrator.ModelClient", return_value=model),
+                  patch("agent.orchestrator.ProjectTools", return_value=tools),
+                  patch("agent.orchestrator.verify_project", return_value=passed),
+                  patch("agent.orchestrator.verify_web_template_structure", return_value=passed),
+                  self.assertLogs("arcbench_agent", level="WARNING") as logs):
+                result = run_model_agent(SimpleNamespace(events=MagicMock(), traceability=MagicMock()),
+                                         config, tree, modules)
+            self.assertTrue(result.passed)
+            self.assertEqual(model.implement.call_count, 2)
+            self.assertTrue(checkpoints[0].startswith("requirement coverage: FAILED"))
+            self.assertIn(missing, checkpoints[0])
+            self.assertTrue(checkpoints[1].startswith("Current build and test scripts pass."))
+            self.assertTrue(any(missing in line for line in logs.output))
+            self.assertEqual(model.review_requirements.call_count, 4)
+
     def test_repair_targets_requirement_named_by_failure(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             output_dir = Path(temp_dir) / "output"
@@ -25,8 +161,9 @@ class BudgetExhaustionOrchestratorTests(unittest.TestCase):
             )
             runtime = SimpleNamespace(events=MagicMock(), traceability=MagicMock())
             model = MagicMock()
+            model.review_requirements.return_value = ''
             model.plan.return_value = "plan"
-            tools = SimpleNamespace(written_paths=[])
+            tools = SimpleNamespace(written_paths=[], ensure_dependencies=lambda: None)
 
             def implement(*args, **kwargs):
                 tools.written_paths.append(f"frontend/{kwargs['subtree']['id']}.js")
@@ -48,7 +185,11 @@ class BudgetExhaustionOrchestratorTests(unittest.TestCase):
                 result = run_model_agent(runtime, config, tree, modules)
             self.assertTrue(result.passed)
             self.assertEqual([call.kwargs["subtree"]["id"] for call in model.implement.call_args_list],
-                             ["REQ-1", "REQ-2", "REQ-2"])
+                             ["REQ-1", "REQ-2", "ROOT", "REQ-2"])
+            self.assertEqual(model.implement.call_args_list[0].kwargs["subtree"]["project_requirements"], tree)
+            integration = model.implement.call_args_list[2].kwargs
+            self.assertIn("real App", integration["plan"])
+            self.assertTrue(callable(integration["checkpoint_feedback"]))
             repair_feedback = model.implement.call_args_list[-1].kwargs["repair_feedback"]
             self.assertIn("REQ-2 booking form failed", repair_feedback)
             self.assertNotIn("large successful output", repair_feedback)
@@ -65,8 +206,9 @@ class BudgetExhaustionOrchestratorTests(unittest.TestCase):
             )
             runtime = SimpleNamespace(events=MagicMock(), traceability=MagicMock())
             model = MagicMock()
+            model.review_requirements.return_value = ''
             model.plan.return_value = "plan"
-            tools = SimpleNamespace(written_paths=[])
+            tools = SimpleNamespace(written_paths=[], ensure_dependencies=lambda: None)
 
             def implement(*args, **kwargs):
                 tools.written_paths.append("frontend/index.html")
@@ -102,8 +244,9 @@ class BudgetExhaustionOrchestratorTests(unittest.TestCase):
             modules = [RequirementModule(node_id="REQ-1", name="Example", subtree=node)]
             runtime = SimpleNamespace(events=MagicMock(), traceability=MagicMock())
             model = MagicMock()
+            model.review_requirements.return_value = ''
             model.plan.return_value = "implementation plan"
-            project_tools = SimpleNamespace(written_paths=[])
+            project_tools = SimpleNamespace(written_paths=[], ensure_dependencies=lambda: None)
 
             def implement(*args, **kwargs):
                 project_tools.written_paths.append("frontend/index.html")
@@ -175,8 +318,9 @@ class BudgetExhaustionOrchestratorTests(unittest.TestCase):
                 ]
                 runtime = SimpleNamespace(events=MagicMock(), traceability=MagicMock())
                 model = MagicMock()
+                model.review_requirements.return_value = ''
                 model.plan.return_value = "implementation plan"
-                project_tools = SimpleNamespace(written_paths=[])
+                project_tools = SimpleNamespace(written_paths=[], ensure_dependencies=lambda: None)
 
                 def implement(*args, **kwargs):
                     project_tools.written_paths.append("index.html")
@@ -235,8 +379,9 @@ class BudgetExhaustionOrchestratorTests(unittest.TestCase):
             ]
             runtime = SimpleNamespace(events=MagicMock(), traceability=MagicMock())
             model = MagicMock()
+            model.review_requirements.return_value = ''
             model.plan.return_value = "implementation plan"
-            project_tools = SimpleNamespace(written_paths=[])
+            project_tools = SimpleNamespace(written_paths=[], ensure_dependencies=lambda: None)
 
             def implement(*args, **kwargs):
                 project_tools.written_paths.append("package.json")
@@ -286,6 +431,7 @@ class BudgetExhaustionOrchestratorTests(unittest.TestCase):
             )
             runtime = SimpleNamespace(events=MagicMock(), traceability=MagicMock())
             model = MagicMock()
+            model.review_requirements.return_value = ''
             model.plan.return_value = "plan"
             model.last_budget_report = BudgetExhaustion(
                 budget="tool_call_budget",
@@ -297,7 +443,7 @@ class BudgetExhaustionOrchestratorTests(unittest.TestCase):
                 tool_calls_used=4,
                 model_requests_used=6,
             )
-            project_tools = SimpleNamespace(written_paths=[])
+            project_tools = SimpleNamespace(written_paths=[], ensure_dependencies=lambda: None)
 
             def exhaust_after_partial_write(*args, **kwargs):
                 project_tools.written_paths.append("frontend/index.html")

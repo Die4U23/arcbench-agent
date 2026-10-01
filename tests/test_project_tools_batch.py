@@ -16,14 +16,14 @@ class ProjectToolsBatchTests(unittest.TestCase):
         self.project_dir = Path(self.temp_dir.name)
         self.tools = ProjectTools(self.project_dir)
 
-    def test_model_file_io_schema_exposes_batch_tools_only(self) -> None:
+    def test_model_file_io_schema_exposes_batch_tools_and_line_ranges(self) -> None:
         names = {item["function"]["name"] for item in TOOL_SCHEMAS}
 
         self.assertIn("read_files", names)
         self.assertIn("write_files", names)
         self.assertIn("replace_text", names)
         self.assertIn("run_project_scripts", names)
-        self.assertNotIn("read_file", names)
+        self.assertIn("read_file", names)
         self.assertNotIn("write_file", names)
 
     def test_replace_text_changes_only_one_exact_span(self) -> None:
@@ -47,6 +47,52 @@ class ProjectToolsBatchTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "credential"):
             self.tools.replace_text(".env", "KEY", "VALUE")
 
+    def test_line_range_can_read_failure_beyond_truncated_prefix(self) -> None:
+        source = self.project_dir / "large.js"
+        source.write_text("prefix line\n" * 4000 + "const failure = true;\n", encoding="utf-8")
+        self.assertNotIn("const failure", self.tools.read_file("large.js"))
+        self.assertEqual(self.tools.call("read_file", {"path": "large.js", "start_line": 4001, "end_line": 4001}), "const failure = true;")
+        with self.assertRaises(ValueError):
+            self.tools.read_file("large.js", start_line=0)
+        with self.assertRaisesRegex(ValueError, "credential"):
+            self.tools.read_file(".env", start_line=1, end_line=1)
+
+    def test_dependency_preparation_installs_workspace_once_and_reacts_to_manifest_changes(self) -> None:
+        (self.project_dir / "frontend").mkdir()
+        manifest = self.project_dir / "frontend/package.json"
+        (self.project_dir / "package.json").write_text(json.dumps({"workspaces": ["frontend"]}))
+        manifest.write_text(json.dumps({"dependencies": {"react": "18.3.1"}}))
+        with patch("agent.tools.shutil.which", return_value="npm"), patch("agent.tools.subprocess.run") as run:
+            run.return_value.returncode = 0
+            self.tools.ensure_dependencies()
+            self.tools.ensure_dependencies()
+            self.assertEqual(run.call_count, 1)
+            self.assertEqual(run.call_args.kwargs["cwd"], self.project_dir)
+            manifest.write_text(json.dumps({"dependencies": {"react": "18.3.1", "vite": "5.4.8"}}))
+            self.tools.ensure_dependencies()
+            self.assertEqual(run.call_count, 2)
+
+    def test_dependency_failure_is_reported_and_not_cached_as_success(self) -> None:
+        (self.project_dir / "package.json").write_text(json.dumps({"dependencies": {"express": "4.19.2"}}))
+        with patch("agent.tools.shutil.which", return_value="npm"), patch("agent.tools.subprocess.run") as run:
+            run.return_value.returncode = 1
+            run.return_value.stdout = ""
+            run.return_value.stderr = "registry unavailable"
+            for _ in range(2):
+                with self.assertRaisesRegex(RuntimeError, "registry unavailable"):
+                    self.tools.ensure_dependencies()
+            self.assertEqual(run.call_count, 2)
+
+    def test_partial_workspace_keeps_independent_backend_install(self) -> None:
+        (self.project_dir / "package.json").write_text(json.dumps({"workspaces": ["frontend"]}))
+        for name in ("frontend", "backend"):
+            (self.project_dir / name).mkdir()
+            (self.project_dir / name / "package.json").write_text(json.dumps({"dependencies": {"example": "1.0.0"}}))
+        with patch("agent.tools.shutil.which", return_value="npm"), patch("agent.tools.subprocess.run") as run:
+            run.return_value.returncode = 0
+            self.tools.ensure_dependencies()
+            self.assertEqual([call.kwargs["cwd"] for call in run.call_args_list], [self.project_dir, self.project_dir / "backend"])
+
     def test_read_files_returns_multiple_files_in_one_call(self) -> None:
         (self.project_dir / "a.js").write_text("alpha", encoding="utf-8")
         (self.project_dir / "b.js").write_text("beta", encoding="utf-8")
@@ -67,6 +113,38 @@ class ProjectToolsBatchTests(unittest.TestCase):
 
         self.assertFalse(result["truncated"])
         self.assertEqual(result["files"][0]["content"], content)
+
+    def test_read_files_can_use_smaller_experiment_limit(self) -> None:
+        (self.project_dir / "large.js").write_text("x" * 25_000, encoding="utf-8")
+
+        with patch.dict("os.environ", {"ARCBENCH_MAX_READ_OUTPUT_CHARS": "16000"}):
+            encoded = self.tools.read_files(["large.js"])
+
+        self.assertLessEqual(len(encoded), 16_000)
+        self.assertTrue(json.loads(encoded)["truncated"])
+
+    def test_search_text_skips_credential_files(self) -> None:
+        (self.project_dir / ".env").write_text("PRIVATE_SENTINEL", encoding="utf-8")
+        (self.project_dir / "safe.js").write_text("PUBLIC_SENTINEL", encoding="utf-8")
+
+        self.assertEqual(self.tools.search_text("PRIVATE_SENTINEL"), "(no matches)")
+        self.assertIn("safe.js", self.tools.search_text("PUBLIC_SENTINEL"))
+
+    def test_visual_manifest_write_retains_earlier_cases_and_flows(self) -> None:
+        path = self.project_dir / "arcbench-visual-acceptance.json"
+        path.write_text(json.dumps({"version": 1, "cases": [
+            {"name": "register", "reference": "register.png"},
+        ], "flows": [{"name": "register-flow"}]}), encoding="utf-8")
+
+        self.tools.write_files([{"path": path.name, "content": json.dumps({
+            "version": 1,
+            "cases": [{"name": "booking", "reference": "booking.png"}],
+            "flows": [{"name": "booking-flow"}],
+        })}])
+
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual([case["reference"] for case in manifest["cases"]], ["register.png", "booking.png"])
+        self.assertEqual([flow["name"] for flow in manifest["flows"]], ["register-flow", "booking-flow"])
 
     def test_run_project_scripts_returns_all_results_in_one_call(self) -> None:
         scripts = [
@@ -123,7 +201,7 @@ class ProjectToolsBatchTests(unittest.TestCase):
         encoded = self.tools.read_files([f"{index}.txt" for index in range(MAX_BATCH_FILES)])
         result = json.loads(encoded)
         self.assertTrue(result["truncated"])
-        self.assertLessEqual(sum(len(item["content"]) for item in result["files"]), 40_000)
+        self.assertLessEqual(sum(len(item["content"]) for item in result["files"]), MAX_BATCH_OUTPUT_CHARS)
         self.assertLessEqual(len(encoded), MAX_BATCH_OUTPUT_CHARS)
 
     def test_write_files_validates_the_whole_batch_before_writing(self) -> None:
@@ -166,6 +244,38 @@ class ProjectToolsBatchTests(unittest.TestCase):
         self.assertEqual((self.project_dir / "frontend" / "app.js").read_text(encoding="utf-8"), "app")
         self.assertEqual((self.project_dir / "frontend" / "style.css").read_text(encoding="utf-8"), "body {}")
         self.assertEqual(self.tools.written_paths, ["frontend/app.js", "frontend/style.css"])
+
+    def test_bulk_package_rewrite_keeps_existing_dependencies(self) -> None:
+        manifest = self.project_dir / "backend" / "package.json"
+        manifest.parent.mkdir()
+        manifest.write_text(json.dumps({
+            "name": "app",
+            "dependencies": {"express": "^4", "sqlite3": "^5"},
+            "devDependencies": {"vitest": "^1"},
+        }), encoding="utf-8")
+
+        self.tools.write_files([{"path": "backend/package.json", "content": json.dumps({
+            "name": "app", "dependencies": {"express": "^5"},
+        })}])
+
+        updated = json.loads(manifest.read_text(encoding="utf-8"))
+        self.assertEqual(updated["dependencies"], {"express": "^5", "sqlite3": "^5"})
+        self.assertEqual(updated["devDependencies"], {"vitest": "^1"})
+
+    def test_bulk_write_rejects_large_existing_source_replacement(self) -> None:
+        source = self.project_dir / "backend" / "service.js"
+        source.parent.mkdir()
+        original = "const keep = true;\n" * 400
+        source.write_text(original, encoding="utf-8")
+
+        with self.assertRaisesRegex(ValueError, "requires replace_text"):
+            self.tools.write_files([
+                {"path": "backend/new.js", "content": "new code"},
+                {"path": "backend/service.js", "content": "replacement"},
+            ])
+
+        self.assertEqual(source.read_text(encoding="utf-8"), original)
+        self.assertFalse((self.project_dir / "backend" / "new.js").exists())
 
     def test_rewriting_identical_content_does_not_count_as_progress(self) -> None:
         self.tools.write_files([{"path": "frontend/app.js", "content": "first"}])

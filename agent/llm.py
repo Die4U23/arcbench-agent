@@ -27,6 +27,9 @@ MAX_COMPLETION_TOKENS_PER_REQUEST = 12_000
 DEEPSEEK_THINKING_IMPLEMENTATION_MAX_TOKENS = 24_000
 MAX_IDENTICAL_FAILED_TOOL_TURNS = 3
 DEFAULT_MAX_IDLE_TOOL_TURNS = 12
+EARLY_CHECKPOINT_TURN = 4
+CHECKPOINT_INTERVAL_TURNS = 6
+PASSING_CHECKPOINT_IDLE_TURNS = 4
 
 
 @dataclass(frozen=True)
@@ -564,7 +567,10 @@ class ModelClient:
             "API routes, business logic, and persistence code in `backend/`. The frontend must "
             "have its own `frontend/package.json` with a non-empty `scripts.build` command and "
             "all dependencies needed to build independently after the runner installs frontend "
-            "dependencies. Run and pass that build from `frontend/`. Keep a usable root-level "
+            "dependencies. If the starter lacks this manifest, create it in the first write "
+            "batch before running build or test scripts. If the root test script names "
+            "`backend/tests`, create real executable tests there before running it. "
+            "Run and pass the frontend build from `frontend/`. Keep a usable root-level "
             "package manifest and `start` script that binds to PORT and launches the generated "
             "application; if the root manifest defines `build`, it must also succeed. Do not "
             "substitute `public/`, `server/`, or empty placeholder directories for the required "
@@ -646,9 +652,11 @@ class ModelClient:
         budget_warned = False
         failed_tool_signature: tuple[tuple[str, str, str], ...] | None = None
         identical_failed_turns = 0
-        initial_writes = len(getattr(project_tools, "written_paths", []))
+        progress_paths = getattr(project_tools, "changed_paths", getattr(project_tools, "written_paths", []))
+        initial_writes = len(progress_paths)
         observed_writes = initial_writes
         idle_tool_turns = 0
+        passing_checkpoint = False
         self.last_implementation_handoff = False
 
         def compact_context() -> list[dict[str, Any]]:
@@ -698,8 +706,9 @@ class ModelClient:
                 return True
             checkpoint_due = (
                 self.max_turns is None
-                and turn_index >= 16
-                and (turn_index - 16) % 12 == 0
+                and len(progress_paths) > initial_writes
+                and turn_index >= EARLY_CHECKPOINT_TURN
+                and (turn_index - EARLY_CHECKPOINT_TURN) % CHECKPOINT_INTERVAL_TURNS == 0
             ) or (
                 self.max_turns is not None
                 and turn_index == max(1, self.max_turns - 8)
@@ -709,6 +718,7 @@ class ModelClient:
                     feedback = checkpoint_feedback()
                 except Exception as exc:
                     feedback = f"Checkpoint verification could not run: {type(exc).__name__}: {exc}"
+                passing_checkpoint = feedback.startswith("Current build and test scripts pass.")
                 if feedback and feedback != checkpoint_note:
                     old_note = checkpoint_note
                     checkpoint_note = feedback
@@ -773,6 +783,43 @@ class ModelClient:
                     ) from exc
                 raise
             self._record_usage(response, stage="implementation", context_chars=context_chars)
+            if (
+                getattr(response.choices[0], "finish_reason", None) == "length"
+                and getattr(self, "is_deepseek", False)
+                and thinking == "enabled"
+            ):
+                # Discard the incomplete output and allow one smaller, focused
+                # continuation. Never execute tool calls from a truncated reply.
+                LOGGER.warning("DeepSeek implementation output was truncated; retrying one focused tool turn")
+                try:
+                    self._record_model_request()
+                except ModelBudgetExceeded:
+                    return True
+                retry_note = {
+                    "role": "user",
+                    "content": (
+                        "Your previous response exceeded the output limit and was discarded. "
+                        "Use the files already inspected. Make one concrete, small tool call now "
+                        "(prefer write_files or replace_text), with at most 4,000 characters of "
+                        "new content. Do not repeat the analysis or reread the whole project."
+                    ),
+                }
+                conversation.append(retry_note)
+                retry_messages = [*messages, retry_note]
+                response = self._create_completion(
+                    "implementation-retry",
+                    model=model,
+                    messages=retry_messages,
+                    tools=TOOL_SCHEMAS,
+                    tool_choice="auto",
+                    max_tokens=MAX_COMPLETION_TOKENS_PER_REQUEST,
+                    **request_options,
+                )
+                self._record_usage(
+                    response,
+                    stage="implementation-retry",
+                    context_chars=self._message_context_chars(retry_messages),
+                )
             self._reject_truncated_response(response, "implementation")
             assistant_message = response.choices[0].message
             if not assistant_message.tool_calls:
@@ -840,12 +887,25 @@ class ModelClient:
                     detail=failed_turn[0][2][:300],
                 )
                 return True
-            current_writes = len(getattr(project_tools, "written_paths", []))
+            current_writes = len(progress_paths)
             if current_writes > observed_writes:
                 observed_writes = current_writes
                 idle_tool_turns = 0
+                passing_checkpoint = False
             else:
                 idle_tool_turns += 1
+            if (
+                passing_checkpoint
+                and current_writes > initial_writes
+                and idle_tool_turns >= PASSING_CHECKPOINT_IDLE_TURNS
+            ):
+                self.last_implementation_handoff = True
+                LOGGER.info(
+                    "Implementation checkpoint passed and no files changed for %d tool turns; "
+                    "moving to the next requirement",
+                    idle_tool_turns,
+                )
+                return False
             if idle_tool_turns == self.max_idle_tool_turns // 2:
                 conversation.append({
                     "role": "user",

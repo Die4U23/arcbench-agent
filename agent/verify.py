@@ -28,6 +28,7 @@ class CheckResult:
 class VerificationResult:
     passed: bool
     checks: tuple[CheckResult, ...]
+    ready_for_evaluation: bool = False
 
     def summary(self) -> str:
         if not self.checks:

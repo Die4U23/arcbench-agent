@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import html
+import json
 import logging
+from dataclasses import asdict
 import re
 from pathlib import Path
 from typing import Any
@@ -26,6 +28,41 @@ from .visual_acceptance import collect_visual_references, verify_visual_acceptan
 
 
 LOGGER = logging.getLogger("arcbench_agent")
+REPAIR_REQUEST_ALLOWANCE = 12
+DELIVERY_BUDGETS = {"total_token_budget", "model_request_budget",
+                    "delivery_token_reserve", "delivery_request_reserve"}
+
+
+def _finalize_delivery(output_dir: Path, result: VerificationResult,
+                       budget: BudgetExhaustion | None) -> VerificationResult:
+    """A runnable candidate can reach the evaluator without claiming test success."""
+    checks = result.checks
+    ready = False
+    if budget is not None and budget.budget in DELIVERY_BUDGETS:
+        by_name = {check.name: check for check in checks}
+        required = ("frontend: npm run build", "web template structure")
+        # Only behavior/test failures are eligible for evaluator handoff.
+        blocking = [check for check in checks if not check.passed
+                    and not (check.name.endswith(": npm run test")
+                             or check.name in {"requirement coverage", "agent generation budget",
+                                 "public interaction regression (reconstructed jsdom, not Stage 3)"})]
+        if not blocking and all(name in by_name and by_name[name].passed for name in required):
+            startup = verify_public_acceptance(output_dir, {}, startup_only=True)
+            checks = (*checks, *startup)
+            ready = bool(startup) and all(check.passed for check in startup)
+    final = VerificationResult(result.passed, checks, ready_for_evaluation=ready)
+    report_dir = output_dir / ".arc"
+    report_dir.mkdir(parents=True, exist_ok=True)
+    (report_dir / "delivery-report.json").write_text(json.dumps({
+        "local_verification_passed": final.passed,
+        "ready_for_evaluation": final.passed or ready,
+        "formal_acceptance": "pending",
+        "handoff_reason": "budget finalization" if ready else None,
+        "budget": asdict(budget) if budget is not None else None,
+        "checks": [asdict(check) for check in final.checks],
+        "note": "Candidate delivery is separate from acceptance. Unrun audits remain unverified.",
+    }, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return final
 
 
 def _demo_page(module: RequirementModule) -> tuple[str, str]:
@@ -353,6 +390,7 @@ def run_model_agent(runtime: AgentRuntime, config: AgentConfig, tree: dict[str, 
                 model,
             )
             if visual_references and include_visual and project_result.passed and structure_result.passed and all(check.passed for check in public_checks)
+            and not isinstance(getattr(model, "last_budget_report", None), BudgetExhaustion)
             else None
         )
         checks = (*project_result.checks, *structure_result.checks, *public_checks, *coverage_checks)
@@ -405,6 +443,7 @@ def run_model_agent(runtime: AgentRuntime, config: AgentConfig, tree: dict[str, 
                 repair_feedback=feedback,
                 reference_dir=config.requirement_dir,
                 checkpoint_feedback=repair_checkpoint,
+                request_allowance=REPAIR_REQUEST_ALLOWANCE,
             )
             module_paths.setdefault(module.node_id, set()).update(changed_paths[writes_before:])
             if repair_budget_exhausted:
@@ -436,6 +475,8 @@ def run_model_agent(runtime: AgentRuntime, config: AgentConfig, tree: dict[str, 
         )
         result = VerificationResult(False, (*result.checks, budget_check))
 
+    result = _finalize_delivery(config.output_dir, result, budget_failure)
+
     for node_id in walk_requirement_ids(tree):
         if node_id == "ROOT":
             continue
@@ -464,6 +505,10 @@ def run_agent(runtime: AgentRuntime, config: AgentConfig) -> int:
     if result.passed:
         runtime.events.mark_run_completed("Agent finished and verification passed")
         LOGGER.info("Agent completed successfully")
+        return 0
+    if result.ready_for_evaluation:
+        runtime.events.mark_run_completed("Runnable candidate delivered for formal evaluation; local verification did not fully pass")
+        LOGGER.warning("Candidate delivered before further generation; formal acceptance pending. Unresolved checks:\n%s", result.summary())
         return 0
     runtime.events.mark_run_failed("Agent finished but verification did not pass")
     LOGGER.error("Verification failed:\n%s", result.summary())

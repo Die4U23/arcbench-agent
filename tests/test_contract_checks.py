@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import signal
+import subprocess
 import tempfile
 from types import SimpleNamespace
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 from agent.contract_checks import verify_public_acceptance
 
@@ -16,6 +18,37 @@ def tree():
 
 
 class ContractCheckTests(unittest.TestCase):
+    def setUp(self):
+        # Popen is mocked in these tests. Never signal a real process group
+        # using the fake process PID when running on a Unix CI worker.
+        cleanup = patch("agent.contract_checks.os.killpg", create=True)
+        self.killpg = cleanup.start()
+        self.addCleanup(cleanup.stop)
+
+    def test_unix_cleanup_terminates_owned_group_and_kills_after_timeout(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.prepare(root)
+            server = MagicMock()
+            server.pid = 4242
+            server.poll.return_value = None
+            server.wait.side_effect = [subprocess.TimeoutExpired("backend", 5), None]
+            response = MagicMock()
+            response.__enter__.return_value.status = 200
+            kill_signal = getattr(signal, "SIGKILL", 9)
+            with patch("agent.contract_checks.shutil.which", side_effect=lambda name: name), \
+                 patch("agent.contract_checks.socket.socket"), \
+                 patch("agent.contract_checks.urlopen", return_value=response), \
+                 patch("agent.contract_checks.subprocess.Popen", return_value=server), \
+                 patch("agent.contract_checks.signal.SIGKILL", kill_signal, create=True), \
+                 patch("agent.contract_checks.os.name", "posix"):
+                result = verify_public_acceptance(root, {}, startup_only=True)
+            self.assertTrue(result[0].passed)
+            self.assertEqual(self.killpg.call_args_list, [
+                call(4242, signal.SIGTERM), call(4242, kill_signal),
+            ])
+            self.assertEqual(server.wait.call_args_list, [call(timeout=5), call(timeout=5)])
+
     def test_delivery_startup_skips_behavior_tests_and_preserves_their_report(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

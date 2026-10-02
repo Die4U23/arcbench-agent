@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import html
+import json
 import logging
+from dataclasses import asdict
 import re
 from pathlib import Path
 from typing import Any
@@ -9,6 +11,8 @@ from typing import Any
 from arcbench_agent_runtime import AgentRuntime
 
 from .config import AgentConfig
+from .command_output import failure_details
+from .contract_checks import verify_public_acceptance
 from .llm import BudgetExhaustion, ModelBudgetExceeded, ModelClient
 from .requirements import RequirementModule, load_requirement_tree, root_modules, walk_requirement_ids
 from .tools import ProjectTools
@@ -24,6 +28,41 @@ from .visual_acceptance import collect_visual_references, verify_visual_acceptan
 
 
 LOGGER = logging.getLogger("arcbench_agent")
+REPAIR_REQUEST_ALLOWANCE = 12
+DELIVERY_BUDGETS = {"total_token_budget", "model_request_budget",
+                    "delivery_token_reserve", "delivery_request_reserve"}
+
+
+def _finalize_delivery(output_dir: Path, result: VerificationResult,
+                       budget: BudgetExhaustion | None) -> VerificationResult:
+    """A runnable candidate can reach the evaluator without claiming test success."""
+    checks = result.checks
+    ready = False
+    if budget is not None and budget.budget in DELIVERY_BUDGETS:
+        by_name = {check.name: check for check in checks}
+        required = ("frontend: npm run build", "web template structure")
+        # Only behavior/test failures are eligible for evaluator handoff.
+        blocking = [check for check in checks if not check.passed
+                    and not (check.name.endswith(": npm run test")
+                             or check.name in {"requirement coverage", "agent generation budget",
+                                 "public interaction regression (reconstructed jsdom, not Stage 3)"})]
+        if not blocking and all(name in by_name and by_name[name].passed for name in required):
+            startup = verify_public_acceptance(output_dir, {}, startup_only=True)
+            checks = (*checks, *startup)
+            ready = bool(startup) and all(check.passed for check in startup)
+    final = VerificationResult(result.passed, checks, ready_for_evaluation=ready)
+    report_dir = output_dir / ".arc"
+    report_dir.mkdir(parents=True, exist_ok=True)
+    (report_dir / "delivery-report.json").write_text(json.dumps({
+        "local_verification_passed": final.passed,
+        "ready_for_evaluation": final.passed or ready,
+        "formal_acceptance": "pending",
+        "handoff_reason": "budget finalization" if ready else None,
+        "budget": asdict(budget) if budget is not None else None,
+        "checks": [asdict(check) for check in final.checks],
+        "note": "Candidate delivery is separate from acceptance. Unrun audits remain unverified.",
+    }, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return final
 
 
 def _demo_page(module: RequirementModule) -> tuple[str, str]:
@@ -76,7 +115,7 @@ def _failure_signature(result: VerificationResult) -> tuple[tuple[str, int | Non
             check.exit_code,
             tuple(
                 line.strip()
-                for line in check.output.splitlines()
+                for line in failure_details(check.output).splitlines()
                 if any(marker in line.casefold() for marker in markers)
             ) or (check.output[:500],),
         )
@@ -90,7 +129,7 @@ def _repair_feedback(result: VerificationResult) -> str:
     passed = [check.name for check in result.checks if check.passed]
     parts = []
     for check in failures:
-        output = check.output
+        output = failure_details(check.output)
         if len(output) > 4_000:
             output = output[:2_000] + "\n...[middle truncated]\n" + output[-2_000:]
         parts.append(f"{check.name}: FAILED (exit={check.exit_code})\n{output}")
@@ -104,8 +143,12 @@ def _repair_modules(
     modules: list[RequirementModule],
     module_paths: dict[str, set[str]],
 ) -> list[RequirementModule]:
+    if any(check.name.startswith("project:") and not check.passed for check in result.checks):
+        # Root scripts belong to the whole project, even when their output
+        # mentions a source path written by one earlier module.
+        return modules
     failure_text = "\n".join(
-        f"{check.name}\n{check.output}" for check in result.checks if not check.passed
+        f"{check.name}\n{failure_details(check.output)}" for check in result.checks if not check.passed
     )
     by_requirement = [
         module for module in modules
@@ -159,29 +202,56 @@ def run_model_agent(runtime: AgentRuntime, config: AgentConfig, tree: dict[str, 
     module_paths: dict[str, set[str]] = {}
     budget_failure: BudgetExhaustion | None = None
     budget_exhausted = False
+    deferred_modules: set[str] = set()
     visual_references = collect_visual_references(tree)
+    # A resumed project may already contain failing code. Feed its concrete
+    # failures into the first implementation turn instead of making the model
+    # rediscover them through another cycle of broad source reads.
+    existing_project = any(
+        path.is_file()
+        for folder in ("frontend", "backend")
+        for path in (config.output_dir / folder / "src").rglob("*")
+    )
+    initial_feedback = ""
+    if existing_project:
+        try:
+            project_tools.ensure_dependencies()
+        except Exception as exc:
+            initial_feedback = f"Dependency preparation failed; inspect package manifests before source repair:\n{exc}"
+        else:
+            initial_result = verify_project(config.output_dir)
+            if not initial_result.passed:
+                initial_feedback = _repair_feedback(initial_result)
 
-    def checkpoint_feedback() -> str:
+    def checkpoint_feedback(*, include_root: bool = False) -> str:
+        project_tools.ensure_dependencies()
         checks = (
-            *verify_project(config.output_dir).checks,
+            *verify_project(config.output_dir, include_root=include_root).checks,
             *verify_web_template_structure(config.output_dir).checks,
         )
+        if include_root and all(check.passed for check in checks):
+            checks = (*checks, *verify_public_acceptance(config.output_dir, tree))
         failures = [check for check in checks if not check.passed]
         if not failures:
             LOGGER.info("Implementation checkpoint: current build and test scripts passed")
             return "Current build and test scripts pass. Finish any uncovered requirements and run final checks."
-        LOGGER.warning("Implementation checkpoint found %d failing checks", len(failures))
-        return "\n\n".join(
-            f"{check.name}: FAILED (exit={check.exit_code})\n{check.output[-6000:]}"
+        feedback = "\n\n".join(
+            f"{check.name}: FAILED (exit={check.exit_code})\n{failure_details(check.output)[-6000:]}"
             for check in failures
         )
+        LOGGER.warning("Implementation checkpoint found %d failing checks:\n%s", len(failures), feedback[:6000])
+        return feedback
+
+    def repair_checkpoint_feedback() -> str:
+        return checkpoint_feedback(include_root=True)
 
     root_visual_references = tree.get("visual_reference", [])
     if isinstance(root_visual_references, str):
         root_visual_references = [root_visual_references]
-    for module in modules:
+    for module_index, module in enumerate(modules):
         runtime.events.mark_design_started(module.node_id, "Analyzing requirement subtree")
         planning_subtree = dict(module.subtree)
+        planning_subtree["project_requirements"] = tree
         module_visual_references = planning_subtree.get("visual_reference", [])
         if isinstance(module_visual_references, str):
             module_visual_references = [module_visual_references]
@@ -205,14 +275,28 @@ def run_model_agent(runtime: AgentRuntime, config: AgentConfig, tree: dict[str, 
         runtime.events.mark_design_done(module.node_id, "Implementation plan prepared")
         runtime.events.mark_implementation_started(module.node_id, "Applying requirement subtree")
         writes_before = len(changed_paths)
+        token_limit = getattr(model, "max_total_tokens", None)
+        token_allowance = None
+        request_allowance = None
+        if isinstance(token_limit, int):
+            remaining_tokens = token_limit - model.prompt_tokens_used - model.completion_tokens_used
+            token_allowance = max(0, remaining_tokens // (len(modules) - module_index + 2))
+        request_limit = getattr(model, "max_model_requests", None)
+        if isinstance(request_limit, int):
+            remaining_requests = request_limit - model.model_requests_used - (len(modules) - module_index - 1)
+            request_allowance = max(0, remaining_requests // (len(modules) - module_index + 2))
         budget_exhausted = model.implement(
             task_type=config.task_type,
             subtree=planning_subtree,
             plan=plan,
             project_tools=project_tools,
+            repair_feedback=initial_feedback or None,
             reference_dir=config.requirement_dir,
             checkpoint_feedback=checkpoint_feedback,
+            token_allowance=token_allowance,
+            request_allowance=request_allowance,
         )
+        initial_feedback = ""
         if budget_exhausted:
             budget_exhausted = True
             candidate_report = getattr(model, "last_budget_report", None)
@@ -227,19 +311,77 @@ def run_model_agent(runtime: AgentRuntime, config: AgentConfig, tree: dict[str, 
                 message,
             )
             break
-        if len(changed_paths) == writes_before:
+        deferred = getattr(model, "last_implementation_deferred", False) is True
+        if deferred:
+            deferred_modules.add(module.node_id)
+        if len(changed_paths) == writes_before and not getattr(model, "last_implementation_handoff", False) and not deferred:
             raise RuntimeError(f"No project files were changed for requirement {module.node_id}")
         module_paths.setdefault(module.node_id, set()).update(changed_paths[writes_before:])
-        message = (
+        message = "Module work deferred to whole-project integration; acceptance remains unverified" if deferred else (
             "No file changes in recent tool turns; local scripts passed, continuing to the next requirement"
             if getattr(model, "last_implementation_handoff", False)
             else "Implementation turn completed"
         )
         runtime.events.mark_implementation_done(module.node_id, message)
 
+    if not budget_exhausted and (len(modules) > 1 or deferred_modules):
+        LOGGER.info("Integrating all requirement modules through the application entry point")
+        budget_exhausted = model.implement(
+            task_type=config.task_type,
+            subtree=tree,
+            plan=(
+                "Integrate every module into one usable application. Inspect the actual application entry point, "
+                "routing, providers, API handlers and durable storage. All earlier behaviors must remain reachable. "
+                "Standalone component or validation tests do not establish completion: add integration tests "
+                "mounting the real App and exercising the required multi-module user journey with the real API. "
+                "Verify authentication, selection, final mutation, reload/restart persistence and isolation where "
+                "required. Repair unreachable pages, placeholder actions and unconnected backend code. "
+                "Run the full build and test suites, and finish only after all leaf requirements are integrated."
+            ),
+            project_tools=project_tools,
+            reference_dir=config.requirement_dir,
+            checkpoint_feedback=repair_checkpoint_feedback,
+        )
+        if budget_exhausted:
+            candidate_report = getattr(model, "last_budget_report", None)
+            budget_failure = candidate_report if isinstance(candidate_report, BudgetExhaustion) else None
+
+    def audit_requirement_coverage() -> str:
+        missing = model.review_requirements(tree, project_tools)
+        if not isinstance(missing, str):
+            raise RuntimeError("Requirement audit returned no valid result")
+        if missing:
+            LOGGER.warning("Requirement coverage audit requires repair:\n%s", missing[:6000])
+        return missing
+
+    def coverage_repair_checkpoint_feedback() -> str:
+        feedback = repair_checkpoint_feedback()
+        if not feedback.startswith("Current build and test scripts pass."):
+            return feedback
+        # Script success cannot discharge the source-audit failure that started
+        # this repair. Keep its concrete obligations in the same repair context
+        # until a fresh audit also passes.
+        missing = audit_requirement_coverage()
+        if missing:
+            return "requirement coverage: FAILED (exit=1)\n" + missing
+        return feedback
+
     def verify_current_project(*, include_visual: bool = True) -> VerificationResult:
+        try:
+            project_tools.ensure_dependencies()
+        except Exception as exc:
+            return VerificationResult(False, (CheckResult("project dependencies", False, 1, str(exc)),))
         project_result = verify_project(config.output_dir)
         structure_result = verify_web_template_structure(config.output_dir)
+        public_checks = verify_public_acceptance(config.output_dir, tree) if project_result.passed and structure_result.passed else ()
+        coverage_checks = ()
+        if project_result.passed and structure_result.passed and all(check.passed for check in public_checks) and not budget_exhausted:
+            try:
+                missing = audit_requirement_coverage()
+                coverage_checks = (CheckResult("requirement coverage", not missing, 1 if missing else 0,
+                                              missing or "Source audit found no missing required behavior; platform acceptance remains separate."),)
+            except ModelBudgetExceeded as exc:
+                coverage_checks = (CheckResult("requirement coverage", False, 1, exc.report.summary()),)
         visual_result = (
             verify_visual_acceptance(
                 config.output_dir,
@@ -247,15 +389,18 @@ def run_model_agent(runtime: AgentRuntime, config: AgentConfig, tree: dict[str, 
                 visual_references,
                 model,
             )
-            if visual_references and include_visual and project_result.passed and structure_result.passed
+            if visual_references and include_visual and project_result.passed and structure_result.passed and all(check.passed for check in public_checks)
+            and not isinstance(getattr(model, "last_budget_report", None), BudgetExhaustion)
             else None
         )
-        checks = (*project_result.checks, *structure_result.checks)
+        checks = (*project_result.checks, *structure_result.checks, *public_checks, *coverage_checks)
         if visual_result is not None:
             checks = (*checks, *visual_result.checks)
         return VerificationResult(
             project_result.passed
             and structure_result.passed
+            and all(check.passed for check in public_checks)
+            and all(check.passed for check in coverage_checks)
             and (visual_result is None or visual_result.passed),
             checks,
         )
@@ -272,17 +417,33 @@ def run_model_agent(runtime: AgentRuntime, config: AgentConfig, tree: dict[str, 
             break
         seen_failures.add(signature)
         feedback = _repair_feedback(result)
+        repair_checkpoint = (
+            coverage_repair_checkpoint_feedback
+            if any(check.name == "requirement coverage" and not check.passed for check in result.checks)
+            else repair_checkpoint_feedback
+        )
         repair_modules = _repair_modules(result, modules, module_paths)
         LOGGER.warning("Verification failed; repairing %d of %d requirement modules", len(repair_modules), len(modules))
-        for module in repair_modules:
+        # A shared boundary failure needs one view of the complete requirements,
+        # not sequential module contexts that can undo each other's behavior.
+        repair_targets = repair_modules if len(repair_modules) == 1 else [RequirementModule(
+            node_id="ROOT", name=str(tree.get("name", "Project integration")), subtree=tree,
+        )]
+        for module in repair_targets:
             writes_before = len(changed_paths)
             repair_budget_exhausted = model.implement(
                 task_type=config.task_type,
-                subtree=planning_subtrees[module.node_id],
-                plan=plans[module.node_id],
+                subtree=planning_subtrees.get(module.node_id, tree),
+                plan=plans.get(module.node_id,
+                    "Repair the concrete failures across module boundaries while preserving every original "
+                    "scenario. Read-only public information and authenticated mutations may have different "
+                    "access rules: satisfy both without hiding required journey context or weakening guards. "
+                    "Inspect the failing assertions and real application wiring; do not expand unrelated modules."),
                 project_tools=project_tools,
                 repair_feedback=feedback,
                 reference_dir=config.requirement_dir,
+                checkpoint_feedback=repair_checkpoint,
+                request_allowance=REPAIR_REQUEST_ALLOWANCE,
             )
             module_paths.setdefault(module.node_id, set()).update(changed_paths[writes_before:])
             if repair_budget_exhausted:
@@ -314,6 +475,8 @@ def run_model_agent(runtime: AgentRuntime, config: AgentConfig, tree: dict[str, 
         )
         result = VerificationResult(False, (*result.checks, budget_check))
 
+    result = _finalize_delivery(config.output_dir, result, budget_failure)
+
     for node_id in walk_requirement_ids(tree):
         if node_id == "ROOT":
             continue
@@ -342,6 +505,10 @@ def run_agent(runtime: AgentRuntime, config: AgentConfig) -> int:
     if result.passed:
         runtime.events.mark_run_completed("Agent finished and verification passed")
         LOGGER.info("Agent completed successfully")
+        return 0
+    if result.ready_for_evaluation:
+        runtime.events.mark_run_completed("Runnable candidate delivered for formal evaluation; local verification did not fully pass")
+        LOGGER.warning("Candidate delivered before further generation; formal acceptance pending. Unresolved checks:\n%s", result.summary())
         return 0
     runtime.events.mark_run_failed("Agent finished but verification did not pass")
     LOGGER.error("Verification failed:\n%s", result.summary())

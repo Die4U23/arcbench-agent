@@ -164,7 +164,7 @@ class ContractCheckTests(unittest.TestCase):
             self.prepare(root)
             def run(command, **kwargs):
                 if command[0] == 'node':
-                    assertions = [{"title": f"case {i}", "status": "failed",
+                    assertions = [{"title": f"REQ-3.2: case {i}", "status": "failed",
                                    "failureMessages": [f"assertion {i}\nIgnored nodes:\n"+'<div>'*2000]}
                                   for i in range(30)]
                     (root/'frontend/.arc/public-regression.json').write_text(json.dumps({
@@ -181,12 +181,13 @@ class ContractCheckTests(unittest.TestCase):
                  patch("agent.contract_checks.subprocess.Popen", return_value=server), \
                  patch("agent.contract_checks.subprocess.run", side_effect=run):
                 result = verify_public_acceptance(root, tree())
-            self.assertIn('0/30 passed', result[0].output)
+            self.assertIn('0/32 passed', result[0].output)
             self.assertIn('case 29: assertion 29', result[0].output)
             self.assertNotIn('<div>', result[0].output)
+            self.assertEqual(result[0].requirement_ids, ('REQ-3.2',))
 
-    def test_exit_zero_with_wrong_case_count_is_rejected_and_exact_thirty_passes(self):
-        for count, expected in ((0,False),(29,False),(30,True),(31,False)):
+    def test_exit_zero_requires_all_public_bodies_and_additional_journey_probes(self):
+        for count, expected in ((0,False),(29,False),(30,False),(31,False),(32,True),(33,False)):
             with self.subTest(count=count), tempfile.TemporaryDirectory() as directory:
                 root=Path(directory);self.prepare(root)
                 def run(command, **kwargs):
@@ -204,7 +205,8 @@ class ContractCheckTests(unittest.TestCase):
                     result=verify_public_acceptance(root,tree())
                 self.assertEqual(result[0].passed,expected)
                 fixture=(root/"frontend/.arc/public-case-reconstruction.test.tsx").read_text(encoding="utf-8")
-                self.assertEqual(fixture.count("\ntest("),30)
+                self.assertEqual(fixture.count("\ntest("),32)
+                self.assertIn('older booking cannot replace a newly selected journey',fixture)
                 self.assertIn("NOT",result[0].name.upper())
 
     def test_denied_process_cleanup_is_a_failed_environment_check(self):

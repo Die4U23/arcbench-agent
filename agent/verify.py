@@ -22,6 +22,7 @@ class CheckResult:
     passed: bool
     exit_code: int | None
     output: str
+    requirement_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

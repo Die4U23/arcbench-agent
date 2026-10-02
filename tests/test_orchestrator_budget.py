@@ -42,6 +42,8 @@ class BudgetExhaustionOrchestratorTests(unittest.TestCase):
             self.assertTrue(result.passed)
             self.assertIn('spawnSync npm.cmd EINVAL', observed[0])
             self.assertEqual(verify.call_args_list[1].kwargs, {'include_root': True})
+            repair_calls = [call for call in model.implement.call_args_list if call.kwargs.get('repair_feedback')]
+            self.assertEqual(repair_calls[0].kwargs['request_allowance'], 12)
 
     def test_root_scripts_use_whole_project_repair_context(self):
         modules = [RequirementModule(node_id=f'REQ-{i}', name=str(i), subtree={'id': f'REQ-{i}'})

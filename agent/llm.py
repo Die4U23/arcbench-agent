@@ -50,8 +50,9 @@ class BudgetExhaustion:
 
     def summary(self) -> str:
         tools = ", ".join(self.tool_names) or "unknown/not requested"
+        status = "generation stopped for delivery" if self.budget.startswith("delivery_") else "exhausted before completion"
         summary = (
-            f"{self.budget} exhausted before completion: configured_limit={self.limit}, already_used={self.used}, "
+            f"{self.budget} {status}: configured_limit={self.limit}, already_used={self.used}, "
             f"requested_tool_calls={self.requested}, requested_tools=[{tools}], model_turns_used={self.turns_used}, "
             f"total_tool_calls_used={self.tool_calls_used}, total_model_requests={self.model_requests_used}, "
             f"prompt_tokens={self.prompt_tokens_used}, completion_tokens={self.completion_tokens_used}"
@@ -121,7 +122,7 @@ class ModelClient:
             self.model_seconds = getattr(self, "model_seconds", 0.0) + elapsed
             LOGGER.info("Model latency: stage=%s model=%s seconds=%.3f", stage, kwargs.get("model"), elapsed)
 
-    def _check_model_budget(self) -> None:
+    def _check_model_budget(self, *, reserve_for_delivery: bool = False) -> None:
         requests_used = getattr(self, "model_requests_used", 0)
         tokens_used = getattr(self, "prompt_tokens_used", 0) + getattr(self, "completion_tokens_used", 0)
         for budget, limit, used in (
@@ -143,9 +144,28 @@ class ModelClient:
                 )
                 self.last_budget_report = report
                 raise ModelBudgetExceeded(report)
+        if reserve_for_delivery:
+            # Stop generation before the hard cap. Local final verification does
+            # not need another model call; retain headroom for the last response.
+            for budget, limit, used, reserve in (
+                ("delivery_token_reserve", self.max_total_tokens, tokens_used,
+                 min(400_000, self.max_total_tokens // 20)),
+                ("delivery_request_reserve", self.max_model_requests, requests_used,
+                 min(3, self.max_model_requests // 20)),
+            ):
+                if reserve and used >= limit - reserve:
+                    report = BudgetExhaustion(
+                        budget=budget, limit=limit, used=used, requested=0, tool_names=(),
+                        turns_used=requests_used, tool_calls_used=self.tool_calls_used,
+                        model_requests_used=requests_used, prompt_tokens_used=self.prompt_tokens_used,
+                        completion_tokens_used=self.completion_tokens_used,
+                        detail=f"Generation stopped early for delivery; reserve={reserve}; formal acceptance pending",
+                    )
+                    self.last_budget_report = report
+                    raise ModelBudgetExceeded(report)
 
     def _record_model_request(self) -> None:
-        self._check_model_budget()
+        self._check_model_budget(reserve_for_delivery=True)
         self.model_requests_used = getattr(self, "model_requests_used", 0) + 1
 
     def _record_usage(self, response: Any, *, stage: str = "model", context_chars: int | None = None) -> None:
@@ -923,7 +943,7 @@ class ModelClient:
         self.last_budget_report = None
         for turn_index in count():
             try:
-                self._check_model_budget()
+                self._check_model_budget(reserve_for_delivery=True)
             except ModelBudgetExceeded:
                 return True
             phase_tokens = getattr(self, "prompt_tokens_used", 0) + getattr(self, "completion_tokens_used", 0) - starting_tokens
@@ -993,6 +1013,7 @@ class ModelClient:
                     # forcing every file read back into an uncached summary.
                     conversation.append({"role": "user", "content": "Latest checkpoint verification feedback (supersedes earlier feedback):\n" + feedback})
             remaining_requests = self.max_model_requests - getattr(self, "model_requests_used", 0)
+            remaining_tokens = self.max_total_tokens - getattr(self, "prompt_tokens_used", 0) - getattr(self, "completion_tokens_used", 0)
             remaining_turns = None if self.max_turns is None else self.max_turns - turn_index
             remaining_tools = (
                 None if self.max_tool_calls is None
@@ -1000,6 +1021,7 @@ class ModelClient:
             )
             if not budget_warned and (
                 remaining_requests <= 3
+                or remaining_tokens <= self.max_total_tokens // 10
                 or (remaining_turns is not None and remaining_turns <= max(1, min(3, self.max_turns // 5)))
                 or (remaining_tools is not None and remaining_tools <= max(1, min(5, self.max_tool_calls // 5)))
             ):
@@ -1007,9 +1029,10 @@ class ModelClient:
                 conversation.append({
                     "role": "user",
                     "content": (
-                        "Budget notice: limited model requests or tool calls remain for this run. "
-                        "Finish required behavior and verification before optional work; "
-                        "do not claim completion unless the project checks pass."
+                        f"Budget notice: {remaining_tokens} total tokens remain; generation will stop "
+                        "with a delivery reserve. Finish application wiring and repair the current failures. "
+                        "Do not expand tests or optional styling, weaken requirements, or remove failing assertions. "
+                        "Report unresolved failures honestly; local checks and formal acceptance are separate."
                     ),
                 })
             write_only = idle_tool_turns >= getattr(self, "max_idle_tool_turns", DEFAULT_MAX_IDLE_TOOL_TURNS) // 2 and not passing_checkpoint

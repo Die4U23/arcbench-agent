@@ -166,6 +166,39 @@ class ImplementBudgetTests(unittest.TestCase):
         self.assertEqual(raised.exception.report.budget, "model_request_budget")
         self.assertEqual(raised.exception.report.limit, 250)
 
+    def test_delivery_reserve_stops_next_request_before_hard_token_cap(self) -> None:
+        model = _make_client(None, None, [])
+        model.prompt_tokens_used = 7_600_000
+        with self.assertRaises(ModelBudgetExceeded) as raised:
+            model._record_model_request()
+        self.assertEqual(raised.exception.report.budget, "delivery_token_reserve")
+        self.assertEqual(model.model_requests_used, 0)
+        self.assertEqual(model.client.completions.calls, 0)
+        self.assertIn("reserve=400000", raised.exception.report.summary())
+        self.assertLess(raised.exception.report.used, raised.exception.report.limit)
+
+    def test_delivery_reserve_scales_to_budget_and_request_limit(self) -> None:
+        model = _make_client(None, None, [])
+        model.max_total_tokens = 4_000_000
+        model.prompt_tokens_used = 3_800_000
+        with self.assertRaises(ModelBudgetExceeded) as raised:
+            model._record_model_request()
+        self.assertIn("reserve=200000", raised.exception.report.detail)
+        model.prompt_tokens_used = 0
+        model.model_requests_used = 247
+        with self.assertRaises(ModelBudgetExceeded) as raised:
+            model._record_model_request()
+        self.assertEqual(raised.exception.report.budget, "delivery_request_reserve")
+        self.assertEqual(model.model_requests_used, 247)
+
+    def test_near_budget_implementation_returns_to_verification_without_api_call(self) -> None:
+        model = _make_client(None, None, [])
+        model.prompt_tokens_used = 7_600_000
+        self.assertTrue(model.implement(task_type="web", subtree=self.subtree,
+            plan="test plan", project_tools=self.tools))
+        self.assertEqual(model.client.completions.calls, 0)
+        self.assertEqual(model.last_budget_report.budget, "delivery_token_reserve")
+
     def setUp(self) -> None:
         self._tempdir = tempfile.TemporaryDirectory()
         self.addCleanup(self._tempdir.cleanup)

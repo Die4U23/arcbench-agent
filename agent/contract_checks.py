@@ -13,6 +13,7 @@ import time
 from urllib.request import urlopen
 
 from .ticketbooking_contract import DOM_ADAPTER, PUBLIC_CASES, PUBLIC_SUPPORT, public_acceptance_context
+from .ticketbooking_probes import JOURNEY_PROBES, JOURNEY_PROBE_COUNT
 from .verify import CheckResult
 
 
@@ -63,6 +64,7 @@ def verify_public_acceptance(output_dir: Path, tree: dict, *, startup_only: bool
         fixture = DOM_ADAPTER.replace("../src/App.jsx", "../src/" + app.name)
         fixture += "\n" + re.sub(r"^import[^\n]+\n", "", PUBLIC_SUPPORT, count=1)
         fixture += "\n\n" + "\n\n".join(source for _, source in PUBLIC_CASES)
+        fixture += "\n" + JOURNEY_PROBES
         (protected / "public-case-reconstruction.test.tsx").write_text(fixture, encoding="utf-8")
         config.write_text("export default " + json.dumps({"root": str(frontend),
             "esbuild": {"jsx": "automatic"}, "test": {
@@ -106,19 +108,26 @@ def verify_public_acceptance(output_dir: Path, tree: dict, *, startup_only: bool
             if not report.exists():
                 return (CheckResult(name, False, result.returncode, (result.stdout + result.stderr)[-6000:]),)
             data = json.loads(report.read_text(encoding="utf-8"))
-            passed = result.returncode == 0 and data.get("numTotalTests") == 30 and data.get("numPassedTests") == 30
-            details = [f"Local reconstructed public bodies: {data.get('numPassedTests')}/30 passed; "
+            expected_count = len(PUBLIC_CASES) + JOURNEY_PROBE_COUNT
+            passed = result.returncode == 0 and data.get("numTotalTests") == expected_count and data.get("numPassedTests") == expected_count
+            details = [f"Local reconstructed public bodies plus journey probes: {data.get('numPassedTests')}/{expected_count} passed; "
+                       f"{len(PUBLIC_CASES)} unchanged public bodies + {JOURNEY_PROBE_COUNT} additional local probes; "
                        "file-local helpers reconstructed; jsdom, not the official Playwright evaluator."]
+            failed_requirements = set()
             for suite in data.get("testResults", []):
                 for assertion in suite.get("assertionResults", []):
                     if assertion.get("status") != "passed":
+                        requirement = re.match(r"^(REQ-\d+(?:\.\d+)*):", assertion.get("title", ""))
+                        if requirement and assertion.get("status") == "failed":
+                            failed_requirements.add(requirement.group(1))
                         # Preserve every failing case and its actual assertion;
                         # DOM dumps otherwise displace later cases in feedback.
                         failures = [message.split("Ignored nodes:", 1)[0].strip()
                                     for message in assertion.get("failureMessages", [])]
                         details.append(assertion.get("title", "Unknown case")[:140] + ": " +
                                        "\n".join(failures)[:220])
-            return (CheckResult(name, passed, result.returncode, "\n\n".join(details)[:12000]),)
+            return (CheckResult(name, passed, result.returncode, "\n\n".join(details)[:12000],
+                               tuple(sorted(failed_requirements))),)
     except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as exc:
         startup = server_log.read_text(encoding="utf-8", errors="replace")[-4000:] if server_log.exists() else ""
         return (CheckResult(name, False, None, str(exc) + "\nRegression server log:\n" + startup),)

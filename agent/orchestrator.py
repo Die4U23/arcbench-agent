@@ -95,15 +95,22 @@ def _register_traceability(runtime: AgentRuntime, tree: dict[str, Any]) -> None:
     runtime.traceability.store_requirement_tree(tree)
 
 
-def _record_test(runtime: AgentRuntime, node_id: str, result: VerificationResult) -> None:
+def _record_test(runtime: AgentRuntime, node_id: str, passed: bool | None) -> None:
     test_id = f"TEST-{node_id}"
     runtime.traceability.upsert_test(
         test_id=test_id,
         req_id=node_id,
         type="INTEGRATION",
-        passed=result.passed,
+        passed=passed,
     )
-    runtime.traceability.set_test_pass_status(test_id, result.passed)
+    runtime.traceability.set_test_pass_status(test_id, passed)
+
+
+def _requirement_test_status(result: VerificationResult, node_id: str) -> bool | None:
+    """Global infrastructure/budget failures do not identify failed requirements."""
+    if any(not check.passed and node_id in check.requirement_ids for check in result.checks):
+        return False
+    return True if result.passed else None
 
 
 def _failure_signature(result: VerificationResult) -> tuple[tuple[str, int | None, tuple[str, ...]], ...]:
@@ -183,7 +190,7 @@ def run_offline_demo(runtime: AgentRuntime, config: AgentConfig, tree: dict[str,
             runtime.events.mark_test_passed(node_id, "Offline page verification passed")
         else:
             runtime.events.mark_test_failed(node_id, result.summary())
-        _record_test(runtime, node_id, result)
+        _record_test(runtime, node_id, result.passed)
     _register_traceability(runtime, tree)
     return result
 
@@ -480,11 +487,13 @@ def run_model_agent(runtime: AgentRuntime, config: AgentConfig, tree: dict[str, 
     for node_id in walk_requirement_ids(tree):
         if node_id == "ROOT":
             continue
-        if result.passed:
-            runtime.events.mark_test_passed(node_id, "Project verification passed")
-        else:
-            runtime.events.mark_test_failed(node_id, result.summary())
-        _record_test(runtime, node_id, result)
+        status = _requirement_test_status(result, node_id)
+        if status is True:
+            runtime.events.mark_test_passed(node_id, "Local project verification passed; formal acceptance pending")
+        elif status is False:
+            failures = [check for check in result.checks if not check.passed and node_id in check.requirement_ids]
+            runtime.events.mark_test_failed(node_id, VerificationResult(False, tuple(failures)).summary())
+        _record_test(runtime, node_id, status)
     _register_traceability(runtime, tree)
     log_usage = getattr(model, "log_usage", None)
     if callable(log_usage):

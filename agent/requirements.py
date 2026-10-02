@@ -50,6 +50,25 @@ def _validate_requirement_tree(payload: Any, source_path: Path) -> dict[str, Any
         raise ValueError(f"{source_path.name}: ROOT must contain a children list")
     if not payload["children"]:
         raise ValueError(f"{source_path.name}: ROOT must contain at least one child requirement")
+
+    def add_embedded_references(node: Any) -> None:
+        if not isinstance(node, dict):
+            return
+        description = node.get("description")
+        if isinstance(description, str):
+            embedded, optional = _split_visual_references(description)
+            if optional:
+                node["optional_visual_reference"] = list(dict.fromkeys(optional))
+            if embedded:
+                explicit = node.get("visual_reference", [])
+                if isinstance(explicit, str):
+                    explicit = [explicit]
+                if isinstance(explicit, list):
+                    node["visual_reference"] = list(dict.fromkeys([*explicit, *embedded]))
+        for child in node.get("children", []):
+            add_embedded_references(child)
+
+    add_embedded_references(payload)
     return payload
 
 
@@ -128,7 +147,7 @@ def _parse_requirement_section(req_id: str, name: str, section: str) -> dict[str
                 if value.strip()
             ]
 
-    references = _extract_visual_references(section)
+    references, optional_references = _split_visual_references(section)
     description = _clean_markdown(section_without_scenarios)
     description = re.sub(r"\bType\s*:\s*(?:FOLDER|ATOMIC)\b", "", description, flags=re.IGNORECASE)
     description = re.sub(
@@ -154,7 +173,18 @@ def _parse_requirement_section(req_id: str, name: str, section: str) -> dict[str
         node["type"] = type_match.group(1).upper()
     if references:
         node["visual_reference"] = list(dict.fromkeys(references))
+    if optional_references:
+        node["optional_visual_reference"] = list(dict.fromkeys(optional_references))
     return node
+
+
+def _split_visual_references(section: str) -> tuple[list[str], list[str]]:
+    required: list[str] = []
+    optional: list[str] = []
+    for line in section.splitlines():
+        destination = optional if re.search(r"optional\s+visual\s+reference", line, re.IGNORECASE) else required
+        destination.extend(_extract_visual_references(line))
+    return list(dict.fromkeys(required)), list(dict.fromkeys(optional))
 
 
 def _extract_visual_references(section: str) -> list[str]:

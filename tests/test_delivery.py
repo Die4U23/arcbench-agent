@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from agent.llm import BudgetExhaustion
-from agent.orchestrator import _finalize_delivery, run_agent, run_model_agent
+from agent.orchestrator import _finalize_delivery, _requirement_test_status, run_agent, run_model_agent
 from agent.requirements import RequirementModule
 from agent.verify import CheckResult, VerificationResult
 
@@ -105,7 +105,24 @@ class DeliveryTests(unittest.TestCase):
             model.review_requirements.assert_not_called()
             self.assertEqual(model.implement.call_count, 1)
             runtime.events.mark_test_passed.assert_not_called()
-            runtime.traceability.set_test_pass_status.assert_called_once_with("TEST-REQ-1", False)
+            runtime.events.mark_test_failed.assert_not_called()
+            runtime.traceability.set_test_pass_status.assert_called_once_with("TEST-REQ-1", None)
+
+    def test_global_failures_and_unrun_audits_do_not_fail_every_requirement(self):
+        for result in (candidate(), VerificationResult(False, (
+                CheckResult('agent generation budget', False, 1, 'reserve reached'),)),
+                VerificationResult(False, (CheckResult('project dependencies', False, 1, 'install failed'),))):
+            with self.subTest(checks=result.checks):
+                self.assertIsNone(_requirement_test_status(result, 'REQ-1'))
+
+    def test_only_explicit_case_failure_is_attributed_and_local_success_is_separate(self):
+        result = VerificationResult(False, (
+            CheckResult('public interaction regression', False, 1, 'failed case', ('REQ-3.2',)),
+            CheckResult('agent generation budget', False, 1, 'reserve reached'),))
+        self.assertFalse(_requirement_test_status(result, 'REQ-3.2'))
+        self.assertIsNone(_requirement_test_status(result, 'REQ-1.1'))
+        self.assertIsNone(_requirement_test_status(result, 'REQ-3'))
+        self.assertTrue(_requirement_test_status(VerificationResult(True, ()), 'REQ-1'))
 
 
 if __name__ == "__main__":

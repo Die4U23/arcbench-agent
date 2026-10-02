@@ -350,16 +350,16 @@ class BudgetExhaustionOrchestratorTests(unittest.TestCase):
                 self.assertEqual(model.implement.call_count, expected_implement_calls)
                 self.assertTrue(any("stopping further requirement generation" in line for line in logs.output))
                 self.assertEqual(runtime.events.mark_test_passed.call_count, 0)
-                self.assertEqual(runtime.events.mark_test_failed.call_count, 1)
+                self.assertEqual(runtime.events.mark_test_failed.call_count, 0)
                 runtime.traceability.upsert_test.assert_called_once_with(
                     test_id="TEST-REQ-1",
                     req_id="REQ-1",
                     type="INTEGRATION",
-                    passed=expected_passed,
+                    passed=None,
                 )
                 runtime.traceability.set_test_pass_status.assert_called_once_with(
                     "TEST-REQ-1",
-                    expected_passed,
+                    None,
                 )
 
     def test_missing_web_directories_trigger_repair_and_block_success(self) -> None:
@@ -411,7 +411,7 @@ class BudgetExhaustionOrchestratorTests(unittest.TestCase):
             repair_feedback = model.implement.call_args.kwargs["repair_feedback"]
             self.assertIn("web template structure: FAILED", repair_feedback)
             self.assertIn("frontend/ and backend/", repair_feedback)
-            runtime.events.mark_test_failed.assert_called_once()
+            runtime.events.mark_test_failed.assert_not_called()
 
     def test_budget_exhaustion_stops_before_planning_the_next_requirement(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

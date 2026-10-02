@@ -221,6 +221,7 @@ class ContractCheckTests(unittest.TestCase):
                  patch("agent.contract_checks.urlopen", return_value=response), \
                  patch("agent.contract_checks.subprocess.Popen", return_value=server), \
                  patch("agent.contract_checks.subprocess.run", return_value=SimpleNamespace(returncode=1, stdout="spawn denied", stderr="")), \
+                 patch("agent.contract_checks.subprocess.CREATE_NEW_PROCESS_GROUP", 0x200, create=True), \
                  patch("agent.contract_checks.os.name", "nt"):
                 result = verify_public_acceptance(root, tree())
             self.assertFalse(result[0].passed)

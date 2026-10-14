@@ -7,6 +7,7 @@ import logging
 from dataclasses import asdict
 import os
 import re
+import time
 from pathlib import Path
 from typing import Any
 
@@ -35,7 +36,7 @@ from .visual_acceptance import collect_visual_references, verify_visual_acceptan
 
 LOGGER = logging.getLogger("arcbench_agent")
 REPAIR_REQUEST_ALLOWANCE = 12
-CONTINUABLE_REPAIR_STOPS = {"allocation", "model_finished", "checkpoint_failed"}
+CONTINUABLE_REPAIR_STOPS = {"allocation", "model_finished", "checkpoint_failed", "truncated"}
 DELIVERY_BUDGETS = {"total_token_budget", "model_request_budget",
                     "delivery_token_reserve", "delivery_request_reserve"}
 
@@ -249,6 +250,80 @@ def _source_fingerprint(project: Path) -> str:
     return digest.hexdigest()
 
 
+def _boundary_input_fingerprint(project: Path) -> str | None:
+    """Observe local check inputs without reading secrets or hashing dependencies."""
+    digest = hashlib.sha256()
+    content_suffixes = {'.js', '.jsx', '.mjs', '.cjs', '.ts', '.tsx', '.py',
+                        '.css', '.html', '.sh', '.ps1', '.yaml', '.yml'}
+    manifests = {'package.json', 'package-lock.json', 'npm-shrinkwrap.json',
+                 'tsconfig.json', 'jsconfig.json'}
+    root = project.resolve()
+    content_bytes = 0
+    started = time.monotonic()
+    observed_nodes = 0
+    def raise_walk_error(error):
+        raise error
+    try:
+        for current, directories, names in os.walk(root, followlinks=False, onerror=raise_walk_error):
+            observed_nodes += 1 + len(directories) + len(names)
+            if observed_nodes > 50_000 or time.monotonic() - started > 2:
+                return None
+            base = Path(current)
+            directories[:] = sorted(name for name in directories if name != '.git')
+            # External directory links can hide changed dependency/test inputs.
+            if any((base / name).resolve() != base / name for name in directories):
+                return None
+            for name in sorted(names):
+                if time.monotonic() - started > 2:
+                    return None
+                path = base / name
+                resolved = path.resolve()
+                if not resolved.is_relative_to(root):
+                    return None
+                relative = path.relative_to(root)
+                stat = path.stat()
+                digest.update(repr((relative.as_posix(), stat.st_size, stat.st_mtime_ns,
+                                    stat.st_ctime_ns, stat.st_ino)).encode())
+                # Dependency installs and runtime/secret files are observed by
+                # metadata. Hash source and check scripts too, including .arc.
+                if ('node_modules' not in relative.parts and not name.startswith('.')
+                        and (path.suffix.lower() in content_suffixes or name in manifests)):
+                    content_bytes += stat.st_size
+                    if content_bytes > 16 * 1024 * 1024:
+                        return None
+                    digest.update(hashlib.sha256(path.read_bytes()).digest())
+        return digest.hexdigest()
+    except (OSError, ValueError):
+        return None
+
+
+class _BoundaryVerification:
+    """One-use handoff from a full slice boundary to its immediate verification."""
+    def __init__(self):
+        self.saved = None
+
+    def clear(self):
+        self.saved = None
+
+    def remember(self, project, revision, result):
+        self.clear()
+        public = next((check for check in result.checks if check.name == PUBLIC_CHECK), None)
+        # Incomplete/infrastructure reports must run the normal verification path.
+        if public is None or not public.case_statuses:
+            return
+        stamp = _boundary_input_fingerprint(project)
+        if stamp is not None:
+            self.saved = (stamp, revision, result)
+
+    def take(self, project, revision, *, final=False):
+        saved, self.saved = self.saved, None
+        if final or saved is None or saved[1] != revision:
+            return None
+        if _boundary_input_fingerprint(project) != saved[0]:
+            return None
+        return saved[2]
+
+
 def _repair_feedback(result: VerificationResult) -> str:
     failures = [check for check in result.checks if not check.passed]
     passed = [check.name for check in result.checks if check.passed]
@@ -355,6 +430,7 @@ def _run_model_agent(runtime: AgentRuntime, config: AgentConfig, tree: dict[str,
     deferred_modules: set[str] = set()
     visual_references = collect_visual_references(tree)
     candidate = candidate if candidate is not None else CandidateCheckpoint(config.output_dir)
+    boundary_verification = _BoundaryVerification()
 
     def local_verification(*, include_root: bool = True, final: bool = False) -> VerificationResult:
         return _verify_local_candidate(config, tree, candidate, project_tools,
@@ -379,8 +455,12 @@ def _run_model_agent(runtime: AgentRuntime, config: AgentConfig, tree: dict[str,
                 initial_feedback = _repair_feedback(initial_result)
 
     def checkpoint_feedback(*, include_root: bool = False, allow_restore: bool = False) -> str:
-        checks = _prepare_local_candidate(config, tree, candidate, project_tools,
-            include_root=include_root, allow_restore=allow_restore).checks
+        local = _prepare_local_candidate(config, tree, candidate, project_tools,
+            include_root=include_root, allow_restore=allow_restore)
+        if include_root and allow_restore:
+            boundary_verification.remember(config.output_dir,
+                getattr(project_tools, 'source_revision', 0), local)
+        checks = local.checks
         failures = [check for check in checks if not check.passed]
         if not failures:
             LOGGER.info("Implementation checkpoint: current build and test scripts passed")
@@ -436,6 +516,7 @@ def _run_model_agent(runtime: AgentRuntime, config: AgentConfig, tree: dict[str,
         if isinstance(request_limit, int):
             remaining_requests = request_limit - model.model_requests_used - (len(modules) - module_index - 1)
             request_allowance = max(0, remaining_requests // (len(modules) - module_index + 2))
+        boundary_verification.clear()
         budget_exhausted = model.implement(
             task_type=config.task_type,
             subtree=planning_subtree,
@@ -482,6 +563,7 @@ def _run_model_agent(runtime: AgentRuntime, config: AgentConfig, tree: dict[str,
         integration_tokens, integration_requests = _integration_allowances(model)
         LOGGER.info("Integration allocation: tokens=%s requests=%s; remaining half retained for focused repairs",
                     integration_tokens, integration_requests)
+        boundary_verification.clear()
         budget_exhausted = model.implement(
             task_type=config.task_type,
             subtree=tree,
@@ -530,8 +612,14 @@ def _run_model_agent(runtime: AgentRuntime, config: AgentConfig, tree: dict[str,
         try:
             project_tools.ensure_dependencies()
         except Exception as exc:
+            boundary_verification.clear()
             return VerificationResult(False, (CheckResult("project dependencies", False, 1, str(exc)),))
-        local_result = local_verification(final=budget_exhausted)
+        local_result = boundary_verification.take(config.output_dir,
+            getattr(project_tools, 'source_revision', 0), final=budget_exhausted)
+        if local_result is None:
+            local_result = local_verification(final=budget_exhausted)
+        else:
+            LOGGER.info('Reusing complete local verification from the immediate unchanged slice boundary')
         coverage_checks = ()
         if local_result.passed and not budget_exhausted:
             try:
@@ -624,6 +712,7 @@ def _run_model_agent(runtime: AgentRuntime, config: AgentConfig, tree: dict[str,
         repair_stop_reason = None
         for module in repair_targets:
             writes_before = len(changed_paths)
+            boundary_verification.clear()
             repair_budget_exhausted = model.implement(
                 task_type=config.task_type,
                 subtree=module.subtree if focus else planning_subtrees.get(module.node_id, tree),
@@ -667,6 +756,8 @@ def _run_model_agent(runtime: AgentRuntime, config: AgentConfig, tree: dict[str,
                 and _source_fingerprint(config.output_dir) != source_before):
             # Measure after the full regression: reverted edits cannot earn a
             # continuation, and repeated writes/log timestamps are not progress.
+            # A truncated response executes no tools, but earlier complete
+            # writes in that slice can still earn this one bounded continuation.
             pending_continuations.add(repair_key)
             LOGGER.info("Retained production source changes after repair stop=%s; queued one continuation for %s", repair_stop_reason, focus or "ROOT")
 

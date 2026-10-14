@@ -20,6 +20,9 @@ from openai import APIStatusError
 from .tools import MAX_BATCH_OUTPUT_CHARS, ProjectTools, TOOL_SCHEMAS
 from .model_transport import CompletionClient, DEFAULT_MODEL_DEADLINE_SECONDS, ModelRequestInterrupted
 from .ticketbooking_contract import public_acceptance_context
+from .initial_bootstrap import initial_bootstrap_gaps
+from .generation_contract import generation_contract_context
+from .prompt_context import requirement_context
 from .visual_acceptance import REPORT_RELATIVE_PATH, SCREENSHOT_RELATIVE_DIR, collect_visual_references
 
 LOGGER = logging.getLogger(__name__)
@@ -30,6 +33,7 @@ DEFAULT_MAX_MODEL_REQUESTS = 250
 DEFAULT_MAX_TOTAL_TOKENS = 8_000_000
 MAX_COMPLETION_TOKENS_PER_REQUEST = 12_000
 DEEPSEEK_THINKING_IMPLEMENTATION_MAX_TOKENS = 24_000
+DEEPSEEK_PRO_EDIT_MAX_TOKENS = 24_000
 MAX_IDENTICAL_FAILED_TOOL_TURNS = 3
 DEFAULT_MAX_IDLE_TOOL_TURNS = 12
 MAX_REPAIR_REQUESTS = 12
@@ -118,6 +122,7 @@ class ModelClient:
         self.visual_model = os.environ.get("VISUAL_MODEL", "").strip() or self.model
         self.visual_review_model = os.environ.get("VISUAL_REVIEW_MODEL", "").strip() or self.visual_model
         base_url = os.environ.get("OPENAI_BASE_URL", "").strip()
+        self.is_official_deepseek = urlsplit(base_url).hostname == 'api.deepseek.com'
         separate_visual_plan = (urlsplit(base_url).hostname == 'api.deepseek.com'
             and self.model.casefold() == 'deepseek-v4-pro'
             and self.visual_model.casefold() != self.model.casefold())
@@ -171,6 +176,8 @@ class ModelClient:
 
     def _create_completion(self, stage: str, **kwargs: Any) -> Any:
         self.raise_if_request_interrupted()
+        LOGGER.info('Model output policy: stage=%s request=%d max_tokens=%s',
+                    stage, self.model_requests_used, kwargs.get('max_tokens'))
         started = time.perf_counter()
         try:
             return self.client.chat.completions.create(**kwargs)
@@ -191,6 +198,14 @@ class ModelClient:
         stopped = getattr(self, "last_request_interruption", None)
         if isinstance(stopped, ModelRequestInterrupted):
             raise stopped
+
+    def _edit_output_cap(self, model: str) -> int:
+        # Four-plus observed Pro tool responses exhausted 12K and were discarded.
+        # Give complete edits the same bounded room already used for Pro thinking.
+        # This does not change the run budget, deadline, retry or completeness rules.
+        if getattr(self, 'is_official_deepseek', False) and model.casefold() == 'deepseek-v4-pro':
+            return DEEPSEEK_PRO_EDIT_MAX_TOKENS
+        return MAX_COMPLETION_TOKENS_PER_REQUEST
 
     def _check_model_budget(self, *, reserve_for_delivery: bool = False) -> None:
         requests_used = getattr(self, "model_requests_used", 0)
@@ -720,8 +735,7 @@ class ModelClient:
         reference_dir: Path | None = None,
     ) -> str:
         user_content: str | list[dict[str, Any]] = (
-            f"Task type: {task_type}\nRequirement subtree:\n"
-            f"{json.dumps(subtree, ensure_ascii=False, indent=2)}"
+            requirement_context(task_type, subtree)
             + public_acceptance_context(subtree)
         )
         visual_inputs = self._visual_inputs(subtree, reference_dir)
@@ -949,9 +963,9 @@ class ModelClient:
             "When implementation is complete, provide a short summary."
         )
         text_message = (
-            f"Task type: {task_type}\n"
-            f"Requirement subtree:\n{json.dumps(subtree, ensure_ascii=False, indent=2)}\n\n"
-            f"Implementation plan:\n{plan}"
+            requirement_context(task_type, subtree)
+            + f"\n\nImplementation plan:\n{plan}"
+            + generation_contract_context(subtree)
             + public_acceptance_context(subtree)
         )
         if collect_visual_references(subtree):
@@ -1024,6 +1038,10 @@ class ModelClient:
             for folder in ("frontend", "backend")
             for path in (project_dir / folder / "src").rglob("*")
         )
+        initial_bootstrap = (task_type == "web" and isinstance(project_dir, Path)
+            and not resumed_project and all((project_dir / name).is_dir() for name in ("frontend", "backend")))
+        bootstrap_incomplete = False
+        checkpoint_revision: tuple[int, int] | None = None
         observed_writes = initial_writes
         idle_tool_turns = 0
         passing_checkpoint = False
@@ -1281,9 +1299,25 @@ class ModelClient:
                 self.max_turns is not None
                 and turn_index == max(1, self.max_turns - 8)
             ))
-            if checkpoint_feedback is not None and checkpoint_due:
+            current_checkpoint_revision = (len(progress_paths), getattr(project_tools, "source_revision", 0))
+            if (checkpoint_feedback is not None and checkpoint_due
+                    and (not initial_bootstrap or current_checkpoint_revision != checkpoint_revision)):
                 try:
-                    feedback = checkpoint_feedback()
+                    gaps = initial_bootstrap_gaps(project_dir) if initial_bootstrap else ()
+                except Exception as exc:
+                    # A scheduling optimization must never suppress the real verifier
+                    # when the cheap source inspection is unavailable.
+                    LOGGER.info("Initial bootstrap diagnostic unavailable (%s); using full checks", type(exc).__name__)
+                    gaps = ()
+                bootstrap_incomplete = bool(gaps)
+                try:
+                    if gaps:
+                        feedback = ("Initial scaffold is incomplete; full periodic checks have not run. "
+                            "Complete these declared inputs before the next build:\n- " + "\n- ".join(gaps))
+                        LOGGER.info("Initial bootstrap diagnostic: %d missing/invalid declared inputs; periodic checks deferred", len(gaps))
+                    else:
+                        feedback = checkpoint_feedback()
+                    checkpoint_revision = current_checkpoint_revision
                 except ModelRequestInterrupted:
                     raise
                 except Exception as exc:
@@ -1340,7 +1374,8 @@ class ModelClient:
             refresh_tool = ("read_file" if refresh_target[1] == "replacement_match" else "list_files") if refresh_target else None
             write_only = (idle_tool_turns >= getattr(self, "max_idle_tool_turns", DEFAULT_MAX_IDLE_TOOL_TURNS) // 2
                           and not passing_checkpoint and refresh_tool is None)
-            edit_tool = "replace_text" if (resumed_project or repair_text or checkpoint_note or len(progress_paths) > initial_writes) else "write_files"
+            edit_tool = ("write_files" if bootstrap_incomplete else
+                "replace_text" if (resumed_project or repair_text or checkpoint_note or len(progress_paths) > initial_writes) else "write_files")
             if write_only and not write_only_prompted:
                 write_only_prompted = True
                 conversation.append({
@@ -1359,7 +1394,7 @@ class ModelClient:
                 return finish_implementation("model_budget", exhausted=True)
             context_chars = self._message_context_chars(messages)
             request_options: dict[str, Any] = {}
-            max_tokens = MAX_COMPLETION_TOKENS_PER_REQUEST
+            max_tokens = self._edit_output_cap(model)
             if getattr(self, "is_deepseek", False):
                 # Keep DeepSeek thinking enabled for implementation by default.
                 # Retained tool-call turns must include their reasoning_content.
@@ -1378,7 +1413,7 @@ class ModelClient:
                     thinking = "disabled"
                     request_options["extra_body"] = {"thinking": {"type": thinking}}
                     request_options.pop("reasoning_effort", None)
-                    max_tokens = MAX_COMPLETION_TOKENS_PER_REQUEST
+                    max_tokens = self._edit_output_cap(model)
             if getattr(self, "is_glm", False) and self.implementation_thinking:
                 request_options["extra_body"] = {"thinking": {"type": self.implementation_thinking}}
             try:
@@ -1447,7 +1482,7 @@ class ModelClient:
                     messages=retry_messages,
                     tools=TOOL_SCHEMAS,
                     tool_choice={"type": "function", "function": {"name": refresh_tool or edit_tool}},
-                    max_tokens=MAX_COMPLETION_TOKENS_PER_REQUEST,
+                    max_tokens=self._edit_output_cap(model),
                     **request_options,
                 )
                 self._record_usage(
@@ -1466,6 +1501,12 @@ class ModelClient:
                     "DeepSeek implementation output remains truncated; discarding partial "
                     "tools and handing the current candidate to verification"
                 )
+                partial = response.choices[0].message
+                calls = partial.tool_calls or []
+                LOGGER.warning('Discarded output shape: content_chars=%d reasoning_chars=%d '
+                    'tool_count=%d tool_argument_chars=%s', len(partial.content or ''),
+                    len(getattr(partial, 'reasoning_content', None) or ''), len(calls),
+                    [len(call.function.arguments or '') for call in calls])
                 return finish_implementation("truncated", deferred=True)
             if getattr(response.choices[0], "finish_reason", None) == "length":
                 finish_implementation("truncated", deferred=True)

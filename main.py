@@ -1,6 +1,14 @@
 from __future__ import annotations
 
 import os
+
+# User-authorized Flash-only candidate. Reject stale Pro configuration before HTTP.
+for _field in ("MODEL", "VISUAL_MODEL", "VISUAL_REVIEW_MODEL"):
+    _model = os.environ.get(_field, "").strip() or "deepseek-flash"
+    if _model != "deepseek-flash":
+        raise RuntimeError("Flash-only candidate rejects non-Flash configuration in " + _field)
+    os.environ[_field] = _model
+os.environ["ARCBENCH_MODEL_DEADLINE_SECONDS"] = "300"
 # This authorized candidate uses the full 10M allowance, including under stale
 # lower external defaults. It cannot exceed 10M/250 by environment overrides.
 os.environ["ARCBENCH_MAX_TOTAL_TOKENS"] = "10000000"

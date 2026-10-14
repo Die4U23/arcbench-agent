@@ -7,6 +7,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from agent.candidate_checkpoint import PUBLIC_CHECK
+from agent.browser_contract import BROWSER_CHECK
 from agent.llm import BudgetExhaustion
 from agent.orchestrator import _source_fingerprint, run_model_agent
 from agent.requirements import RequirementModule
@@ -15,7 +16,7 @@ from agent.verify import CheckResult, VerificationResult
 
 class RepairContinuationTests(unittest.TestCase):
     def run_repairs(self, steps, *, families=("REQ-1.1", "REQ-2.1"), status_for=None,
-                    complete_report=True, case_names=None):
+                    complete_report=True, case_names=None, native_ids=()):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             source = root / "frontend/src/App.jsx"
@@ -68,9 +69,12 @@ class RepairContinuationTests(unittest.TestCase):
                 # Volatile diagnostics must not reset a family's allowance.
                 output = "\n".join(node + f": AssertionError: expected behavior, diagnostic {len(full_regressions)}"
                                    for node in families if node not in passed)
-                return (CheckResult(PUBLIC_CHECK, len(passed) == len(families),
+                public = CheckResult(PUBLIC_CHECK, len(passed) == len(families),
                     0 if len(passed) == len(families) else 1, output,
-                    case_statuses=statuses if complete_report else ()),)
+                    case_statuses=statuses if complete_report else ())
+                native = ((CheckResult(BROWSER_CHECK, False, 1, 'Native location failed',
+                    native_ids, (('local native location', 'failed'),)),) if native_ids else ())
+                return (public, *native)
 
             project = VerificationResult(True, (CheckResult("frontend: npm run build", True, 0, "built"),))
             layout = VerificationResult(True, (CheckResult("web template structure", True, 0, "layout"),))
@@ -98,6 +102,39 @@ class RepairContinuationTests(unittest.TestCase):
         self.assertTrue(observed.result.ready_for_evaluation)
         self.assertIsNone(observed.report["budget"])
         self.assertEqual(observed.report["generation_stop_reason"], "bounded_repair_exhausted")
+
+    def test_exhausted_native_families_do_not_hide_untried_public_family(self):
+        observed = self.run_repairs([
+            {'family': 'REQ-2.1', 'reason': 'no_progress'},
+            {'family': 'REQ-2.2', 'reason': 'no_progress'},
+            {'family': 'REQ-3.1', 'reason': 'no_progress'},
+        ], families=('REQ-2.1', 'REQ-2.2', 'REQ-3.1'), native_ids=('REQ-2.1', 'REQ-2.2'))
+        self.assertEqual(observed.repairs, ['REQ-2.1', 'REQ-2.2', 'REQ-3.1'])
+        self.assertFalse(observed.result.passed)
+
+    def test_truncated_slice_with_retained_writes_gets_only_one_fair_continuation(self):
+        observed = self.run_repairs([
+            {'family': 'REQ-1.1', 'reason': 'truncated', 'source': 'complete edit before cutoff'},
+            {'family': 'REQ-2.1', 'reason': 'no_progress'},
+            {'family': 'REQ-1.1', 'reason': 'truncated', 'source': 'another complete edit'},
+        ])
+        self.assertEqual(observed.repairs, ['REQ-1.1', 'REQ-2.1', 'REQ-1.1'])
+        self.assertEqual(observed.source, 'another complete edit')
+        self.assertEqual(observed.report['generation_stop_reason'], 'bounded_repair_exhausted')
+
+    def test_truncated_slice_without_complete_write_does_not_get_continuation(self):
+        observed = self.run_repairs([
+            {'family': 'REQ-1.1', 'reason': 'truncated'},
+        ], families=('REQ-1.1',))
+        self.assertEqual(observed.source, 'baseline')
+        self.assertEqual(observed.repairs, ['REQ-1.1'])
+
+    def test_truncated_slice_with_reverted_write_does_not_get_continuation(self):
+        observed = self.run_repairs([
+            {'family': 'REQ-2.1', 'reason': 'truncated', 'source': 'lost passing registration'},
+        ], status_for=lambda source: {'REQ-1.1'} if source == 'baseline' else set())
+        self.assertEqual(observed.source, 'baseline')
+        self.assertEqual(observed.repairs, ['REQ-2.1'])
 
     def test_partial_allocated_repair_continues_after_other_family_has_a_turn(self):
         observed = self.run_repairs([

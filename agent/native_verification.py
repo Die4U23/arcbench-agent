@@ -9,6 +9,8 @@ import subprocess
 from .browser_contract import BROWSER_CHECK, browser_guard_result, verify_browser_contract
 from .contract_checks import verify_public_acceptance as original_public_acceptance
 from .visual_acceptance import _wait_for_server
+from .station_units import verify_station_units, unavailable
+from .verify import CheckResult
 
 
 def _stop_owned_server(server):
@@ -31,7 +33,15 @@ def _stop_owned_server(server):
         server.wait(timeout=5)
 
 
-def _run_owned_browser(project: Path):
+def _combine(original, locations):
+    passed = original.passed and locations.passed
+    return CheckResult(BROWSER_CHECK, passed, 0 if passed else 1,
+        original.output+'\n\n'+locations.name+': '+locations.output,
+        tuple(sorted(set(original.requirement_ids + locations.requirement_ids))),
+        original.case_statuses + locations.case_statuses)
+
+
+def _run_owned_browser(project: Path, original=None):
     protected = project/'frontend/.arc'
     protected.mkdir(parents=True, exist_ok=True)
     log_path = protected/'independent-native-server.log'
@@ -56,15 +66,18 @@ def _run_owned_browser(project: Path):
                 stdout=log, stderr=subprocess.STDOUT, start_new_session=os.name != 'nt',
                 creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == 'nt' else 0)
             _wait_for_server(server, 3000, log_path)
-            result = verify_browser_contract(protected)
+            native = original if original is not None else verify_browser_contract(protected)
+            result = _combine(native, verify_station_units(protected))
     except Exception as exc:
-        result = browser_guard_result(False, f'Independent native guard: {exc}')
+        message = f'Independent native guard: {exc}'
+        result = _combine(original or browser_guard_result(False, message), unavailable(message))
     finally:
         if server is not None:
             try:
                 _stop_owned_server(server)
             except Exception as exc:
-                result = browser_guard_result(False, f'Owned native server cleanup failed: {exc}')
+                message = f'Owned native server cleanup failed: {exc}'
+                result = _combine(browser_guard_result(False, message), unavailable(message))
     return result
 
 
@@ -73,8 +86,9 @@ def verify_public_acceptance(output_dir: Path, tree: dict, *, startup_only=False
     if startup_only or len(checks) != 2 or not checks[0].case_statuses:
         return checks
     browser = checks[1]
-    if browser.name != BROWSER_CHECK or not browser.output.startswith('Not executed:'):
+    if browser.name != BROWSER_CHECK:
         return checks
     # The original oracle and probe are untouched. Replace only its unexecuted
     # placeholder with actual native evidence, retaining all jsdom case verdicts.
-    return (checks[0], _run_owned_browser(output_dir))
+    original = None if browser.output.startswith('Not executed:') else browser
+    return (checks[0], _run_owned_browser(output_dir, original))

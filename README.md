@@ -11,9 +11,9 @@
 
 ## 当前状态
 
-已实现 Python 入口、需求树解析、显式编排、OpenAI 兼容模型客户端、受控文件/项目脚本工具、构建与测试验证和 ARC-Bench Runtime SDK 适配。当前冻结版本在 ArcBench Railway Ticket Booking Demo 的正式 Stage 3 中通过 **26/30**（2026-10-14，提交 [f9deaf6c36d3](https://arc-bench.com/playground/task-bank/web/ticketbooking/submissions/f9deaf6c36d3)）；仍有 4 项失败，尚未达到全部通过。平台任务状态 PASSED 表示评测流程完成，不表示 30 项全部成功。
+已实现 Python 入口、需求树解析、显式编排、模型工具调用、构建与测试验证和 ARC-Bench Runtime SDK 适配。当前冻结版本在 Railway Ticket Booking Demo 的正式 Stage 3 中通过 **30/30**（2026-10-14，提交 [35128ac54f45](https://arc-bench.com/playground/task-bank/web/ticketbooking/submissions/35128ac54f45)）。这是单次正式验收结果，不代表任意项目都能首轮构建成功。
 
-该次运行使用 Flash 进行图片规划、Pro 进行文本实现，共 123 次完整模型响应、4,961,275 token。已核对最终用量与全部唯一请求；服务端上传 ZIP 哈希未公开。冻结包的本地 SHA256、逐文件哈希和正式结果见 [版本证据](docs/releases/ticketbooking-formal26-20261014.json)。后续独立站名检查不包含在这个版本中；本地回归和单元测试均不替代平台正式验收。
+本轮全部使用 **deepseek-flash**，共 209 次完整响应、8,505,443 token，整轮输入缓存命中率 **86.46%**。逐请求与最终用量一致；服务端上传 ZIP 哈希未公开。本地冻结包哈希及结果见 [版本证据](docs/releases/ticketbooking-formal30-flash-20261014.json)。本地自测仍有失败，最终回退到可交付候选再通过正式评测；模块图的追踪状态未完整回填。后续离线诊断、缓存模式保持和模块着色修复不包含在本冻结版本中。
 
 详细需求见 [docs/PRD.md](docs/PRD.md)，技术边界与选型见 [docs/TECH_SELECTION.md](docs/TECH_SELECTION.md)。
 
@@ -49,7 +49,7 @@ Railway Ticket Booking Demo 的规划、实现和源码审核现在附带平台�
 
 使用 DeepSeek API 时，规划、实现和视觉评审默认保留思考模式。实现阶段会完整回传保留的工具调用轮次中的 `reasoning_content`，以符合 DeepSeek 的接口要求；旧轮次仍会做有界压缩。若要单独比较非思考模式，可设置 `ARCBENCH_IMPLEMENTATION_THINKING=disabled`。
 
-实现请求把系统指令、需求子树和实施计划保持为相同的消息前缀；之后连续追加完整工具调用轮次，让下一次请求复用上一轮的前缀。只有上下文超过 100,000 字符、检查反馈改变，或首次图片已经送达时，才把旧轮次压缩为简短进度并开始新的连续段。图片不会在每轮重复发送。运行日志逐次记录模型返回的 `cache_hit_tokens` 和 `cache_miss_tokens`，结束时汇总实际可观察的缓存命中率；若模型服务不提供这些字段，则显示 `unavailable`。缓存由服务商决定，不能保证命中率，也不能从输入 token 总数推断。
+实现请求把系统指令、需求子树和实施计划保持为相同的消息前缀；之后连续追加完整工具调用轮次，让下一次请求复用上一轮的前缀。只有上下文超过 240,000 字符、检查反馈改变，或首次图片已经送达时，才把旧轮次压缩为简短进度并开始新的连续段。图片不会在每轮重复发送。运行日志逐次记录模型返回的 `cache_hit_tokens` 和 `cache_miss_tokens`，结束时汇总实际可观察的缓存命中率；若模型服务不提供这些字段，则显示 `unavailable`。缓存由服务商决定，不能保证命中率，也不能从输入 token 总数推断。
 
 模型返回 `finish_reason=length` 时会明确报告截断；工具支持唯一匹配的 `replace_text` 局部替换。修复时优先处理能关联到失败检查的需求模块，最后仍运行全量验收；基础构建或结构检查失败时不会启动视觉模型评审。日志会记录模型及工具调用耗时。优化范围、完整测试和离线曲线见 [性能报告](docs/PERFORMANCE_REPORT.md)；该离线对照不代表平台实测费用或完成率。
 
@@ -63,9 +63,9 @@ Railway Ticket Booking Demo 的规划、实现和源码审核现在附带平台�
 
 Python 上传入口为仓库根目录的 `main.py`，依赖声明为 `requirements.txt`。平台运行时通过环境变量提供 `OPENAI_API_KEY`、`OPENAI_BASE_URL` 和 `MODEL`。Agent 不会复制模板覆盖 Runner 准备的目标目录；它直接读取和修改 `--output-dir` 中已有项目。
 
-这个冻结版本的 `main.py` 固定单轮上限为 **10,000,000 token / 250 次模型请求**，覆盖同名环境变量；上面的可配置默认值适用于直接使用 Agent 配置模块。接近上限时仍保留 400,000 token / 3 次请求用于交付。官方 DeepSeek Pro 请求默认总期限和读取超时均为 900 秒、SDK 自动重试为 0；SSE 必须收齐结束标记、工具调用和最终用量后才执行工具。中断请求保留未知用量，不能凭 HTTP 200 或部分内容认定完成。
+这个冻结版本的 `main.py` 固定单轮上限为 **10,000,000 token / 250 次模型请求**，覆盖同名环境变量；上面的可配置默认值适用于直接使用 Agent 配置模块。接近上限时仍保留 400,000 token / 3 次请求用于交付。入口只接受 `deepseek-flash`，MODEL、VISUAL_MODEL、VISUAL_REVIEW_MODEL 任一配置为其他模型均在发请求前拒绝。模型请求总期限固定为 300 秒，SDK 自动重试为 0；SSE 必须收齐结束标记、工具调用和最终用量后才执行工具。中断请求保留未知用量，不能凭 HTTP 200 或部分内容认定完成。
 
-官方 DeepSeek Pro 配合独立 Flash 视觉模型时，默认把图片交给 Flash 规划，Pro 实现接收文本计划。原始 Chromium 交互探针会在完整 jsdom 报告失败时仍执行，向修复提供实际浏览器阻塞证据；已执行的探针不重复运行。候选检查点、前端未定义名称检查和有界修复用于保留更好的候选并控制收尾，它们都是本地控制措施。
+本冻结版本的规划与实现均使用 Flash。原始 Chromium 交互探针会在完整 jsdom 报告失败时仍执行，向修复提供实际浏览器阻塞证据；已执行的探针不重复运行。候选检查点、前端未定义名称检查和有界修复用于保留更好的候选并控制收尾，它们都是本地控制措施。
 
 当前模型路径要求目标模型兼容 OpenAI Chat Completions 的工具调用接口。此能力、Runner 依赖安装方式和目标项目的 Node 构建/测试环境，均需在首次平台运行中确认。
 

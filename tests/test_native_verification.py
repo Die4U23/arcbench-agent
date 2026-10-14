@@ -32,15 +32,16 @@ class NativeVerificationTests(unittest.TestCase):
         self.assertEqual(failed_behavior_ids(result),('REQ-1.1','REQ-3.2'))
         self.assertIn('get_by_label(/^male$/i)',repair_guidance(result,'REQ-1.1'))
 
-    def test_no_redundant_browser_run_after_probe_already_executed(self):
-        public, _ = self.incomplete_cases()
-        for native in (browser_guard_result(True, 'Native executed'),
-                       browser_guard_result(False, 'Native executed failure')):
-            original = (public, native)
-            with patch('agent.native_verification.original_public_acceptance', return_value=original), \
-                 patch('agent.native_verification._run_owned_browser') as probe:
-                self.assertIs(verify_public_acceptance(Path('generated'), {}), original)
-                probe.assert_not_called()
+    def test_original_probe_result_is_reused_while_location_checks_still_run(self):
+        public,_=self.incomplete_cases()
+        for native in (browser_guard_result(True,'Native executed'),
+                       browser_guard_result(False,'Native executed failure')):
+            original=(public,native)
+            with patch('agent.native_verification.original_public_acceptance',return_value=original), \
+                 patch('agent.native_verification._run_owned_browser',return_value=native) as probe:
+                checks=verify_public_acceptance(Path('generated'),{})
+                self.assertIs(checks[0],public)
+                probe.assert_called_once_with(Path('generated'),native)
 
     def test_no_browser_run_without_complete_jsdom_case_report_or_during_startup(self):
         for original,startup in (((CheckResult(PUBLIC_CHECK,False,1,'Missing dependencies'),),False),

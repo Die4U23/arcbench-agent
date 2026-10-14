@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 
 from .candidate_checkpoint import PUBLIC_CHECK
-from .browser_contract import BROWSER_CHECK
+from .browser_contract import BROWSER_CASE, BROWSER_CHECK
 from .ticketbooking_contract import PUBLIC_CASES
 from .verify import VerificationResult
 
@@ -47,11 +47,6 @@ def failed_behavior_ids(result: VerificationResult) -> tuple[str, ...]:
         'frontend JavaScript undefined names'
     } for check in result.checks):
         return ()
-    native = next((check for check in result.checks if check.name == BROWSER_CHECK), None)
-    if native is not None and not native.passed and not native.output.startswith('Not executed:'):
-        # A native registration blocker can invalidate many later journeys even
-        # when reconstructed jsdom has passed their setup steps.
-        return native.requirement_ids
     failed_ids = set()
     for title, status in public.case_statuses:
         # Vitest fullName can prepend a space for an empty ancestor title.
@@ -59,6 +54,24 @@ def failed_behavior_ids(result: VerificationResult) -> tuple[str, ...]:
         title = title.strip()
         if status == 'failed' and title.startswith('REQ-') and ':' in title:
             failed_ids.add(title.split(':', 1)[0].strip())
+    native = next((check for check in result.checks if check.name == BROWSER_CHECK), None)
+    if native is not None and not native.passed and not native.output.startswith('Not executed:'):
+        # The probe's static requirement set also includes registration. Once
+        # it actually reached booking and failed its exact Name textbox, route
+        # that observed blocker first rather than sorting it behind registration
+        # and the merged additional station checks. Keep every other identity.
+        original_failed = dict(native.case_statuses).get(BROWSER_CASE) == 'failed'
+        booking_name_failure = (native.output.startswith('search and booking with real CSS and backend:')
+            and 'get_by_role("textbox"' in native.output and '^name$' in native.output)
+        native_ids = native.requirement_ids
+        if original_failed and booking_name_failure and 'REQ-3.2' in native_ids:
+            native_ids = ('REQ-3.2', *(node for node in native_ids if node != 'REQ-3.2'))
+        # A native registration blocker can invalidate many later journeys even
+        # when reconstructed jsdom has passed their setup steps.
+        # Native evidence changes priority, not the complete set of repair
+        # obligations. Otherwise exhausted native families can hide an untried
+        # public failure and make the controller stop the whole repair loop.
+        return tuple(dict.fromkeys((*native_ids, *sorted(failed_ids))))
     return tuple(sorted(failed_ids))
 
 
@@ -84,6 +97,13 @@ def repair_guidance(result: VerificationResult, requirement_id: str | None) -> s
                        'text; a radio accessible role name alone does not establish that exact label '
                        'selector matches. Inspect whitespace and explicit aria-label in the rendered '
                        'control. Keep the published selector and original probe unchanged.\n\n')
+        if 'individual visible named location' in native.output:
+            native_note += ('The location aliases in the requirement identify supported city/station '
+                            'names. Render departure and arrival as separate readable named units, '
+                            'not a slash-alias/arrow paragraph. Keep each normalized city substring '
+                            'unique for the unchanged public partial-text assertions; do not repeat '
+                            'city text in both criteria and station nodes. Preserve the selected '
+                            'train, date, times, and ownership when changing the display.\n\n')
     public = next((check for check in result.checks if check.name == PUBLIC_CHECK), None)
     if public is None or public.passed:
         return native_note

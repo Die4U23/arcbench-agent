@@ -24,6 +24,13 @@ class ContractCheckTests(unittest.TestCase):
         cleanup = patch("agent.contract_checks.os.killpg", create=True)
         self.killpg = cleanup.start()
         self.addCleanup(cleanup.stop)
+        # Child browser execution is covered by real Chromium integration; these
+        # tests isolate the owned backend lifecycle and jsdom report contract.
+        from agent.browser_contract import browser_guard_result
+        browser = patch("agent.contract_checks.verify_browser_contract",
+                        return_value=browser_guard_result(True, "browser integration stub"))
+        self.browser = browser.start()
+        self.addCleanup(browser.stop)
 
     def test_unix_cleanup_terminates_owned_group_and_kills_after_timeout(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -78,9 +85,10 @@ class ContractCheckTests(unittest.TestCase):
 
     def prepare(self, root):
         files = {"frontend/src/App.jsx":"export default function App() {}",
+                 "frontend/src/main.jsx":"import App from './App.jsx'; ReactDOM.createRoot(document.getElementById('root')).render(<App />);",
                  "backend/package.json":json.dumps({"scripts":{"start":"node src/server.js"}}),
                  "frontend/node_modules/vitest/vitest.mjs":""}
-        for package in ("react","react-router-dom","jsdom","@testing-library/react","@testing-library/dom"):
+        for package in ("react","react-router-dom","jsdom","@testing-library/react","@testing-library/dom","@testing-library/jest-dom"):
             files[f"frontend/node_modules/{package}/package.json"] = "{}"
         for name, content in files.items():
             path=root/name;path.parent.mkdir(parents=True,exist_ok=True);path.write_text(content,encoding="utf-8")
@@ -94,7 +102,7 @@ class ContractCheckTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             result=verify_public_acceptance(Path(directory),tree())
         self.assertFalse(result[0].passed)
-        self.assertIn("dependencies",result[0].output)
+        self.assertIn("entry",result[0].output)
 
     def test_occupied_port_does_not_test_an_unrelated_server(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -193,7 +201,8 @@ class ContractCheckTests(unittest.TestCase):
                 def run(command, **kwargs):
                     if command[0] == "node":
                         (root/"frontend/.arc/public-regression.json").write_text(json.dumps({
-                            "numTotalTests":count,"numPassedTests":count,"testResults":[]}),encoding="utf-8")
+                            "numTotalTests":count,"numPassedTests":count,"testResults":[{"assertionResults":[
+                                {"title": f"case {i}", "status": "passed"} for i in range(count)]}]}),encoding="utf-8")
                     return SimpleNamespace(returncode=0,stdout="",stderr="")
                 server=MagicMock();server.poll.return_value=None
                 response=MagicMock();response.__enter__.return_value.status=200
@@ -204,10 +213,36 @@ class ContractCheckTests(unittest.TestCase):
                      patch("agent.contract_checks.subprocess.run",side_effect=run):
                     result=verify_public_acceptance(root,tree())
                 self.assertEqual(result[0].passed,expected)
+                self.assertEqual(result[1].passed,expected)
                 fixture=(root/"frontend/.arc/public-case-reconstruction.test.tsx").read_text(encoding="utf-8")
                 self.assertEqual(fixture.count("\ntest("),32)
                 self.assertIn('older booking cannot replace a newly selected journey',fixture)
                 self.assertIn("NOT",result[0].name.upper())
+
+    def test_summary_without_unique_complete_assertions_is_not_a_passing_candidate(self):
+        for assertions in ([], [{"title": "same", "status": "passed"}] * 32,
+                           [{"title": f"case {i}", "status": "pending" if i == 0 else "passed"}
+                            for i in range(32)]):
+            with self.subTest(assertions=assertions[:1]), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                self.prepare(root)
+                def run(command, **kwargs):
+                    if command[0] == "node":
+                        (root/"frontend/.arc/public-regression.json").write_text(json.dumps({
+                            "numTotalTests":32,"numPassedTests":32,
+                            "testResults":[{"assertionResults":assertions}]}), encoding="utf-8")
+                    return SimpleNamespace(returncode=0, stdout="", stderr="")
+                server = MagicMock(); server.poll.return_value = None
+                response = MagicMock(); response.__enter__.return_value.status = 200
+                with patch("agent.contract_checks.shutil.which", side_effect=lambda name:name), \
+                     patch("agent.contract_checks.socket.socket"), \
+                     patch("agent.contract_checks.urlopen", return_value=response), \
+                     patch("agent.contract_checks.subprocess.Popen", return_value=server), \
+                     patch("agent.contract_checks.subprocess.run", side_effect=run):
+                    result = verify_public_acceptance(root, tree())[0]
+                self.assertFalse(result.passed)
+                self.assertFalse(result.case_statuses)
+                self.assertIn("Incomplete", result.output)
 
     def test_denied_process_cleanup_is_a_failed_environment_check(self):
         with tempfile.TemporaryDirectory() as directory:

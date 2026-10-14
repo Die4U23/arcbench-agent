@@ -189,6 +189,7 @@ class ProjectTools:
         self.timeout_seconds = timeout_seconds
         self.written_paths: list[str] = []
         self.changed_paths: list[str] = []
+        self.source_revision = 0  # Controller restores invalidate cached model reads.
 
     def _resolve(self, raw_path: str, *, allow_root: bool = False) -> Path:
         candidate = Path(raw_path)

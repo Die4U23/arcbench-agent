@@ -11,7 +11,9 @@
 
 ## 当前状态
 
-已初始化 Agent 基础架构：Python 入口、需求树解析、显式编排、OpenAI 兼容模型客户端、受控文件/项目脚本工具、构建与测试验证和 ARC-Bench Runtime SDK 适配。首版模型驱动流程聚焦 `web` 任务；当前尚未在 ARC-Bench Runner 上完成首次端到端验证。
+已实现 Python 入口、需求树解析、显式编排、OpenAI 兼容模型客户端、受控文件/项目脚本工具、构建与测试验证和 ARC-Bench Runtime SDK 适配。当前冻结版本在 ArcBench Railway Ticket Booking Demo 的正式 Stage 3 中通过 **26/30**（2026-10-14，提交 [f9deaf6c36d3](https://arc-bench.com/playground/task-bank/web/ticketbooking/submissions/f9deaf6c36d3)）；仍有 4 项失败，尚未达到全部通过。平台任务状态 PASSED 表示评测流程完成，不表示 30 项全部成功。
+
+该次运行使用 Flash 进行图片规划、Pro 进行文本实现，共 123 次完整模型响应、4,961,275 token。已核对最终用量与全部唯一请求；服务端上传 ZIP 哈希未公开。冻结包的本地 SHA256、逐文件哈希和正式结果见 [版本证据](docs/releases/ticketbooking-formal26-20261014.json)。后续独立站名检查不包含在这个版本中；本地回归和单元测试均不替代平台正式验收。
 
 详细需求见 [docs/PRD.md](docs/PRD.md)，技术边界与选型见 [docs/TECH_SELECTION.md](docs/TECH_SELECTION.md)。
 
@@ -60,6 +62,10 @@ Railway Ticket Booking Demo 的规划、实现和源码审核现在附带平台�
 ## ARC-Bench 运行
 
 Python 上传入口为仓库根目录的 `main.py`，依赖声明为 `requirements.txt`。平台运行时通过环境变量提供 `OPENAI_API_KEY`、`OPENAI_BASE_URL` 和 `MODEL`。Agent 不会复制模板覆盖 Runner 准备的目标目录；它直接读取和修改 `--output-dir` 中已有项目。
+
+这个冻结版本的 `main.py` 固定单轮上限为 **10,000,000 token / 250 次模型请求**，覆盖同名环境变量；上面的可配置默认值适用于直接使用 Agent 配置模块。接近上限时仍保留 400,000 token / 3 次请求用于交付。官方 DeepSeek Pro 请求默认总期限和读取超时均为 900 秒、SDK 自动重试为 0；SSE 必须收齐结束标记、工具调用和最终用量后才执行工具。中断请求保留未知用量，不能凭 HTTP 200 或部分内容认定完成。
+
+官方 DeepSeek Pro 配合独立 Flash 视觉模型时，默认把图片交给 Flash 规划，Pro 实现接收文本计划。原始 Chromium 交互探针会在完整 jsdom 报告失败时仍执行，向修复提供实际浏览器阻塞证据；已执行的探针不重复运行。候选检查点、前端未定义名称检查和有界修复用于保留更好的候选并控制收尾，它们都是本地控制措施。
 
 当前模型路径要求目标模型兼容 OpenAI Chat Completions 的工具调用接口。此能力、Runner 依赖安装方式和目标项目的 Node 构建/测试环境，均需在首次平台运行中确认。
 

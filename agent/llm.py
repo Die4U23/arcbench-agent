@@ -9,13 +9,16 @@ import mimetypes
 import os
 from dataclasses import dataclass
 from itertools import count
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 import time
 from typing import Any, Callable
 from urllib.parse import unquote, urlsplit
 
+from openai import APIStatusError
+
 from .tools import MAX_BATCH_OUTPUT_CHARS, ProjectTools, TOOL_SCHEMAS
+from .model_transport import CompletionClient, DEFAULT_MODEL_DEADLINE_SECONDS, ModelRequestInterrupted
 from .ticketbooking_contract import public_acceptance_context
 from .visual_acceptance import REPORT_RELATIVE_PATH, SCREENSHOT_RELATIVE_DIR, collect_visual_references
 
@@ -29,9 +32,47 @@ MAX_COMPLETION_TOKENS_PER_REQUEST = 12_000
 DEEPSEEK_THINKING_IMPLEMENTATION_MAX_TOKENS = 24_000
 MAX_IDENTICAL_FAILED_TOOL_TURNS = 3
 DEFAULT_MAX_IDLE_TOOL_TURNS = 12
+MAX_REPAIR_REQUESTS = 12
 EARLY_CHECKPOINT_TURN = 4
 CHECKPOINT_INTERVAL_TURNS = 6
 PASSING_CHECKPOINT_IDLE_TURNS = 4
+
+
+def _normalized_source_path(path: str) -> str:
+    normalized = os.path.normpath(path.replace("\\", "/")).replace("\\", "/")
+    return normalized.casefold() if os.name == "nt" else normalized
+
+
+def _source_tool_failure(name: str, arguments: dict[str, Any], error: Exception) -> tuple[str, str] | None:
+    """Recognize stale-source errors without grouping unrelated tool failures."""
+    if name == "replace_text" and isinstance(error, ValueError):
+        mismatch = re.fullmatch(r"replace_text requires one exact match in (.+); found (\d+)", str(error))
+        if mismatch and int(mismatch.group(2)) != 1:
+            return _normalized_source_path(mismatch.group(1)), "replacement_match"
+    if isinstance(error, FileNotFoundError):
+        explicit = re.fullmatch(r"File not found: (.+)", str(error))
+        if name in {"read_file", "read_files"} and explicit:
+            return _normalized_source_path(explicit.group(1)), "missing_file"
+        if name == "replace_text" and getattr(error, "filename", None) and isinstance(arguments.get("path"), str):
+            return _normalized_source_path(arguments["path"]), "missing_file"
+    return None
+
+
+def _fixed_regression_signature(feedback: str) -> tuple[str, ...]:
+    """Keep case/assertion identity while ignoring generated account diagnostics."""
+    failures = re.findall(r"^REQ-\d+(?:\.\d+)*: [^\n]+", feedback, re.MULTILINE)
+    signatures = []
+    for failure in failures:
+        # The public check formats each line as requirement: case title: failure.
+        # Never normalize a case title, locator, count, date, or validation limit.
+        parts = failure.split(": ", 2)
+        if len(parts) == 3:
+            # uniqueTicketBookingAccount emits Date.now() plus up to six base36
+            # characters. Mask this reserved username shape only in diagnostics.
+            parts[2] = re.sub(r"(?<![\w-])tb-user-[0-9]{13}-[a-z0-9]{1,6}(?![\w-])",
+                              "<generated-ticket-account>", parts[2])
+        signatures.append(": ".join(parts))
+    return tuple(signatures)
 
 
 @dataclass(frozen=True)
@@ -66,22 +107,28 @@ class ModelBudgetExceeded(Exception):
         super().__init__(report.summary())
 
 
+class RequirementReviewError(RuntimeError):
+    """A model audit has no trustworthy verdict; it is not a production defect."""
+
+
 class ModelClient:
     def __init__(self, *, max_turns: int | None = None, max_tool_calls: int | None = None) -> None:
         api_key = os.environ.get("OPENAI_API_KEY", "").strip()
         self.model = os.environ.get("MODEL", "").strip()
         self.visual_model = os.environ.get("VISUAL_MODEL", "").strip() or self.model
         self.visual_review_model = os.environ.get("VISUAL_REVIEW_MODEL", "").strip() or self.visual_model
-        self.visual_implementation = os.environ.get("ARCBENCH_VISUAL_IMPLEMENTATION", "enabled").strip().lower()
+        base_url = os.environ.get("OPENAI_BASE_URL", "").strip()
+        separate_visual_plan = (urlsplit(base_url).hostname == 'api.deepseek.com'
+            and self.model.casefold() == 'deepseek-v4-pro'
+            and self.visual_model.casefold() != self.model.casefold())
+        visual_default = 'disabled' if separate_visual_plan else 'enabled'
+        self.visual_implementation = os.environ.get("ARCBENCH_VISUAL_IMPLEMENTATION", visual_default).strip().lower()
         if self.visual_implementation not in {"enabled", "disabled"}:
             raise ValueError("ARCBENCH_VISUAL_IMPLEMENTATION must be enabled or disabled")
         if not api_key:
             raise RuntimeError("OPENAI_API_KEY is not set. Pass --demo with a supported local task file for deterministic offline mode.")
         if not self.model:
             raise RuntimeError("MODEL is not set by the ARC-Bench Runner.")
-        from openai import OpenAI
-
-        base_url = os.environ.get("OPENAI_BASE_URL", "").strip()
         self.is_glm = urlsplit(base_url).hostname == "open.bigmodel.cn"
         self.is_deepseek = (
             urlsplit(base_url).hostname == "api.deepseek.com"
@@ -93,7 +140,11 @@ class ModelClient:
         options: dict[str, Any] = {"api_key": api_key}
         if base_url:
             options["base_url"] = base_url
-        self.client = OpenAI(**options)
+        from .model_transport import default_model_deadline
+        self.client = CompletionClient(deadline_seconds=float(os.environ.get(
+            "ARCBENCH_MODEL_DEADLINE_SECONDS", default_model_deadline(self.model, base_url))),
+            assemble_stream=urlsplit(base_url).hostname == 'api.deepseek.com', **options)
+        self.last_request_interruption: ModelRequestInterrupted | None = None
         self.max_turns = max_turns
         self.max_tool_calls = max_tool_calls
         self.max_model_requests = int(os.environ.get("ARCBENCH_MAX_MODEL_REQUESTS", DEFAULT_MAX_MODEL_REQUESTS))
@@ -112,15 +163,34 @@ class ModelClient:
         self.tool_seconds = 0.0
         self.last_budget_report: BudgetExhaustion | None = None
         self._requirement_review_cache: tuple[str, str] | None = None
+        LOGGER.info("Model request policy: deadline_seconds=%g sdk_max_retries=0; read_timeout_seconds=%g; transport=%s; incomplete usage remains unknown",
+                    self.client.deadline_seconds, self.client._options['timeout'].read,
+                    'assembled_stream' if self.client.assemble_stream else 'complete_json')
+        LOGGER.info('Model routing: text_generation=%s visual_planning=%s visual_implementation=%s; actual request models logged per response',
+                    self.model, self.visual_model, self.visual_implementation)
 
     def _create_completion(self, stage: str, **kwargs: Any) -> Any:
+        self.raise_if_request_interrupted()
         started = time.perf_counter()
         try:
             return self.client.chat.completions.create(**kwargs)
+        except ModelRequestInterrupted as exc:
+            stopped = ModelRequestInterrupted(reason=exc.reason, deadline_seconds=exc.deadline_seconds,
+                stage=stage, request=self.model_requests_used, cause_types=exc.cause_types)
+            self.last_request_interruption = stopped
+            LOGGER.warning("%s", stopped)
+            LOGGER.info("Model request: stage=%s request=%d context_chars=%d token_counts=unavailable",
+                stage, self.model_requests_used, self._message_context_chars(kwargs.get("messages", [])))
+            raise stopped from exc
         finally:
             elapsed = time.perf_counter() - started
             self.model_seconds = getattr(self, "model_seconds", 0.0) + elapsed
             LOGGER.info("Model latency: stage=%s model=%s seconds=%.3f", stage, kwargs.get("model"), elapsed)
+
+    def raise_if_request_interrupted(self) -> None:
+        stopped = getattr(self, "last_request_interruption", None)
+        if isinstance(stopped, ModelRequestInterrupted):
+            raise stopped
 
     def _check_model_budget(self, *, reserve_for_delivery: bool = False) -> None:
         requests_used = getattr(self, "model_requests_used", 0)
@@ -165,6 +235,7 @@ class ModelClient:
                     raise ModelBudgetExceeded(report)
 
     def _record_model_request(self) -> None:
+        self.raise_if_request_interrupted()
         self._check_model_budget(reserve_for_delivery=True)
         self.model_requests_used = getattr(self, "model_requests_used", 0) + 1
 
@@ -267,6 +338,9 @@ class ModelClient:
             )
         else:
             LOGGER.info("Model usage: requests=%d token counts unavailable from provider", self.model_requests_used)
+        if self.last_request_interruption is not None:
+            LOGGER.warning("Model usage incomplete: request=%d stage=%s token_counts=unavailable; unknown usage retained",
+                self.last_request_interruption.request, self.last_request_interruption.stage)
         if self.cache_observed_requests:
             cache_input = self.cache_hit_tokens_used + self.cache_miss_tokens_used
             LOGGER.info(
@@ -548,22 +622,53 @@ class ModelClient:
         if audit_complete and cached is not None and cached[0] == fingerprint:
             LOGGER.info("Requirement source unchanged; reusing the preceding audit verdict")
             return cached[1]
-        self._record_model_request()
-        # This is a bounded verdict, not an implementation turn. Prevent an
-        # entire output allowance being consumed by hidden reasoning with no
-        # usable verdict, as observed in the local acceptance audit.
+        # A malformed or invented verdict gets one corrective request against
+        # the same immutable source view. Never turn rejected evidence into a
+        # production repair instruction or cache it as approval.
         options = {"extra_body": {"thinking": {"type": "disabled"}}} if getattr(self, "is_deepseek", False) else {}
-        response = self._create_completion("requirement_review", model=self.model, messages=messages,
-                                           max_tokens=6000, **options)
-        self._record_usage(response, stage="requirement_review", context_chars=self._message_context_chars(messages))
-        self._reject_truncated_response(response, "requirement review")
-        raw = response.choices[0].message.content or ""
+        for attempt in range(2):
+            self._record_model_request()
+            response = self._create_completion("requirement_review", model=self.model, messages=messages,
+                                               max_tokens=6000, **options)
+            self._record_usage(response, stage="requirement_review", context_chars=self._message_context_chars(messages))
+            raw = response.choices[0].message.content or ""
+            try:
+                try:
+                    self._reject_truncated_response(response, "requirement review")
+                except RuntimeError as exc:
+                    raise RequirementReviewError(str(exc)) from exc
+                missing = self._parse_requirement_review(raw, subtree, source_contents)
+            except RequirementReviewError as exc:
+                if attempt == 1:
+                    raise
+                LOGGER.warning("Requirement audit verdict rejected; retrying once: %s", exc)
+                messages.extend([
+                    {"role": "assistant", "content": raw},
+                    {"role": "user", "content": (
+                        "Your verdict was rejected: " + str(exc) + ". Re-audit only the same supplied requirements "
+                        "and production source. Use an exact supplied path and exact source excerpt, with no "
+                        "invented obligation or shortened/paraphrased evidence. Do not repeat an invalid issue. "
+                        "Return the required JSON schema; pass only if every required behavior is established."
+                    )},
+                ])
+                continue
+            # An unseen tail or omitted file can change while the supplied
+            # prefix stays identical. Never reuse an incomplete source view.
+            self._requirement_review_cache = (fingerprint, missing) if audit_complete else None
+            return missing
+        raise AssertionError("Requirement audit attempts exhausted")
+
+    @staticmethod
+    def _parse_requirement_review(raw: str, subtree: dict[str, Any], source_contents: dict[str, str]) -> str:
         match = re.search(r"\{[\s\S]*\}", raw)
-        review = json.loads(match.group(0)) if match else {}
-        if review.get("verdict") not in {"pass", "repair"} or not isinstance(review.get("issues"), list):
-            raise RuntimeError("Requirement reviewer returned an invalid verdict")
+        try:
+            review = json.loads(match.group(0)) if match else {}
+        except json.JSONDecodeError as exc:
+            raise RequirementReviewError("Requirement reviewer returned invalid JSON") from exc
+        if not isinstance(review, dict) or review.get("verdict") not in {"pass", "repair"} or not isinstance(review.get("issues"), list):
+            raise RequirementReviewError("Requirement reviewer returned an invalid verdict")
         if (review["verdict"] == "pass") != (not review["issues"]):
-            raise RuntimeError("Requirement reviewer returned a contradictory verdict")
+            raise RequirementReviewError("Requirement reviewer returned a contradictory verdict")
         requirement_nodes = {}
         def collect_nodes(value):
             if isinstance(value, dict):
@@ -591,24 +696,21 @@ class ModelClient:
             if not isinstance(issue, dict) or any(
                 not isinstance(issue.get(key), str) or not issue[key].strip() for key in fields
             ):
-                raise RuntimeError("Requirement reviewer returned an unevidenced issue")
+                raise RequirementReviewError("Requirement reviewer returned an unevidenced issue")
             node = requirement_nodes.get(issue["requirement_id"])
             quote = " ".join(issue["requirement_quote"].split())
             if node is None or not any(quote in " ".join(text.split()) for text in text_values(node)):
-                raise RuntimeError("Requirement reviewer cited text outside the supplied requirement")
-            source = source_contents.get(issue["path"])
+                raise RequirementReviewError("Requirement reviewer cited text outside the supplied requirement")
+            source_path = PurePosixPath(issue["path"].replace("\\", "/"))
+            source = source_contents.get(source_path.as_posix()) if not source_path.is_absolute() and ".." not in source_path.parts else None
             evidence = " ".join(issue["evidence"].split())
             if source is None or evidence not in " ".join(source.split()):
-                raise RuntimeError("Requirement reviewer cited evidence outside the supplied production source")
+                raise RequirementReviewError("Requirement reviewer cited evidence outside the supplied production source")
             missing_items.append(
-                f"{issue['requirement_id']} {issue['path']}: {issue['missing_behavior']}\n"
+                f"{issue['requirement_id']} {source_path.as_posix()}: {issue['missing_behavior']}\n"
                 f"Required: {issue['requirement_quote']}\nSource evidence: {issue['evidence']}"
             )
-        missing = "\n".join(missing_items)
-        # An unseen tail or omitted file can change while the supplied prefix
-        # stays identical. Never reuse an audit of an incomplete source view.
-        self._requirement_review_cache = (fingerprint, missing) if audit_complete else None
-        return missing
+        return "\n".join(missing_items)
 
     def plan(
         self,
@@ -663,6 +765,8 @@ class ModelClient:
                 model=model, messages=messages, max_tokens=MAX_COMPLETION_TOKENS_PER_REQUEST,
                 **request_options,
             )
+        except ModelRequestInterrupted:
+            raise
         except Exception as exc:
             if visual_inputs:
                 raise RuntimeError(
@@ -707,10 +811,11 @@ class ModelClient:
         repair_feedback: str | None = None,
         reference_dir: Path | None = None,
         checkpoint_feedback: Callable[[], str] | None = None,
+        boundary_feedback: Callable[[], str] | None = None,
         token_allowance: int | None = None,
         request_allowance: int | None = None,
     ) -> bool:
-        """Run until the model finishes, unless the caller explicitly set a limit."""
+        """Run implementation, keeping repair fragments within an atomic request slice."""
         visual_inputs = self._visual_inputs(subtree, reference_dir)
         if getattr(self, "visual_implementation", "enabled") == "disabled":
             visual_inputs = []
@@ -749,9 +854,17 @@ class ModelClient:
             "use globals enabled in vitest.config.js, or write ESM tests with imports. "
             "When writing DOM tests, follow the actual API "
             "contracts: getByLabelText matches the rendered label, not the input id or name. "
+            "For real form controls, preserve meaningful visible labels and the exact required "
+            "accessible names. getByLabelText may include required-marker asterisks inside labels "
+            "even when the marker has aria-hidden=true. Give the control an explicit aria-label "
+            "matching its required name, or render the marker with CSS outside the DOM label text; "
+            "preserve required validation and the connected form behavior. "
             "Use selectOptions for selects, not type; use change events for date inputs when user typing "
             "does not work in jsdom. Reread both the failing test helper and the component before editing "
             "a shared helper, and update every call site when changing its argument shape. "
+            "In jsdom, import.meta.url can be an HTTP URL: do not pass it to Node readFileSync. "
+            "Use an explicit filesystem path based on the frontend test working directory for source checks, "
+            "or mount the entry point directly. Keep test assertions and application behavior intact. "
             "EventTarget.dispatchEvent returns a boolean, not "
             "the Event object. Retain the Event instance to assert defaultPrevented, or assert the "
             "dispatchEvent boolean; never read defaultPrevented from its boolean return value. "
@@ -816,6 +929,22 @@ class ModelClient:
             "Clear account-owned booking/confirmation state when signing out or switching users, and clear "
             "previous journey state when changing a selected train/date. Cancel or ignore stale API responses "
             "so old account or journey details cannot reappear. "
+            "Render a fact in one authoritative text node: a station containing its city name plus "
+            "a separate city heading causes ambiguous visible substring matches. Keep full city and "
+            "full station together and time in its own semantic node. Use a neutral confirmation "
+            "heading and one success notice containing the concrete Booking number: identifier. "
+            "Do not repeat train/date facts in both journey and confirmation summaries. Validation "
+            "messages must explain the actual invalid condition and boundary (at least/at most), "
+            "not just a numeric range; retain all original validation rules. "
+            "A proposed repair must change the failing behavior, not merely add a comment. After "
+            "checkpoint rollback reread current source before reapplying any patch. "
+            "Signout must send the old credential to the actual logout API while clearing private "
+            "UI immediately; do not erase the credential before constructing the request. Pending "
+            "logout must not redirect or clear a newly signed-in session. On booking reload validate "
+            "the saved record owner, train and date before displaying it, and invalidate confirmation "
+            "work on unmount or identity changes. In self-tests parse the real Authorization header "
+            "format (including Bearer), destroy the prior component tree for an actual reload, and "
+            "navigate to search before iterating the next route. "
             "The runner prepared the target project; do not copy or replace a starter template. "
             "When implementation is complete, provide a short summary."
         )
@@ -903,9 +1032,104 @@ class ModelClient:
         thinking_disabled_epoch = False
         self.last_implementation_handoff = False
         self.last_implementation_deferred = False
+        self.last_implementation_stop_reason = "error"
+        self.last_implementation_stop_detail = ""
+        if repair_feedback:
+            caller_request_allowance = request_allowance
+            request_allowance = min(request_allowance, MAX_REPAIR_REQUESTS) if request_allowance is not None else MAX_REPAIR_REQUESTS
+            LOGGER.info("Atomic repair slice: request_limit=%d caller_request_allowance=%s token_allowance=%s",
+                        request_allowance, caller_request_allowance, token_allowance)
+            conversation.append({"role": "user", "content": (
+                f"This repair has at most {request_allowance} model requests. Complete related file edits "
+                "atomically before finishing; the controller will run the complete protected regression "
+                "at the end of this repair slice. Do not leave a partially migrated API or component contract."
+            )})
         starting_tokens = getattr(self, "prompt_tokens_used", 0) + getattr(self, "completion_tokens_used", 0)
         starting_requests = getattr(self, "model_requests_used", 0)
         allowance_warned = False
+        fixed_failure_signature: tuple[str, ...] = ()
+        unchanged_fixed_checkpoints = 0
+        observed_source_revision = getattr(project_tools, "source_revision", 0)
+        source_failure_stamp = (observed_source_revision, len(progress_paths))
+        source_failures: dict[tuple[str, str], int] = {}
+        source_failure_details: dict[tuple[str, str], str] = {}
+        required_source_reads: dict[str, str] = {}
+        written_context_start = 0
+        restore_notice = ""
+
+        def reset_changed_source_failures() -> None:
+            nonlocal source_failure_stamp
+            stamp = (getattr(project_tools, "source_revision", 0), len(progress_paths))
+            if stamp[0] != source_failure_stamp[0]:
+                source_failures.clear()
+                source_failure_details.clear()
+                required_source_reads.clear()
+            elif stamp[1] != source_failure_stamp[1]:
+                changed = {_normalized_source_path(path) for path in progress_paths[source_failure_stamp[1]:]
+                           if isinstance(path, str)}
+                for path in changed:
+                    required_source_reads.pop(path, None)
+                    for key in tuple(source_failures):
+                        if key[0] == path:
+                            source_failures.pop(key)
+                            source_failure_details.pop(key, None)
+            source_failure_stamp = stamp
+
+        def note_source_failure(key: tuple[str, str], detail: str) -> None:
+            source_failures[key] = source_failures.get(key, 0) + 1
+            source_failure_details[key] = detail
+            if source_failures[key] >= MAX_IDENTICAL_FAILED_TOOL_TURNS - 1:
+                required_source_reads[key[0]] = key[1]
+                # Cached reads cannot establish fresh source after failed edits.
+                epoch_reads.clear()
+                epoch_file_reads.clear()
+
+        def clear_fresh_source_reads(name: str, arguments: dict[str, Any], result: str) -> None:
+            refreshed = set()
+            if name == "read_file" and isinstance(arguments.get("path"), str):
+                # A real bounded range can contain the required unique anchor.
+                # An empty out-of-range read contains no fresh source evidence.
+                if result or (arguments.get("start_line", 1) == 1 and arguments.get("end_line") is None):
+                    refreshed.add(_normalized_source_path(arguments["path"]))
+            elif name == "read_files":
+                try:
+                    payload = json.loads(result)
+                    for file in payload.get("files", []):
+                        if not isinstance(file, dict) or not isinstance(file.get("path"), str) or not isinstance(file.get("content"), str):
+                            continue
+                        content = file["content"]
+                        for marker in ("\n...[file truncated]", "\n...[batch output limit reached]"):
+                            content = content.removesuffix(marker)
+                        if content or not payload.get("truncated"):
+                            refreshed.add(_normalized_source_path(file["path"]))
+                except (TypeError, ValueError, AttributeError):
+                    pass
+            for path in refreshed:
+                if path not in required_source_reads and not any(key[0] == path for key in source_failures):
+                    continue
+                required_source_reads.pop(path, None)
+                for key in tuple(source_failures):
+                    if key[0] == path:
+                        source_failures.pop(key)
+                        source_failure_details.pop(key, None)
+                for cached_path in tuple(epoch_file_reads):
+                    if _normalized_source_path(cached_path) == path:
+                        epoch_file_reads.pop(cached_path)
+            if name == "list_files" and isinstance(arguments.get("path"), str):
+                parent = _normalized_source_path(arguments["path"])
+                for path, family in tuple(required_source_reads.items()):
+                    if family == "missing_file" and (parent == "." or path.startswith(parent.rstrip("/") + "/")):
+                        # Discovery does not make a retry of the missing file new.
+                        required_source_reads.pop(path)
+
+        def source_refresh_notice() -> str:
+            paths = ", ".join(required_source_reads)
+            return ("The same source file failed twice without a source change: " + paths + ". "
+                "Change the tool arguments only after a fresh read_file/read_files of the affected existing file, "
+                "using a bounded line range for a large file, "
+                "or list_files of the missing path's parent to discover the real path. "
+                "Unrelated reads and no-op writes do not resolve this failure. Another unrefreshed "
+                "failure will end this implementation pass for full boundary verification.")
 
         def compact_context() -> list[dict[str, Any]]:
             nonlocal thinking_disabled_epoch
@@ -923,12 +1147,14 @@ class ModelClient:
             parts = [compact_user_content] if compact_user_content else []
             if checkpoint_note:
                 parts.append("Latest checkpoint verification feedback:\n" + checkpoint_note)
+            if restore_notice:
+                parts.append(restore_notice)
             if compacted_summaries:
                 ledger = "\n".join(
                     f"{index + 1}. {summary}"
                     for index, summary in enumerate(compacted_summaries)
                 )
-                written_paths = list(dict.fromkeys(getattr(project_tools, "written_paths", [])))
+                written_paths = list(dict.fromkeys(getattr(project_tools, "written_paths", [])[written_context_start:]))
                 if written_paths:
                     shown_paths = written_paths[-60:]
                     ledger += "\nFiles already written: " + ", ".join(shown_paths)
@@ -940,18 +1166,77 @@ class ModelClient:
                 compacted.append({"role": "user", "content": "\n\n".join(parts)})
             return compacted
 
+        def rebase_restored_source() -> None:
+            nonlocal conversation, observed_source_revision, written_context_start, restore_notice
+            nonlocal passing_checkpoint, passing_checkpoint_turn
+            revision = getattr(project_tools, "source_revision", 0)
+            if revision == observed_source_revision:
+                return
+            observed_source_revision = revision
+            reset_changed_source_failures()
+            # A controller restore invalidates successful edits as well as reads.
+            # Drop the entire old protocol segment and progress ledger together;
+            # retaining either could make the model patch source that was undone.
+            epoch_exchanges.clear()
+            compacted_summaries.clear()
+            written_context_start = len(getattr(project_tools, "written_paths", []))
+            restore_notice = (
+                "The controller restored an earlier candidate. Earlier source reads, successful writes "
+                "and progress summaries were discarded; they do not describe the current files. "
+                "Reread the current source before making another edit."
+            )
+            passing_checkpoint = False
+            passing_checkpoint_turn = None
+            conversation = compact_context()
+
+        def finish_implementation(reason: str, *, exhausted: bool = False,
+                                  deferred: bool = False, handoff: bool = False,
+                                  detail: str = "", checked_feedback: str | None = None) -> bool:
+            nonlocal checkpoint_note
+            # Every module/repair stop has an enforcement boundary. Periodic
+            # diagnostics must not undo a migration before related edits finish.
+            checker = boundary_feedback if boundary_feedback is not None else checkpoint_feedback
+            if checker is not None:
+                if checked_feedback is not None:
+                    checkpoint_note = checked_feedback
+                else:
+                    try:
+                        checkpoint_note = checker()
+                    except ModelRequestInterrupted:
+                        raise
+                    except Exception as exc:
+                        checkpoint_note = f"Checkpoint verification failed: {type(exc).__name__}: {exc}"
+                rebase_restored_source()
+                if reason == "model_finished" or handoff:
+                    handoff = checkpoint_note.startswith("Current build and test scripts pass.")
+                    deferred = not handoff
+                    if deferred:
+                        reason = "checkpoint_failed"
+                detail = detail or checkpoint_note[:300]
+            if self.last_budget_report is not None:
+                exhausted = True
+                reason = self.last_budget_report.budget
+            self.last_implementation_handoff = handoff and not exhausted
+            self.last_implementation_deferred = deferred and not exhausted
+            self.last_implementation_stop_reason = reason
+            self.last_implementation_stop_detail = detail
+            return exhausted
+
         self.last_budget_report = None
         for turn_index in count():
+            reset_changed_source_failures()
             try:
                 self._check_model_budget(reserve_for_delivery=True)
             except ModelBudgetExceeded:
-                return True
+                return finish_implementation("model_budget", exhausted=True)
             phase_tokens = getattr(self, "prompt_tokens_used", 0) + getattr(self, "completion_tokens_used", 0) - starting_tokens
             phase_requests = getattr(self, "model_requests_used", 0) - starting_requests
             if (token_allowance is not None and phase_tokens >= token_allowance) or (request_allowance is not None and phase_requests >= request_allowance):
-                self.last_implementation_deferred = True
                 LOGGER.warning("Module allocation reached (tokens=%d requests=%d); deferring unfinished work to whole-project integration", phase_tokens, phase_requests)
-                return False
+                return finish_implementation("allocation", deferred=True, detail=(
+                    f"phase_tokens={phase_tokens} token_allowance={token_allowance}; "
+                    f"phase_requests={phase_requests} request_allowance={request_allowance}; "
+                    f"atomic_repair={bool(repair_feedback)}"))
             if token_allowance is not None and not allowance_warned and phase_tokens >= token_allowance * .75:
                 allowance_warned = True
                 conversation.append({"role": "user", "content": "This module has little allocated budget left. Finish its required application wiring now; leave unresolved failures for whole-project integration. Avoid expanding tests or optional styling."})
@@ -959,17 +1244,20 @@ class ModelClient:
             # Optional edits must not indefinitely postpone the next module.
             if passing_checkpoint_turn is not None and turn_index >= passing_checkpoint_turn + 2:
                 try:
-                    feedback = checkpoint_feedback() if checkpoint_feedback is not None else "No checkpoint available"
+                    checker = boundary_feedback if boundary_feedback is not None else checkpoint_feedback
+                    feedback = checker() if checker is not None else "No checkpoint available"
+                except ModelRequestInterrupted:
+                    raise
                 except Exception as exc:
                     feedback = f"Checkpoint verification failed: {type(exc).__name__}: {exc}"
                 if feedback.startswith("Current build and test scripts pass."):
-                    self.last_implementation_handoff = True
                     LOGGER.info("Implementation final checkpoint passed; moving to the next requirement")
-                    return False
+                    return finish_implementation("checkpoint_passed", handoff=True, checked_feedback=feedback)
                 passing_checkpoint_turn = None
                 passing_checkpoint = False
                 checkpoint_note = feedback
                 conversation.append({"role": "user", "content": "Final module checkpoint failed; repair these failures:\n" + feedback})
+                rebase_restored_source()
             if self.max_tool_calls is not None and self.tool_calls_used >= self.max_tool_calls:
                 self.last_budget_report = BudgetExhaustion(
                     budget="tool_call_budget",
@@ -983,8 +1271,8 @@ class ModelClient:
                     prompt_tokens_used=self.prompt_tokens_used,
                     completion_tokens_used=self.completion_tokens_used,
                 )
-                return True
-            checkpoint_due = (
+                return finish_implementation("tool_call_budget", exhausted=True)
+            checkpoint_due = not repair_feedback and ((
                 self.max_turns is None
                 and len(progress_paths) > initial_writes
                 and turn_index >= EARLY_CHECKPOINT_TURN
@@ -992,17 +1280,29 @@ class ModelClient:
             ) or (
                 self.max_turns is not None
                 and turn_index == max(1, self.max_turns - 8)
-            )
+            ))
             if checkpoint_feedback is not None and checkpoint_due:
                 try:
                     feedback = checkpoint_feedback()
+                except ModelRequestInterrupted:
+                    raise
                 except Exception as exc:
                     feedback = f"Checkpoint verification could not run: {type(exc).__name__}: {exc}"
                 passing_checkpoint = feedback.startswith("Current build and test scripts pass.")
-                if passing_checkpoint and repair_feedback:
-                    self.last_implementation_handoff = True
-                    LOGGER.info("Repair checkpoint passed; returning to whole-project verification and coverage audit")
-                    return False
+                # Stop a broad implementation pass when the independent oracle
+                # repeats the same assertions. Return to the orchestrator's
+                # bounded repair context; this is neither success nor exhaustion.
+                fixed_failures = _fixed_regression_signature(feedback)
+                if "public interaction regression (reconstructed jsdom, not Stage 3): FAILED" in feedback and fixed_failures:
+                    unchanged_fixed_checkpoints = unchanged_fixed_checkpoints + 1 if fixed_failures == fixed_failure_signature else 1
+                    fixed_failure_signature = fixed_failures
+                    if unchanged_fixed_checkpoints >= 3:
+                        LOGGER.warning("Fixed regression assertions unchanged across three checkpoints; deferring to focused verification/repair")
+                        return finish_implementation("unchanged_checkpoint", deferred=True,
+                            checked_feedback=feedback if boundary_feedback is None else None)
+                else:
+                    fixed_failure_signature = ()
+                    unchanged_fixed_checkpoints = 0
                 if passing_checkpoint and passing_checkpoint_turn is None:
                     passing_checkpoint_turn = turn_index
                     conversation.append({"role": "user", "content": "Local module checks pass. You have two final turns to finish required behavior and report any uncovered acceptance criteria. Defer optional test expansion or styling polish; the agent will recheck the files and proceed to the next module."})
@@ -1012,6 +1312,7 @@ class ModelClient:
                     # A new feedback message supersedes older feedback without
                     # forcing every file read back into an uncached summary.
                     conversation.append({"role": "user", "content": "Latest checkpoint verification feedback (supersedes earlier feedback):\n" + feedback})
+            rebase_restored_source()
             remaining_requests = self.max_model_requests - getattr(self, "model_requests_used", 0)
             remaining_tokens = self.max_total_tokens - getattr(self, "prompt_tokens_used", 0) - getattr(self, "completion_tokens_used", 0)
             remaining_turns = None if self.max_turns is None else self.max_turns - turn_index
@@ -1035,7 +1336,10 @@ class ModelClient:
                         "Report unresolved failures honestly; local checks and formal acceptance are separate."
                     ),
                 })
-            write_only = idle_tool_turns >= getattr(self, "max_idle_tool_turns", DEFAULT_MAX_IDLE_TOOL_TURNS) // 2 and not passing_checkpoint
+            refresh_target = next(iter(required_source_reads.items()), None)
+            refresh_tool = ("read_file" if refresh_target[1] == "replacement_match" else "list_files") if refresh_target else None
+            write_only = (idle_tool_turns >= getattr(self, "max_idle_tool_turns", DEFAULT_MAX_IDLE_TOOL_TURNS) // 2
+                          and not passing_checkpoint and refresh_tool is None)
             edit_tool = "replace_text" if (resumed_project or repair_text or checkpoint_note or len(progress_paths) > initial_writes) else "write_files"
             if write_only and not write_only_prompted:
                 write_only_prompted = True
@@ -1052,7 +1356,7 @@ class ModelClient:
             try:
                 self._record_model_request()
             except ModelBudgetExceeded:
-                return True
+                return finish_implementation("model_budget", exhausted=True)
             context_chars = self._message_context_chars(messages)
             request_options: dict[str, Any] = {}
             max_tokens = MAX_COMPLETION_TOKENS_PER_REQUEST
@@ -1068,7 +1372,7 @@ class ModelClient:
                     # Low effort preserves thinking while leaving room for tool calls.
                     request_options["reasoning_effort"] = "low"
                     max_tokens = DEEPSEEK_THINKING_IMPLEMENTATION_MAX_TOKENS
-                if write_only:
+                if write_only or refresh_tool:
                     # DeepSeek only supports required tool choice outside thinking mode.
                     # Keep the focused edit bounded while retaining the inspected source.
                     thinking = "disabled"
@@ -1082,10 +1386,16 @@ class ModelClient:
                     model=model,
                     messages=messages,
                     tools=TOOL_SCHEMAS,
-                    tool_choice={"type": "function", "function": {"name": edit_tool}} if write_only else "auto",
+                    tool_choice={"type": "function", "function": {"name": refresh_tool or edit_tool}}
+                        if write_only or refresh_tool else "auto",
                     max_tokens=max_tokens,
                     **request_options,
                 )
+            except (ModelRequestInterrupted, APIStatusError):
+                # A provider status (balance/auth/rate limit/invalid request)
+                # is actionable evidence, not a diagnosis of vision support.
+                # Preserve it and stop; do not retry or switch models here.
+                raise
             except Exception as exc:
                 if visual_inputs:
                     raise RuntimeError(
@@ -1102,27 +1412,41 @@ class ModelClient:
                 # Discard the incomplete output and allow one smaller, focused
                 # continuation. Never execute tool calls from a truncated reply.
                 LOGGER.warning("DeepSeek implementation output was truncated; retrying one focused tool turn")
+                phase_requests = getattr(self, "model_requests_used", 0) - starting_requests
+                phase_tokens = getattr(self, "prompt_tokens_used", 0) + getattr(self, "completion_tokens_used", 0) - starting_tokens
+                if (request_allowance is not None and phase_requests >= request_allowance) or (token_allowance is not None and phase_tokens >= token_allowance):
+                    LOGGER.warning("No repair allocation remains for a truncation retry; returning to verification")
+                    return finish_implementation("allocation", deferred=True, detail=(
+                        f"truncated response discarded; phase_requests={phase_requests} "
+                        f"request_allowance={request_allowance}; phase_tokens={phase_tokens} "
+                        f"token_allowance={token_allowance}"))
                 try:
                     self._record_model_request()
                 except ModelBudgetExceeded:
-                    return True
+                    return finish_implementation("model_budget", exhausted=True)
                 retry_note = {
                     "role": "user",
                     "content": (
                         "Your previous response exceeded the output limit and was discarded. "
-                        "Use the files already inspected. Make one concrete, small tool call now "
-                        "(prefer write_files or replace_text), with at most 4,000 characters of "
-                        "new content. Do not repeat the analysis or reread the whole project."
+                        + (f"First complete the required {refresh_tool} of the affected source. " if refresh_tool else
+                           "Use the files already inspected. Make one concrete, small tool call now (prefer write_files or replace_text). ")
+                        + "Use at most 4,000 characters of new content. Do not repeat the analysis or reread the whole project."
                     ),
                 }
                 conversation.append(retry_note)
                 retry_messages = [*messages, retry_note]
+                # A second thinking request can spend its entire output budget
+                # reasoning again. Request a bounded edit without thinking, and
+                # keep the subsequent tool conversation in the same mode.
+                thinking = "disabled"
+                request_options["extra_body"] = {"thinking": {"type": thinking}}
+                request_options.pop("reasoning_effort", None)
                 response = self._create_completion(
                     "implementation-retry",
                     model=model,
                     messages=retry_messages,
                     tools=TOOL_SCHEMAS,
-                    tool_choice="auto",
+                    tool_choice={"type": "function", "function": {"name": refresh_tool or edit_tool}},
                     max_tokens=MAX_COMPLETION_TOKENS_PER_REQUEST,
                     **request_options,
                 )
@@ -1131,12 +1455,29 @@ class ModelClient:
                     stage="implementation-retry",
                     context_chars=self._message_context_chars(retry_messages),
                 )
+            if (
+                getattr(response.choices[0], "finish_reason", None) == "length"
+                and getattr(self, "is_deepseek", False)
+            ):
+                # Preserve the last complete candidate and let the orchestrator
+                # verify it and route the remaining failures. Neither partial
+                # tools nor an output cap are evidence of successful delivery.
+                LOGGER.warning(
+                    "DeepSeek implementation output remains truncated; discarding partial "
+                    "tools and handing the current candidate to verification"
+                )
+                return finish_implementation("truncated", deferred=True)
+            if getattr(response.choices[0], "finish_reason", None) == "length":
+                finish_implementation("truncated", deferred=True)
             self._reject_truncated_response(response, "implementation")
             assistant_message = response.choices[0].message
             if not assistant_message.tool_calls:
+                if refresh_tool:
+                    return finish_implementation("repeated_tool_failure", deferred=True, detail=source_refresh_notice())
                 if write_only:
                     LOGGER.warning("Focused edit request returned no file edit tool call; handing off for verification")
-                return False
+                    return finish_implementation("no_progress", deferred=True)
+                return finish_implementation("model_finished")
             if getattr(self, "is_deepseek", False) and thinking == "disabled":
                 # A non-thinking tool call has no reasoning_content. Keep this
                 # conversation segment non-thinking until compaction discards it.
@@ -1156,19 +1497,29 @@ class ModelClient:
                     prompt_tokens_used=self.prompt_tokens_used,
                     completion_tokens_used=self.completion_tokens_used,
                 )
-                return True
+                return finish_implementation("tool_call_budget", exhausted=True)
             assistant_payload = assistant_message.model_dump(exclude_none=True)
             tool_payloads: list[dict[str, Any]] = []
             for tool_call in tool_calls:
                 self.tool_calls_used += 1
                 tool_started = time.perf_counter()
+                arguments: Any = {}
                 try:
                     arguments = json.loads(tool_call.function.arguments or "{}")
+                    reset_changed_source_failures()
                     read_key = (
                         tool_call.function.name,
                         json.dumps(arguments, sort_keys=True, ensure_ascii=False),
                     )
-                    if write_only and tool_call.function.name != edit_tool:
+                    paths = ([arguments.get("path")] if tool_call.function.name in {"write_file", "replace_text"} else
+                        [item.get("path") for item in arguments.get("files", []) if isinstance(item, dict)]
+                        if tool_call.function.name == "write_files" else [])
+                    stale_path = next((_normalized_source_path(path) for path in paths
+                        if isinstance(path, str) and _normalized_source_path(path) in required_source_reads), None)
+                    if stale_path is not None:
+                        result = "Tool error: SourceRefreshRequired: " + source_refresh_notice()
+                        note_source_failure((stale_path, required_source_reads[stale_path]), result)
+                    elif write_only and tool_call.function.name != edit_tool:
                         result = f"Only {edit_tool} is available for this focused edit. Make a concrete change now."
                     elif tool_call.function.name in {"list_files", "read_files", "search_text"} and read_key in epoch_reads:
                         result = (
@@ -1177,6 +1528,8 @@ class ModelClient:
                         )
                     else:
                         result = project_tools.call(tool_call.function.name, arguments)
+                        reset_changed_source_failures()
+                        clear_fresh_source_reads(tool_call.function.name, arguments, result)
                         if tool_call.function.name == "read_files":
                             try:
                                 read_payload = json.loads(result)
@@ -1203,6 +1556,10 @@ class ModelClient:
                             epoch_file_reads.clear()
                 except Exception as exc:
                     result = f"Tool error: {type(exc).__name__}: {exc}"
+                    if isinstance(arguments, dict):
+                        source_failure = _source_tool_failure(tool_call.function.name, arguments, exc)
+                        if source_failure is not None:
+                            note_source_failure(source_failure, result)
                     LOGGER.warning("Project tool failed: name=%s error=%s", tool_call.function.name, result[:300])
                 elapsed = time.perf_counter() - tool_started
                 self.tool_seconds = getattr(self, "tool_seconds", 0.0) + elapsed
@@ -1216,6 +1573,14 @@ class ModelClient:
             exchange = [assistant_payload, *tool_payloads]
             conversation.extend(exchange)
             epoch_exchanges.append(exchange)
+            if required_source_reads:
+                conversation.append({"role": "user", "content": source_refresh_notice()})
+            stalled_source = next((key for key, failures in source_failures.items()
+                                   if failures >= MAX_IDENTICAL_FAILED_TOOL_TURNS), None)
+            if stalled_source is not None:
+                LOGGER.warning("Repeated source tool failures: path=%s family=%s; deferring this implementation pass", *stalled_source)
+                return finish_implementation("repeated_tool_failure", deferred=True,
+                    detail=source_failure_details[stalled_source][:300])
             failed_turn = tuple(
                 (call.function.name, call.function.arguments or "", payload["content"])
                 for call, payload in zip(tool_calls, tool_payloads)
@@ -1227,20 +1592,8 @@ class ModelClient:
                 identical_failed_turns = 0
                 failed_tool_signature = None
             if identical_failed_turns >= MAX_IDENTICAL_FAILED_TOOL_TURNS:
-                self.last_budget_report = BudgetExhaustion(
-                    budget="identical_failed_tool_turn_limit",
-                    limit=MAX_IDENTICAL_FAILED_TOOL_TURNS,
-                    used=identical_failed_turns,
-                    requested=0,
-                    tool_names=tuple(call.function.name for call in tool_calls),
-                    turns_used=turn_index + 1,
-                    tool_calls_used=self.tool_calls_used,
-                    model_requests_used=self.model_requests_used,
-                    prompt_tokens_used=self.prompt_tokens_used,
-                    completion_tokens_used=self.completion_tokens_used,
-                    detail=failed_turn[0][2][:300],
-                )
-                return True
+                LOGGER.warning("Repeated identical tool failures; deferring this implementation pass")
+                return finish_implementation("repeated_tool_failure", deferred=True, detail=failed_turn[0][2][:300])
             current_writes = len(progress_paths)
             if current_writes > observed_writes:
                 observed_writes = current_writes
@@ -1254,46 +1607,37 @@ class ModelClient:
                 and current_writes > initial_writes
                 and idle_tool_turns >= PASSING_CHECKPOINT_IDLE_TURNS
             ):
-                self.last_implementation_handoff = True
                 LOGGER.info(
                     "Implementation checkpoint passed and no files changed for %d tool turns; "
                     "moving to the next requirement",
                     idle_tool_turns,
                 )
-                return False
+                return finish_implementation("checkpoint_passed", handoff=True)
             if idle_tool_turns >= self.max_idle_tool_turns:
+                if repair_feedback:
+                    return finish_implementation("no_progress", deferred=True)
                 if checkpoint_feedback is None and resumed_project:
                     # Integration must return to the orchestrator's real checks
                     # instead of turning an unverified idle pass into a fatal
                     # global budget failure. The checks decide what to repair.
-                    self.last_implementation_deferred = True
                     LOGGER.warning("Idle implementation pass deferred to whole-project verification")
-                    return False
+                    return finish_implementation("no_progress", deferred=True)
                 try:
-                    feedback = checkpoint_feedback() if checkpoint_feedback is not None else "No checkpoint available"
+                    checker = boundary_feedback if boundary_feedback is not None else checkpoint_feedback
+                    feedback = checker() if checker is not None else "No checkpoint available"
+                except ModelRequestInterrupted:
+                    raise
                 except Exception as exc:
                     feedback = f"Checkpoint verification failed: {type(exc).__name__}: {exc}"
                 if (current_writes > initial_writes or resumed_project) and feedback.startswith("Current build and test scripts pass."):
-                    self.last_implementation_handoff = True
                     LOGGER.warning(
                         "No project file changes for %d tool turns; local scripts pass, moving to the next requirement",
                         idle_tool_turns,
                     )
-                    return False
-                self.last_budget_report = BudgetExhaustion(
-                    budget="no_progress_tool_turn_limit",
-                    limit=self.max_idle_tool_turns,
-                    used=idle_tool_turns,
-                    requested=0,
-                    tool_names=tuple(call.function.name for call in tool_calls),
-                    turns_used=turn_index + 1,
-                    tool_calls_used=self.tool_calls_used,
-                    model_requests_used=self.model_requests_used,
-                    prompt_tokens_used=self.prompt_tokens_used,
-                    completion_tokens_used=self.completion_tokens_used,
-                    detail=feedback[:300],
-                )
-                return True
+                    return finish_implementation("checkpoint_passed", handoff=True, checked_feedback=feedback)
+                LOGGER.warning("No progress in this implementation pass; deferring to verification: %s", feedback[:300])
+                return finish_implementation("no_progress", deferred=True, detail=feedback[:300],
+                    checked_feedback=feedback)
             if (visual_inputs and turn_index == 0) or self._message_context_chars(conversation) > MAX_CONVERSATION_CHARS:
                 conversation = compact_context()
             if identical_failed_turns == MAX_IDENTICAL_FAILED_TOOL_TURNS - 1:
@@ -1315,7 +1659,7 @@ class ModelClient:
                     prompt_tokens_used=self.prompt_tokens_used,
                     completion_tokens_used=self.completion_tokens_used,
                 )
-                return True
+                return finish_implementation("tool_call_budget", exhausted=True)
             if self.max_turns is not None and turn_index == self.max_turns - 1:
                 self.last_budget_report = BudgetExhaustion(
                     budget="model_turn_budget",
@@ -1329,4 +1673,4 @@ class ModelClient:
                     prompt_tokens_used=self.prompt_tokens_used,
                     completion_tokens_used=self.completion_tokens_used,
                 )
-                return True
+                return finish_implementation("model_turn_budget", exhausted=True)

@@ -21,6 +21,7 @@ from .native_verification import verify_public_acceptance
 from .llm import BudgetExhaustion, ModelBudgetExceeded, ModelClient, RequirementReviewError
 from .model_transport import ModelRequestInterrupted
 from .requirements import RequirementModule, load_requirement_tree, root_modules, walk_requirement_ids
+from .requirement_progress import mark_subtree_progress, record_local_verification
 from .repair_policy import failed_behavior_ids, focused_subtree, repair_guidance
 from .tools import ProjectTools
 from .verify import (
@@ -149,16 +150,7 @@ def _requirement_test_status(result: VerificationResult, node_id: str) -> bool |
 
 
 def _record_verification(runtime: AgentRuntime, tree: dict[str, Any], result: VerificationResult) -> None:
-    for node_id in walk_requirement_ids(tree):
-        if node_id == "ROOT":
-            continue
-        status = _requirement_test_status(result, node_id)
-        if status is True:
-            runtime.events.mark_test_passed(node_id, "Local project verification passed; formal acceptance pending")
-        elif status is False:
-            failures = [check for check in result.checks if not check.passed and node_id in check.requirement_ids]
-            runtime.events.mark_test_failed(node_id, VerificationResult(False, tuple(failures)).summary())
-        _record_test(runtime, node_id, status)
+    record_local_verification(runtime, tree, result)
     _register_traceability(runtime, tree)
 
 
@@ -479,7 +471,7 @@ def _run_model_agent(runtime: AgentRuntime, config: AgentConfig, tree: dict[str,
     if isinstance(root_visual_references, str):
         root_visual_references = [root_visual_references]
     for module_index, module in enumerate(modules):
-        runtime.events.mark_design_started(module.node_id, "Analyzing requirement subtree")
+        mark_subtree_progress(runtime, module.subtree, "mark_design_started", "Analyzing requirement subtree")
         planning_subtree = dict(module.subtree)
         planning_subtree["project_requirements"] = tree
         module_visual_references = planning_subtree.get("visual_reference", [])
@@ -503,8 +495,8 @@ def _run_model_agent(runtime: AgentRuntime, config: AgentConfig, tree: dict[str,
             break
         _raise_if_model_interrupted(model)
         plans[module.node_id] = plan
-        runtime.events.mark_design_done(module.node_id, "Implementation plan prepared")
-        runtime.events.mark_implementation_started(module.node_id, "Applying requirement subtree")
+        mark_subtree_progress(runtime, module.subtree, "mark_design_done", "Implementation plan prepared")
+        mark_subtree_progress(runtime, module.subtree, "mark_implementation_started", "Applying requirement subtree")
         writes_before = len(changed_paths)
         token_limit = getattr(model, "max_total_tokens", None)
         token_allowance = None
@@ -556,7 +548,8 @@ def _run_model_agent(runtime: AgentRuntime, config: AgentConfig, tree: dict[str,
             if getattr(model, "last_implementation_handoff", False)
             else "Implementation turn completed"
         )
-        runtime.events.mark_implementation_done(module.node_id, message)
+        if not deferred:
+            mark_subtree_progress(runtime, module.subtree, "mark_implementation_done", message)
 
     if not budget_exhausted and (len(modules) > 1 or deferred_modules):
         LOGGER.info("Integrating all requirement modules through the application entry point")

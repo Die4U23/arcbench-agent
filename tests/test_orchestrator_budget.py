@@ -13,6 +13,44 @@ from agent.verify import CheckResult, VerificationResult
 
 
 class BudgetExhaustionOrchestratorTests(unittest.TestCase):
+    def test_public_failures_are_checked_and_fed_back_while_private_tests_fail(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory)
+            node = {'id': 'REQ-3'}
+            tree = {'id': 'ROOT', 'children': [node]}
+            config = SimpleNamespace(task_type='web', max_model_turns=None, max_tool_calls=None,
+                output_dir=output, requirement_dir=output / 'requirements')
+            model = MagicMock()
+            model.plan.return_value = 'plan'
+            model.review_requirements.return_value = ''
+            model.last_budget_report = None
+            tools = SimpleNamespace(written_paths=[], ensure_dependencies=lambda: None)
+            def implement(**kwargs):
+                tools.written_paths.append('frontend/src/Booking.jsx')
+                return False
+            model.implement.side_effect = implement
+            project = VerificationResult(False, (
+                CheckResult('frontend: npm run build', True, 0, 'built'),
+                CheckResult('frontend: npm run test', False, 1, 'self-authored test failure')))
+            structure = VerificationResult(True, (CheckResult('web template structure', True, 0, 'layout'),))
+            public = (CheckResult('public interaction regression (reconstructed jsdom, not Stage 3)',
+                False, 1, 'REQ-3.1: duplicate G532 summary', ('REQ-3.1',)),)
+            with patch('agent.orchestrator.ModelClient', return_value=model), \
+                 patch('agent.orchestrator.ProjectTools', return_value=tools), \
+                 patch('agent.orchestrator.verify_project', return_value=project), \
+                 patch('agent.orchestrator.verify_web_template_structure', return_value=structure), \
+                 patch('agent.orchestrator.verify_public_acceptance', return_value=public) as regression:
+                result = run_model_agent(SimpleNamespace(events=MagicMock(), traceability=MagicMock()),
+                    config, tree, [RequirementModule('REQ-3', 'Booking', node)])
+            self.assertFalse(result.passed)
+            full_checks = [call for call in regression.call_args_list if not call.kwargs.get('startup_only')]
+            startup_checks = [call for call in regression.call_args_list if call.kwargs.get('startup_only')]
+            self.assertEqual(len(full_checks), 3)
+            self.assertEqual(len(startup_checks), 1)
+            self.assertEqual(model.implement.call_count, 2)
+            self.assertIn('duplicate G532', model.implement.call_args.kwargs['repair_feedback'])
+            self.assertIn('self-authored test failure', model.implement.call_args.kwargs['repair_feedback'])
+
     def test_root_script_failure_is_not_hidden_by_green_module_checkpoint(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             node = {'id': 'REQ-1'}
@@ -125,14 +163,18 @@ class BudgetExhaustionOrchestratorTests(unittest.TestCase):
             model = MagicMock()
             model.plan.return_value = "plan"
             missing = "REQ-3: frontend/Booking.jsx retains a previous account's confirmed booking"
-            model.review_requirements.side_effect = [missing, missing, "", ""]
+            model.review_requirements.side_effect = [missing, ""]
             tools = SimpleNamespace(written_paths=[], ensure_dependencies=lambda: None)
             checkpoints = []
+            boundaries = []
             def implement(**kwargs):
                 tools.written_paths.append("frontend/Booking.jsx")
                 if kwargs.get("repair_feedback"):
+                    before = model.review_requirements.call_count
                     checkpoints.append(kwargs["checkpoint_feedback"]())
                     checkpoints.append(kwargs["checkpoint_feedback"]())
+                    boundaries.append(kwargs["boundary_feedback"]())
+                    self.assertEqual(model.review_requirements.call_count, before)
                 return False
             model.implement.side_effect = implement
             passed = VerificationResult(True, (CheckResult("build and test", True, 0, "ok"),))
@@ -147,9 +189,11 @@ class BudgetExhaustionOrchestratorTests(unittest.TestCase):
             self.assertEqual(model.implement.call_count, 2)
             self.assertTrue(checkpoints[0].startswith("requirement coverage: FAILED"))
             self.assertIn(missing, checkpoints[0])
-            self.assertTrue(checkpoints[1].startswith("Current build and test scripts pass."))
+            self.assertTrue(checkpoints[1].startswith("requirement coverage: FAILED"))
+            self.assertIn(missing, checkpoints[1])
+            self.assertTrue(boundaries[0].startswith("Current build and test scripts pass."))
             self.assertTrue(any(missing in line for line in logs.output))
-            self.assertEqual(model.review_requirements.call_count, 4)
+            self.assertEqual(model.review_requirements.call_count, 2)
 
     def test_repair_targets_requirement_named_by_failure(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -231,7 +275,7 @@ class BudgetExhaustionOrchestratorTests(unittest.TestCase):
             self.assertTrue(result.passed)
             visual.assert_called_once()
 
-    def test_repair_continues_while_verification_failures_change(self) -> None:
+    def test_allocated_repair_continues_with_retained_source_changes(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             output_dir = Path(temp_dir) / "output"
             config = SimpleNamespace(
@@ -248,10 +292,15 @@ class BudgetExhaustionOrchestratorTests(unittest.TestCase):
             model = MagicMock()
             model.review_requirements.return_value = ''
             model.plan.return_value = "implementation plan"
+            model.last_budget_report = None
             project_tools = SimpleNamespace(written_paths=[], ensure_dependencies=lambda: None)
 
             def implement(*args, **kwargs):
                 project_tools.written_paths.append("frontend/index.html")
+                source = output_dir / "frontend/index.html"
+                source.write_text(f"<main>revision {len(project_tools.written_paths)}</main>", encoding="utf-8")
+                model.last_implementation_deferred = bool(kwargs.get("repair_feedback"))
+                model.last_implementation_stop_reason = "allocation" if model.last_implementation_deferred else "model_finished"
                 return False
 
             model.implement.side_effect = implement
@@ -472,7 +521,7 @@ class BudgetExhaustionOrchestratorTests(unittest.TestCase):
             self.assertFalse(result.passed)
             self.assertEqual(model.plan.call_count, 1)
             self.assertEqual(model.implement.call_count, 1)
-            verify.assert_called_once_with(output_dir)
+            verify.assert_called_once_with(output_dir, include_root=True)
             self.assertEqual(project_tools.written_paths, ["frontend/index.html"])
             self.assertIn("requested_tool_calls=2", result.summary())
             self.assertIn("total_model_requests=6", result.summary())

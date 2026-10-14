@@ -27,6 +27,17 @@ def candidate(*, build=True):
 
 
 class DeliveryTests(unittest.TestCase):
+    def test_browser_failure_is_preserved_on_budget_handoff_after_real_startup(self):
+        from agent.browser_contract import browser_guard_result
+        with tempfile.TemporaryDirectory() as directory, patch(
+                "agent.orchestrator.verify_public_acceptance",
+                return_value=(CheckResult("web runtime startup", True, 0, "HTTP 200"),)):
+            checks = (*candidate().checks, browser_guard_result(False, "Real CSS Name * failed"))
+            result = _finalize_delivery(Path(directory), VerificationResult(False, checks), reserve())
+            self.assertTrue(result.ready_for_evaluation)
+            self.assertFalse(result.passed)
+            self.assertIn("Real CSS Name * failed", result.summary())
+
     def test_runnable_candidate_preserves_failed_validation_and_report(self):
         with tempfile.TemporaryDirectory() as directory, patch(
                 "agent.orchestrator.verify_public_acceptance",
@@ -101,7 +112,7 @@ class DeliveryTests(unittest.TestCase):
                 result = run_model_agent(runtime, config, tree, modules)
             self.assertTrue(result.ready_for_evaluation)
             self.assertFalse(result.passed)
-            verify.assert_called_once_with(root)
+            verify.assert_called_once_with(root, include_root=True)
             model.review_requirements.assert_not_called()
             self.assertEqual(model.implement.call_count, 1)
             runtime.events.mark_test_passed.assert_not_called()

@@ -13,6 +13,7 @@ from agent.llm import (
     MAX_COMPLETION_TOKENS_PER_REQUEST,
     ModelBudgetExceeded,
     ModelClient,
+    _fixed_regression_signature,
 )
 from agent.tools import ProjectTools
 
@@ -128,6 +129,24 @@ def _repair_review(missing: str, *, quote: str = "test task",
 
 
 class ImplementBudgetTests(unittest.TestCase):
+    def test_form_label_guidance_reaches_initial_integration_and_focused_repair(self) -> None:
+        model = _make_client(None, None, [_FakeMessage() for _ in range(3)])
+        with tempfile.TemporaryDirectory() as directory:
+            tools = ProjectTools(Path(directory))
+            for subtree, feedback in (
+                ({'id': 'REQ-1.1'}, None),
+                ({'id': 'ROOT'}, None),
+                ({'id': 'REQ-1.1'}, 'Strict locator label /^name$/i matched zero'),
+            ):
+                model.implement(task_type='web', subtree=subtree, plan='plan',
+                    project_tools=tools, repair_feedback=feedback)
+        self.assertEqual(len(model.client.completions.requests), 3)
+        for request in model.client.completions.requests:
+            instruction = request['messages'][0]['content']
+            self.assertIn('getByLabelText may include required-marker asterisks', instruction)
+            self.assertIn('explicit aria-label', instruction)
+            self.assertIn('preserve required validation and the connected form behavior', instruction)
+
     def test_public_contract_reaches_planning_implementation_and_source_audit(self) -> None:
         tree = {"id": "ROOT", "name": "Railway Ticket Booking Demo", "children": [
             {"id": node, "name": node, "description": "contract"}
@@ -226,6 +245,7 @@ class ImplementBudgetTests(unittest.TestCase):
         self.assertFalse(exhausted)
         self.assertEqual(model.client.completions.calls, 2)
         self.assertEqual(model.model_requests_used, 2)
+        self.assertEqual(model.last_implementation_stop_reason, "model_finished")
         self.assertTrue((self.project_dir / "a.js").is_file())
 
     def test_truncated_implementation_is_not_treated_as_completion(self) -> None:
@@ -256,6 +276,12 @@ class ImplementBudgetTests(unittest.TestCase):
         self.assertEqual(model.model_requests_used, 3)
         self.assertEqual(model.client.completions.requests[1]["max_tokens"], MAX_COMPLETION_TOKENS_PER_REQUEST)
         self.assertIn("previous response exceeded", model.client.completions.requests[1]["messages"][-1]["content"])
+        retry = model.client.completions.requests[1]
+        self.assertEqual(retry["extra_body"], {"thinking": {"type": "disabled"}})
+        self.assertNotIn("reasoning_effort", retry)
+        self.assertEqual(retry["tool_choice"]["function"]["name"], "write_files")
+        self.assertEqual(model.client.completions.requests[2]["extra_body"], retry["extra_body"])
+        self.assertFalse(any(message.get("role") == "assistant" for message in retry["messages"]))
 
     def test_deepseek_second_truncation_stops_without_tool_side_effects(self) -> None:
         model = _make_client(
@@ -268,11 +294,39 @@ class ImplementBudgetTests(unittest.TestCase):
             env_overrides={"MODEL": "deepseek-flash", "OPENAI_BASE_URL": "https://api.deepseek.com"},
         )
 
-        with self.assertRaisesRegex(RuntimeError, "output limit"):
-            self._implement(model)
+        self.assertFalse(self._implement(model))
         self.assertEqual(model.client.completions.calls, 2)
+        self.assertEqual(model.model_requests_used, 2)
+        self.assertEqual(model.last_implementation_stop_reason, "truncated")
+        self.assertEqual(model.tool_calls_used, 0)
         self.assertFalse((self.project_dir / "partial.js").exists())
         self.assertFalse((self.project_dir / "still-partial.js").exists())
+
+    def test_disabled_deepseek_truncation_hands_off_without_another_request(self) -> None:
+        model = _make_client(
+            max_turns=2,
+            max_tool_calls=2,
+            scripted=[_FakeMessage([_write_call("partial.js")], finish_reason="length")],
+            env_overrides={"MODEL": "deepseek-flash", "OPENAI_BASE_URL": "https://api.deepseek.com",
+                           "ARCBENCH_IMPLEMENTATION_THINKING": "disabled"},
+        )
+        self.assertFalse(self._implement(model))
+        self.assertEqual(model.model_requests_used, 1)
+        self.assertEqual(model.tool_calls_used, 0)
+        self.assertFalse((self.project_dir / "partial.js").exists())
+
+    def test_truncation_recovery_respects_the_remaining_request_budget(self) -> None:
+        model = _make_client(
+            max_turns=2,
+            max_tool_calls=2,
+            scripted=[_FakeMessage([_write_call("partial.js")], finish_reason="length")],
+            env_overrides={"MODEL": "deepseek-flash", "OPENAI_BASE_URL": "https://api.deepseek.com"},
+        )
+        model.max_model_requests = 1
+        self.assertTrue(self._implement(model))
+        self.assertEqual(model.model_requests_used, 1)
+        self.assertEqual(model.tool_calls_used, 0)
+        self.assertFalse((self.project_dir / "partial.js").exists())
 
     def test_turn_budget_falls_through_to_verification(self) -> None:
         scripted = [
@@ -381,7 +435,7 @@ class ImplementBudgetTests(unittest.TestCase):
     def test_requirement_review_rejects_invented_obligation(self) -> None:
         self.tools.write_file("frontend/src/App.jsx", "export default function App() { return null; }")
         model = _make_client(None, None, [_FakeMessage(None,
-            _repair_review("unconfirmed draft disappears", quote="Persist unconfirmed drafts after reload"))])
+            _repair_review("unconfirmed draft disappears", quote="Persist unconfirmed drafts after reload"))] * 2)
         with self.assertRaisesRegex(RuntimeError, "outside the supplied requirement"):
             model.review_requirements(self.subtree, self.tools)
         self.assertIsNone(model._requirement_review_cache)
@@ -394,7 +448,7 @@ class ImplementBudgetTests(unittest.TestCase):
             ({"evidence": "setBooking(previousUserBooking)"}, "outside the supplied production source"),
         ]:
             with self.subTest(overrides=overrides):
-                model = _make_client(None, None, [_FakeMessage(None, _repair_review("gap", **overrides))])
+                model = _make_client(None, None, [_FakeMessage(None, _repair_review("gap", **overrides))] * 2)
                 with self.assertRaisesRegex(RuntimeError, error):
                     model.review_requirements(self.subtree, self.tools)
 
@@ -406,7 +460,7 @@ class ImplementBudgetTests(unittest.TestCase):
             ({"verdict": "repair", "issues": ["already correct, no defect"]}, "unevidenced"),
         ]:
             with self.subTest(payload=payload):
-                model = _make_client(None, None, [_FakeMessage(None, json.dumps(payload))])
+                model = _make_client(None, None, [_FakeMessage(None, json.dumps(payload))] * 2)
                 with self.assertRaisesRegex(RuntimeError, error):
                     model.review_requirements(self.subtree, self.tools)
 
@@ -421,7 +475,7 @@ class ImplementBudgetTests(unittest.TestCase):
             quote="Confirmed bookings persist after reload.", evidence="return null;"))])
         self.assertIn("REQ-3.2 frontend/src/App.jsx", model.review_requirements(tree, self.tools))
         model = _make_client(None, None, [_FakeMessage(None, _repair_review(
-            "gap", requirement_id="REQ-1", quote="Confirmed bookings persist after reload."))])
+            "gap", requirement_id="REQ-1", quote="Confirmed bookings persist after reload."))] * 2)
         with self.assertRaisesRegex(RuntimeError, "outside the supplied requirement"):
             model.review_requirements(tree, self.tools)
 
@@ -542,6 +596,20 @@ class ImplementBudgetTests(unittest.TestCase):
         self.assertIn("a.js", after_change)
         self.assertNotIn("same read already returned", after_change)
 
+    def test_controller_restore_invalidates_cached_batch_read(self):
+        (self.project_dir / 'a.js').write_text('regressed source', encoding='utf-8')
+        model = _make_client(9, 6, [_FakeMessage([_read_files_call(['a.js'])]),
+            _FakeMessage([_read_files_call(['a.js'])]), _FakeMessage(None, 'done')])
+        def checkpoint():
+            (self.project_dir / 'a.js').write_text('restored source', encoding='utf-8')
+            self.tools.source_revision += 1
+            return 'Restored candidate; remaining business failure'
+        self.assertFalse(model.implement(task_type='web', subtree=self.subtree, plan='test plan',
+            project_tools=self.tools, checkpoint_feedback=checkpoint))
+        reread = model.client.completions.requests[2]['messages'][-1]['content']
+        self.assertIn('restored source', reread)
+        self.assertNotIn('same read already returned', reread)
+
     def test_overlapping_read_batches_do_not_repeat_unchanged_file_content(self) -> None:
         (self.project_dir / "a.js").write_text("old a", encoding="utf-8")
         (self.project_dir / "b.js").write_text("b content", encoding="utf-8")
@@ -593,10 +661,12 @@ class ImplementBudgetTests(unittest.TestCase):
         )
         self.tools.call = lambda name, args: (_ for _ in ()).throw(FileNotFoundError("missing.txt"))
 
-        self.assertTrue(self._implement(model))
+        self.assertFalse(self._implement(model))
         self.assertEqual(model.client.completions.calls, 3)
-        self.assertEqual(model.last_budget_report.budget, "identical_failed_tool_turn_limit")
-        self.assertIn("missing.txt", model.last_budget_report.summary())
+        self.assertIsNone(model.last_budget_report)
+        self.assertTrue(model.last_implementation_deferred)
+        self.assertEqual(model.last_implementation_stop_reason, "repeated_tool_failure")
+        self.assertIn("missing.txt", model.last_implementation_stop_detail)
         self.assertIn("Change the tool arguments", json.dumps(model.client.completions.requests[2]["messages"]))
 
     def test_changed_tool_call_recovers_after_repeated_failure_warning(self) -> None:
@@ -627,15 +697,17 @@ class ImplementBudgetTests(unittest.TestCase):
             + [_FakeMessage([_read_call("a.js")]) for _ in range(12)],
         )
         checkpoint = MagicMock(return_value="Current build and test scripts pass. Finish uncovered requirements.")
+        boundary = MagicMock(return_value="Current build and test scripts pass. Finish uncovered requirements.")
 
         self.assertFalse(model.implement(
             task_type="web", subtree=self.subtree, plan="test plan",
-            project_tools=self.tools, checkpoint_feedback=checkpoint,
+            project_tools=self.tools, checkpoint_feedback=checkpoint, boundary_feedback=boundary,
         ))
         self.assertEqual(model.model_requests_used, 5)
         self.assertTrue(model.last_implementation_handoff)
         self.assertIsNone(model.last_budget_report)
         checkpoint.assert_called_once_with()
+        boundary.assert_called_once_with()
 
     def test_idle_tool_turns_without_project_writes_fail(self) -> None:
         model = _make_client(
@@ -645,11 +717,27 @@ class ImplementBudgetTests(unittest.TestCase):
         )
         self.tools.call = lambda name, args: "ok"
 
-        self.assertTrue(self._implement(model))
+        self.assertFalse(self._implement(model))
         self.assertEqual(model.model_requests_used, 12)
-        self.assertEqual(model.last_budget_report.budget, "no_progress_tool_turn_limit")
+        self.assertIsNone(model.last_budget_report)
+        self.assertTrue(model.last_implementation_deferred)
+        self.assertEqual(model.last_implementation_stop_reason, "no_progress")
         self.assertFalse(model.last_implementation_handoff)
         self.assertIn("inspected the project repeatedly without changing a file", json.dumps(model.client.completions.requests[6]["messages"]))
+
+    def test_local_tool_failure_does_not_exhaust_the_next_implementation_pass(self) -> None:
+        model = _make_client(None, None,
+            [_FakeMessage([_read_call("missing.txt")]) for _ in range(3)]
+            + [_FakeMessage([_write_call("recovered.js")]), _FakeMessage(None, "done")])
+        self.assertFalse(self._implement(model))
+        self.assertEqual(model.last_implementation_stop_reason, "repeated_tool_failure")
+        self.assertTrue(model.last_implementation_deferred)
+        self.assertIsNone(model.last_budget_report)
+        self.assertFalse(self._implement(model))
+        self.assertEqual(model.model_requests_used, 5)
+        self.assertEqual(model.last_implementation_stop_reason, "model_finished")
+        self.assertFalse(model.last_implementation_deferred)
+        self.assertTrue((self.project_dir / "recovered.js").exists())
 
     def test_resumed_passing_project_hands_off_without_new_writes(self) -> None:
         source = self.project_dir / "frontend" / "src" / "App.tsx"
@@ -706,12 +794,14 @@ class ImplementBudgetTests(unittest.TestCase):
         )
         checkpoint = MagicMock(return_value="web template structure: FAILED")
 
-        self.assertTrue(model.implement(
+        self.assertFalse(model.implement(
             task_type="web", subtree=self.subtree, plan="test plan",
             project_tools=self.tools, checkpoint_feedback=checkpoint,
         ))
         self.assertEqual(model.model_requests_used, 13)
-        self.assertEqual(model.last_budget_report.budget, "no_progress_tool_turn_limit")
+        self.assertIsNone(model.last_budget_report)
+        self.assertTrue(model.last_implementation_deferred)
+        self.assertEqual(model.last_implementation_stop_reason, "no_progress")
         self.assertFalse(model.last_implementation_handoff)
 
     def test_passing_module_hands_off_despite_continuous_optional_writes(self) -> None:
@@ -732,6 +822,7 @@ class ImplementBudgetTests(unittest.TestCase):
         self.assertFalse(model.last_implementation_handoff)
         self.assertIsNone(model.last_budget_report)
         self.assertEqual(model.model_requests_used, 0)
+        self.assertEqual(model.last_implementation_stop_reason, "allocation")
 
     def test_request_allocation_defers_before_consuming_global_request_budget(self) -> None:
         model = _make_client(max_turns=None, max_tool_calls=None,
@@ -741,6 +832,7 @@ class ImplementBudgetTests(unittest.TestCase):
         self.assertTrue(model.last_implementation_deferred)
         self.assertEqual(model.model_requests_used, 1)
         self.assertIsNone(model.last_budget_report)
+        self.assertEqual(model.last_implementation_stop_reason, "allocation")
 
     def test_terminal_response_records_actual_token_overshoot(self) -> None:
         model = _make_client(max_turns=None, max_tool_calls=None, scripted=[])
@@ -752,7 +844,8 @@ class ImplementBudgetTests(unittest.TestCase):
 
     def test_green_repair_returns_before_more_model_edits(self) -> None:
         model = _make_client(max_turns=None, max_tool_calls=None,
-            scripted=[_FakeMessage([_write_call(f"repair-{i}.js")]) for i in range(20)])
+            scripted=[_FakeMessage([_write_call(f"repair-{i}.js")]) for i in range(5)]
+            + [_FakeMessage(None, "atomic repair complete"), _FakeMessage([_write_call("unnecessary.js")])])
         checkpoint = MagicMock(return_value="Current build and test scripts pass.")
         self.assertFalse(model.implement(task_type="web", subtree=self.subtree,
             plan="repair required behavior", project_tools=self.tools,
@@ -760,9 +853,11 @@ class ImplementBudgetTests(unittest.TestCase):
         self.assertTrue(model.last_implementation_handoff)
         self.assertIsNone(model.last_budget_report)
         self.assertEqual(checkpoint.call_count, 1)
-        # The first checkpoint is before turn 4's request; a green repair
-        # must not use the two optional final editing turns.
-        self.assertEqual(model.model_requests_used, 4)
+        # A repair is checked once after explicit finish, never halfway
+        # through its cross-file changes or after an extra optional edit.
+        self.assertEqual(model.model_requests_used, 6)
+        self.assertEqual(model.last_implementation_stop_reason, "model_finished")
+        self.assertFalse((self.project_dir / "unnecessary.js").exists())
 
     def test_final_checkpoint_failure_requires_repair_before_handoff(self) -> None:
         model = _make_client(max_turns=None, max_tool_calls=None,
@@ -785,12 +880,14 @@ class ImplementBudgetTests(unittest.TestCase):
         )
         checkpoint = MagicMock(side_effect=RuntimeError("build unavailable"))
 
-        self.assertTrue(model.implement(
+        self.assertFalse(model.implement(
             task_type="web", subtree=self.subtree, plan="test plan",
             project_tools=self.tools, checkpoint_feedback=checkpoint,
         ))
-        self.assertEqual(model.last_budget_report.budget, "no_progress_tool_turn_limit")
-        self.assertIn("build unavailable", model.last_budget_report.summary())
+        self.assertIsNone(model.last_budget_report)
+        self.assertTrue(model.last_implementation_deferred)
+        self.assertEqual(model.last_implementation_stop_reason, "no_progress")
+        self.assertIn("build unavailable", model.last_implementation_stop_detail)
 
     def test_budget_notice_uses_remaining_global_requests(self) -> None:
         model = _make_client(
@@ -987,6 +1084,7 @@ class ImplementBudgetTests(unittest.TestCase):
             scripted=[_FakeMessage([_write_call("a.txt")]), _FakeMessage(None, "fixed")],
         )
         checkpoint = MagicMock(return_value="frontend: npm run test FAILED: missing tests/*.test.js")
+        boundary = MagicMock(return_value="frontend: npm run test FAILED: missing tests/*.test.js")
 
         exhausted = model.implement(
             task_type="web",
@@ -994,10 +1092,12 @@ class ImplementBudgetTests(unittest.TestCase):
             plan="test plan",
             project_tools=self.tools,
             checkpoint_feedback=checkpoint,
+            boundary_feedback=boundary,
         )
 
         self.assertFalse(exhausted)
         checkpoint.assert_called_once_with()
+        boundary.assert_called_once_with()
         second_request = model.client.completions.requests[1]["messages"]
         self.assertTrue(any(
             "missing tests/*.test.js" in message["content"]
@@ -1020,6 +1120,7 @@ class ImplementBudgetTests(unittest.TestCase):
         original_call = self.tools.call
         self.tools.call = lambda name, args: original_call(name, args) if name == "write_file" else "ok"
         checkpoint = MagicMock(side_effect=[f"failure {index}" for index in range(6)])
+        boundary = MagicMock(return_value="failure 6")
 
         self.assertFalse(model.implement(
             task_type="web",
@@ -1027,11 +1128,13 @@ class ImplementBudgetTests(unittest.TestCase):
             plan="test plan",
             project_tools=self.tools,
             checkpoint_feedback=checkpoint,
+            boundary_feedback=boundary,
         ))
 
         self.assertEqual(model.model_requests_used, 40)
         self.assertEqual(model.tool_calls_used, 39)
         self.assertEqual(checkpoint.call_count, 6)
+        boundary.assert_called_once_with()
         final_messages = model.client.completions.requests[-1]["messages"]
         self.assertTrue(any(
             message["role"] == "user" and "failure 5" in message["content"]
@@ -1039,6 +1142,105 @@ class ImplementBudgetTests(unittest.TestCase):
         ))
         self.assertEqual(final_messages[1]["role"], "user")
         self.assertIn('"id": "ROOT"', final_messages[1]["content"])
+
+    def test_repeated_fixed_assertions_defer_instead_of_consuming_the_entire_budget(self):
+        calls = [_FakeToolCall(f"call-{index}", "list_files", json.dumps({"path": "."})) for index in range(38)]
+        model = _make_client(None, None, [_FakeMessage([_write_call("a.js")])]
+            + [_FakeMessage([call]) for call in calls] + [_FakeMessage(None, "done")],
+            env_overrides={"ARCBENCH_MAX_MODEL_REQUESTS": "50", "ARCBENCH_MAX_IDLE_TOOL_TURNS": "50"})
+        original_call = self.tools.call
+        self.tools.call = lambda name, args: original_call(name, args) if name == "write_file" else "ok"
+        checkpoint = MagicMock(side_effect=[
+            f"Self test timing {index}ms\npublic interaction regression (reconstructed jsdom, not Stage 3): FAILED (exit=1)\n"
+            "REQ-3.1: selected train summary: expected 2 to be 1" for index in range(6)])
+        exhausted = model.implement(task_type="web", subtree=self.subtree, plan="test plan",
+            project_tools=self.tools, checkpoint_feedback=checkpoint)
+        self.assertFalse(exhausted)
+        self.assertTrue(model.last_implementation_deferred)
+        self.assertFalse(model.last_implementation_handoff)
+        self.assertIsNone(model.last_budget_report)
+        self.assertEqual(checkpoint.call_count, 3)
+        self.assertLess(model.model_requests_used, 25)
+
+    def _run_fixed_checkpoint_sequence(self, failures):
+        calls = [_FakeToolCall(f"call-{index}", "list_files", json.dumps({"path": "."}))
+                 for index in range(38)]
+        model = _make_client(None, None, [_FakeMessage([_write_call("a.js")])]
+            + [_FakeMessage([call]) for call in calls] + [_FakeMessage(None, "done")],
+            env_overrides={"ARCBENCH_MAX_MODEL_REQUESTS": "50", "ARCBENCH_MAX_IDLE_TOOL_TURNS": "50"})
+        checkpoint = MagicMock(side_effect=[
+            "public interaction regression (reconstructed jsdom, not Stage 3): FAILED (exit=1)\n" + failure
+            for failure in failures])
+        with tempfile.TemporaryDirectory() as directory:
+            tools = ProjectTools(Path(directory))
+            original_call = tools.call
+            tools.call = lambda name, args: original_call(name, args) if name == "write_file" else "ok"
+            exhausted = model.implement(task_type="web", subtree=self.subtree, plan="test plan",
+                project_tools=tools, checkpoint_feedback=checkpoint)
+        self.assertFalse(exhausted)
+        self.assertTrue(model.last_implementation_deferred)
+        self.assertFalse(model.last_implementation_handoff)
+        self.assertIsNone(model.last_budget_report)
+        self.assertEqual(model.last_implementation_stop_reason, "unchanged_checkpoint")
+        return model, checkpoint
+
+    def test_generated_account_changes_do_not_reset_three_checkpoint_deferral(self):
+        # Actual failing locator/message shape from the two 7/32 reports.
+        failures = [
+            "REQ-1.1: successfully register a new account and remain signed in: "
+            f"Strict visibility text tb-user-179133419246{index}-pe89{index}y must resolve once: "
+            "expected 2 to be 1 // Object.is equality\n"
+            "REQ-2.1: search with valid criteria and display matching train results: "
+            "Strict locator label /^from$/i must resolve exactly once: expected +0 to be 1"
+            for index in range(6)]
+        model, checkpoint = self._run_fixed_checkpoint_sequence(failures)
+        self.assertEqual(checkpoint.call_count, 3)
+        self.assertLess(model.model_requests_used, 25)
+
+    def test_a_case_becoming_passing_resets_deferral_despite_generated_accounts(self):
+        failures = []
+        for index in range(6):
+            failure = "REQ-1.1: successfully register: " \
+                f"Strict visibility text tb-user-179133419246{index}-pe89{index}y must resolve once: expected 2 to be 1"
+            if index < 2:
+                failure += "\nREQ-2.1: search results: Strict locator label /^from$/i must resolve exactly once: expected +0 to be 1"
+            failures.append(failure)
+        _, checkpoint = self._run_fixed_checkpoint_sequence(failures)
+        self.assertEqual(checkpoint.call_count, 5)  # Three after the passing case disappears.
+
+    def test_locator_count_and_validation_changes_reset_checkpoint_deferral(self):
+        pairs = (
+            ("Strict locator label /^from$/i must resolve exactly once: expected +0 to be 1",
+             "Strict locator label /^to$/i must resolve exactly once: expected +0 to be 1"),
+            ("Strict visibility text Shanghai must resolve once: expected 2 to be 1",
+             "Strict visibility text Shanghai must resolve once: expected 3 to be 1"),
+            ("Name must contain at least 2 non-whitespace characters",
+             "Name must contain at least 4 non-whitespace characters"),
+        )
+        for before, after in pairs:
+            with self.subTest(assertion=after):
+                _, checkpoint = self._run_fixed_checkpoint_sequence([
+                    "REQ-2.1: required behavior: " + diagnostic
+                    for diagnostic in (before, before, after, after, after, after)])
+                self.assertEqual(checkpoint.call_count, 5)
+
+    def test_account_normalization_preserves_case_identity_and_non_probe_values(self):
+        prefix = "REQ-1.1: register: "
+        baseline = prefix + "Strict visibility text tb-user-1791334192461-pe890y must resolve once: expected 2 to be 1"
+        changed = prefix + "Strict visibility text tb-user-1791334192462-anothe must resolve once: expected 2 to be 1"
+        self.assertEqual(_fixed_regression_signature(baseline), _fixed_regression_signature(changed))
+        for original, other in (
+            ("REQ-1.1: case tb-user-1791334192461-pe890y: failed",
+             "REQ-1.1: case tb-user-1791334192462-anothe: failed"),
+            ("REQ-1.1: register: date 1791334192461 invalid",
+             "REQ-1.1: register: date 1791334192462 invalid"),
+            ("REQ-1.1: register: user tb-user-123-pe890y invalid",
+             "REQ-1.1: register: user tb-user-124-anothe invalid"),
+            ("REQ-1.1: register: user tb-user-1791334192461-pe890yx invalid",
+             "REQ-1.1: register: user tb-user-1791334192462-anothex invalid"),
+        ):
+            with self.subTest(value=original):
+                self.assertNotEqual(_fixed_regression_signature(original), _fixed_regression_signature(other))
 
 
 if __name__ == "__main__":

@@ -7,6 +7,9 @@ test('REQ-3.2: local probe - one selected-train summary during review', async ({
   const passenger={name:'Nguyen Duc Minh',idNumber:'C612345677',nationality:'Vietnam'};
   await registerAccount(page,account); await expectSignedIn(page,account.username);
   await openBookingPage(page,criteria,'G532');
+  // City names must be rendered as cities, not inferred from station prefixes.
+  await expect(page.getByText(/\bShanghai\b/)).toBeVisible();
+  await expect(page.getByText(/\bBeijing\b/)).toBeVisible();
   await fillBookingForm(page,'standing ticket',passenger);
   await page.getByRole('button',{name:/place order/i}).click();
   await expect(page.getByText(/please confirm the following information/i)).toBeVisible();

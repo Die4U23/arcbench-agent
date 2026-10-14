@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from .model_transport import ModelRequestInterrupted
 from .verify import CheckResult, VerificationResult
 
 
@@ -567,6 +568,7 @@ def verify_visual_acceptance(
 
     checks: list[CheckResult] = []
     report: dict[str, Any] = {"version": 1, "cases": [], "flows": []}
+    interruption: ModelRequestInterrupted | None = None
     artifact_dir = project_dir / SCREENSHOT_RELATIVE_DIR
     artifact_dir.mkdir(parents=True, exist_ok=True)
     report_path = project_dir / REPORT_RELATIVE_PATH
@@ -637,6 +639,18 @@ def verify_visual_acceptance(
                             report["cases"].append(case_result)
                             summary = json.dumps(case_result, ensure_ascii=False)
                             checks.append(CheckResult(f"visual reference: {case['name']}", passed, 0 if passed else 1, summary))
+                        except ModelRequestInterrupted as exc:
+                            case_result = {
+                                "name": case["name"],
+                                "reference": case["reference"],
+                                "route": case["route"],
+                                "verdict": "interrupted",
+                                "issues": [str(exc)],
+                            }
+                            if saved_screenshot_path is not None:
+                                case_result["screenshot"] = saved_screenshot_path.relative_to(project_dir).as_posix()
+                            report["cases"].append(case_result)
+                            raise
                         except Exception as exc:
                             case_result = {
                                 "name": case["name"],
@@ -694,6 +708,11 @@ def verify_visual_acceptance(
                     browser.close()
         finally:
             _stop_server(process)
+    except ModelRequestInterrupted as exc:
+        interruption = exc
+        checks.append(CheckResult("visual and browser acceptance", False, 1, str(exc)))
+        report["error"] = str(exc)
+        report["model_request_interruption"] = exc.report()
     except Exception as exc:
         checks.append(CheckResult("visual and browser acceptance", False, 1, f"{type(exc).__name__}: {exc}"))
         report["error"] = f"{type(exc).__name__}: {exc}"
@@ -701,6 +720,8 @@ def verify_visual_acceptance(
     report["passed"] = bool(checks) and all(check.passed for check in checks)
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n")
+    if interruption is not None:
+        raise interruption
     if not checks:
         checks.append(CheckResult("visual and browser acceptance", False, 1, "No visual cases or interaction flows were executed."))
     return VerificationResult(all(check.passed for check in checks), tuple(checks))

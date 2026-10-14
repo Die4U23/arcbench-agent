@@ -23,6 +23,8 @@ class CheckResult:
     exit_code: int | None
     output: str
     requirement_ids: tuple[str, ...] = ()
+    # Only a complete fresh protected regression supplies these identities.
+    case_statuses: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -78,7 +80,11 @@ def _run_npm_script(package_dir: Path, script: str) -> CheckResult:
 
 
 def verify_project(project_dir: Path, *, include_root: bool = True) -> VerificationResult:
+    from .static_names import verify_frontend_names
     checks: list[CheckResult] = []
+    names_check = verify_frontend_names(project_dir)
+    if names_check is not None:
+        checks.append(names_check)
     package_files: list[Path] = []
     for current, dirs, files in os.walk(project_dir):
         dirs[:] = sorted(d for d in dirs if d not in IGNORED_DIRS and not d.startswith("."))

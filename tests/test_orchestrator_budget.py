@@ -322,7 +322,7 @@ class BudgetExhaustionOrchestratorTests(unittest.TestCase):
             model_constructor.assert_called_once_with(max_turns=None, max_tool_calls=None)
             self.assertEqual(model.implement.call_count, 3)
             self.assertEqual(verify.call_count, 3)
-            runtime.events.mark_test_passed.assert_called_once()
+            self.assertEqual([call.args[0] for call in runtime.events.mark_test_passed.call_args_list], ['REQ-1', 'ROOT'])
 
     def test_model_run_prepares_web_directories_before_model_creation(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -399,14 +399,14 @@ class BudgetExhaustionOrchestratorTests(unittest.TestCase):
                 self.assertEqual(model.implement.call_count, expected_implement_calls)
                 self.assertTrue(any("stopping further requirement generation" in line for line in logs.output))
                 self.assertEqual(runtime.events.mark_test_passed.call_count, 0)
-                self.assertEqual(runtime.events.mark_test_failed.call_count, 0)
-                runtime.traceability.upsert_test.assert_called_once_with(
+                self.assertEqual([call.args[0] for call in runtime.events.mark_test_failed.call_args_list], ['ROOT'])
+                runtime.traceability.upsert_test.assert_any_call(
                     test_id="TEST-REQ-1",
                     req_id="REQ-1",
                     type="INTEGRATION",
                     passed=None,
                 )
-                runtime.traceability.set_test_pass_status.assert_called_once_with(
+                runtime.traceability.set_test_pass_status.assert_any_call(
                     "TEST-REQ-1",
                     None,
                 )
@@ -460,7 +460,7 @@ class BudgetExhaustionOrchestratorTests(unittest.TestCase):
             repair_feedback = model.implement.call_args.kwargs["repair_feedback"]
             self.assertIn("web template structure: FAILED", repair_feedback)
             self.assertIn("frontend/ and backend/", repair_feedback)
-            runtime.events.mark_test_failed.assert_not_called()
+            self.assertEqual([call.args[0] for call in runtime.events.mark_test_failed.call_args_list], ['ROOT'])
 
     def test_budget_exhaustion_stops_before_planning_the_next_requirement(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

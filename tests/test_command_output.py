@@ -4,6 +4,72 @@ from agent.command_output import compact_command_output, failure_details
 
 
 class CommandOutputTests(unittest.TestCase):
+    def test_http_assertion_keeps_server_root_cause_and_relevant_stack(self):
+        text = (
+            'stderr | tests/api.test.js > creates booking\n'
+            'TypeError: db.transaction is not a function\n'
+            '    at createBooking (/project/backend/server.js:89:14)\n'
+            '    at Layer.handle (/project/node_modules/express/router.js:95:5)\n'
+            'environment: { PRIVATE_TOKEN: "do-not-copy" }\n'
+            ' ✓ tests/api.test.js > REQ-1 health check\n'
+            ' FAIL tests/api.test.js > REQ-3 creates booking\n'
+            'AssertionError: expected 500 to be 201\n'
+            ' ❯ tests/api.test.js:52:29\n'
+            '⎯⎯⎯[1/1]⎯\n'
+        )
+        output = failure_details(compact_command_output(text, 10000))
+        self.assertIn('db.transaction is not a function', output)
+        self.assertIn('/project/backend/server.js:89:14', output)
+        self.assertIn('expected 500 to be 201', output)
+        self.assertIn('REQ-3', output)
+        self.assertNotIn('REQ-1', output)
+        self.assertNotIn('PRIVATE_TOKEN', output)
+
+    def test_unhandled_error_after_failure_keeps_dom_validation(self):
+        text = (
+            ' FAIL tests/form.test.jsx > REQ-2 submits form\n'
+            'TestingLibraryElementError: missing success message\n'
+            'Ignored nodes: comments, script, style\n<body>\n'
+            '<div>\nName is required\n</div>\n</body>\n'
+            ' ❯ tests/form.test.jsx:30:3\n'
+            '⎯⎯⎯[1/1]⎯\n'
+            '⎯⎯⎯⎯ Unhandled Rejection ⎯⎯⎯⎯\n'
+            'ReferenceError: session is not defined\n'
+            ' ❯ submit src/form.jsx:44:12\n'
+        )
+        output = failure_details(compact_command_output(text, 10000))
+        self.assertIn('Name is required', output)
+        self.assertIn('missing success message', output)
+        self.assertIn('ReferenceError: session is not defined', output)
+        self.assertIn('src/form.jsx:44:12', output)
+        self.assertNotIn('<body>', output)
+
+    def test_repeated_runtime_logs_cannot_crowd_out_failure_block(self):
+        error = ('TypeError: database unavailable\n'
+                 '    at createBooking (/project/server.js:89:14)\n')
+        text = error * 500
+        text += 'ReferenceError: retryState is not defined\n'
+        text += ''.join(f'    at caller{i} (/project/server.js:{i}:1)\n' for i in range(500))
+        text += (' FAIL tests/api.test.js > REQ-3 creates booking\n'
+                 'AssertionError: expected 500 to be 201\n⎯⎯⎯[1/1]⎯\n')
+        output = failure_details(text)
+        self.assertEqual(output.count('TypeError: database unavailable'), 1)
+        self.assertIn('ReferenceError: retryState is not defined', output)
+        self.assertIn('expected 500 to be 201', output)
+        self.assertLess(len(output), 2500)
+
+    def test_oversized_runtime_messages_and_stacks_have_a_shared_budget(self):
+        text = ''
+        for index in range(50):
+            text += f'TypeError: failure {index} ' + 'x' * 10000 + '\n'
+            text += '    at handler (/project/' + 'long/' * 1000 + 'server.js:4:2)\n'
+        text += (' FAIL tests/api.test.js > REQ-3 creates booking\n'
+                 'AssertionError: expected 500 to be 201\n⎯⎯⎯[1/1]⎯\n')
+        output = failure_details(text)
+        self.assertIn('TypeError: failure 0', output)
+        self.assertIn('expected 500 to be 201', output)
+        self.assertLess(len(output), 2500)
+
     def test_failure_details_exclude_passing_requirement_ids(self):
         text = (' ✓ tests/auth.test.jsx > REQ-1 login passed 10ms\n'
                 ' ✓ tests/booking.test.jsx > REQ-3 booking passed 20ms\n'

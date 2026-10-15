@@ -1,5 +1,6 @@
 """Execute the original Chromium probe even while complete jsdom cases fail."""
 import os
+from dataclasses import replace
 from pathlib import Path
 import shutil
 import signal
@@ -83,6 +84,19 @@ def _run_owned_browser(project: Path, original=None):
 
 def verify_public_acceptance(output_dir: Path, tree: dict, *, startup_only=False):
     checks = original_public_acceptance(output_dir, tree, startup_only=startup_only)
+    if not startup_only and checks:
+        public = checks[0]
+        if (not public.passed and public.exit_code not in (None, 0)
+                and public.case_statuses
+                and all(status == 'passed' for _, status in public.case_statuses)):
+            public = replace(public, output=public.output + '\n\n'
+                'Runner-level failure: all recorded case assertions passed, but the test '
+                f'process exited with code {public.exit_code}. The original runner stdout/stderr '
+                'are not retained in this public summary, so the cause is unknown. '
+                'This is neither a failed business assertion nor a passing verification. '
+                'Investigate runner or asynchronous runtime errors before changing passing '
+                'business behavior; preserve the original tests and exit-code requirement.')
+            checks = (public, *checks[1:])
     if startup_only or len(checks) != 2 or not checks[0].case_statuses:
         return checks
     browser = checks[1]

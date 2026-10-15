@@ -72,9 +72,10 @@ def _fixed_regression_signature(feedback: str) -> tuple[str, ...]:
         parts = failure.split(": ", 2)
         if len(parts) == 3:
             # uniqueTicketBookingAccount emits Date.now() plus up to six base36
-            # characters. Mask this reserved username shape only in diagnostics.
+            # characters. The duplicate-email case uppercases the identifier.
+            # Mask this reserved username shape only in diagnostics.
             parts[2] = re.sub(r"(?<![\w-])tb-user-[0-9]{13}-[a-z0-9]{1,6}(?![\w-])",
-                              "<generated-ticket-account>", parts[2])
+                              "<generated-ticket-account>", parts[2], flags=re.IGNORECASE)
         signatures.append(": ".join(parts))
     return tuple(signatures)
 
@@ -168,6 +169,7 @@ class ModelClient:
         self.tool_seconds = 0.0
         self.last_budget_report: BudgetExhaustion | None = None
         self._requirement_review_cache: tuple[str, str] | None = None
+        self._nonthinking_scopes: set[tuple[str, str, str, str, str]] = set()
         LOGGER.info("Model request policy: deadline_seconds=%g sdk_max_retries=0; read_timeout_seconds=%g; transport=%s; incomplete usage remains unknown",
                     self.client.deadline_seconds, self.client._options['timeout'].read,
                     'assembled_stream' if self.client.assemble_stream else 'complete_json')
@@ -206,6 +208,34 @@ class ModelClient:
         if getattr(self, 'is_official_deepseek', False) and model.casefold() == 'deepseek-v4-pro':
             return DEEPSEEK_PRO_EDIT_MAX_TOKENS
         return MAX_COMPLETION_TOKENS_PER_REQUEST
+
+    @staticmethod
+    def _implementation_scope_key(
+        task_type: str, subtree: dict[str, Any], project_dir: Path | None, model: str,
+    ) -> tuple[str, str, str, str, str] | None:
+        # Missing identity must not merge unrelated anonymous scopes. State is
+        # local to this client and never persists into a new run/client.
+        scope_id = subtree.get("id")
+        if not isinstance(scope_id, str) or not scope_id.strip() or not isinstance(project_dir, Path):
+            return None
+        project = subtree.get("project_requirements")
+        if not isinstance(project, dict):
+            project = subtree
+        fingerprint = hashlib.sha256(json.dumps(project, sort_keys=True,
+            ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
+        return task_type, scope_id, fingerprint, os.path.normcase(str(project_dir.resolve())), model
+
+    @staticmethod
+    def _pure_reasoning_length(response: Any) -> bool:
+        choice = response.choices[0]
+        usage = getattr(response, "usage", None)
+        completion = getattr(usage, "completion_tokens", None)
+        reasoning = getattr(getattr(usage, "completion_tokens_details", None), "reasoning_tokens", None)
+        return (getattr(choice, "finish_reason", None) == "length"
+            and type(completion) is int and completion > 0
+            and type(reasoning) is int and reasoning == completion
+            and not getattr(choice.message, "content", None)
+            and not getattr(choice.message, "tool_calls", None))
 
     def _check_model_budget(self, *, reserve_for_delivery: bool = False) -> None:
         requests_used = getattr(self, "model_requests_used", 0)
@@ -846,6 +876,14 @@ class ModelClient:
             "If a generated test contradicts the original requirement, correct its expected behavior "
             "to the requirement while retaining meaningful assertions. Fix stale mocks, relative imports "
             "and setup helpers instead of changing correct product behavior to satisfy a faulty test. "
+            "Validate generated positive fixtures after adding uniqueness or retry suffixes: the "
+            "entire resulting value must stay within each documented length bound. When a supposed "
+            "valid fixture is rejected, inspect its returned validation error before blaming persistence. "
+            "Do not invent navigation or storage-key requirements: when successful login must return "
+            "home, preserve that destination even if the sign-in link carries a journey. Test account "
+            "isolation through visible behavior and authenticated API ownership, not an unspecified "
+            "localStorage key. Inspect the actual entry point before assuming provider order: every "
+            "context consumer, including another provider, must be below its provider. "
             "Reconcile access rules across all supplied scenarios: public read-only information must remain "
             "visible when required, while protected forms and mutations still require authentication. "
             "Do not apply a page-wide authentication guard that hides information another requirement "
@@ -909,6 +947,12 @@ class ModelClient:
             "dependencies. If the starter lacks this manifest, create it in the first write "
             "batch before running build or test scripts. If the root test script names "
             "`backend/tests`, create real executable tests there before running it. "
+            "Complete the first scaffold as one coherent write batch: include every relative import, "
+            "stylesheet and asset referenced by the entry and its components. Use .jsx/.tsx for files "
+            "containing JSX and keep import paths consistent, rather than assuming the default Vite "
+            "pipeline parses JSX in .js. Check these inputs before the first frontend build. "
+            "Check the actual test compiler too: a separate vitest.config can override Vite's React "
+            "plugin, so JSX transformation must be configured for both build and test execution. "
             "Run and pass the frontend build from `frontend/`. Keep a usable root-level "
             "package manifest and `start` script that binds to PORT and launches the generated "
             "application; if the root manifest defines `build`, it must also succeed. Do not "
@@ -959,6 +1003,14 @@ class ModelClient:
             "work on unmount or identity changes. In self-tests parse the real Authorization header "
             "format (including Bearer), destroy the prior component tree for an actual reload, and "
             "navigate to search before iterating the next route. "
+            "Async effects must also work under StrictMode setup/cleanup and document reloads. "
+            "Use an effect-local disposed flag and an operation generation to ignore stale success "
+            "and failure callbacks, including sign-in, sign-out and navigation; reset lifecycle state "
+            "on each setup. For fetch work shared with jsdom/Node, prefer this response invalidation "
+            "over cross-realm AbortController signals, which can reject before an HTTP request. "
+            "If cancellation is used, handle abort rejections on every derived promise without "
+            "suppressing genuine request errors. A JSON report with passing assertions and nonzero "
+            "exit is still failed: inspect asynchronous errors; never ignore unhandled errors. "
             "The runner prepared the target project; do not copy or replace a starter template. "
             "When implementation is complete, provide a short summary."
         )
@@ -1048,6 +1100,7 @@ class ModelClient:
         passing_checkpoint_turn: int | None = None
         write_only_prompted = False
         thinking_disabled_epoch = False
+        scope_key = self._implementation_scope_key(task_type, subtree, project_dir, model)
         self.last_implementation_handoff = False
         self.last_implementation_deferred = False
         self.last_implementation_stop_reason = "error"
@@ -1153,15 +1206,28 @@ class ModelClient:
             nonlocal thinking_disabled_epoch
             # Reset only at a context boundary. Between resets, append complete
             # turns so the provider can reuse the entire previous request prefix.
-            for older in epoch_exchanges:
+            # Retain a bounded suffix of complete exchanges so a just-read source
+            # anchor survives compaction. Dropping every payload made the next
+            # turn reread files instead of using the evidence it had just fetched.
+            retained: list[list[dict[str, Any]]] = []
+            retained_chars = 0
+            for exchange in reversed(epoch_exchanges[-2:]):
+                size = self._message_context_chars(exchange)
+                if retained_chars + size > min(80_000, MAX_CONVERSATION_CHARS // 3):
+                    break
+                retained.insert(0, exchange)
+                retained_chars += size
+            older_exchanges = epoch_exchanges[:-len(retained)] if retained else epoch_exchanges
+            for older in older_exchanges:
                 summary = self._compact_tool_exchange(older[0], older[1:])
                 if summary:
                     compacted_summaries.append(summary)
             del compacted_summaries[:-MAX_COMPACTED_EXCHANGES]
-            epoch_exchanges.clear()
+            epoch_exchanges[:] = retained
             epoch_reads.clear()
             epoch_file_reads.clear()
-            thinking_disabled_epoch = False
+            if not retained:
+                thinking_disabled_epoch = False
             parts = [compact_user_content] if compact_user_content else []
             if checkpoint_note:
                 parts.append("Latest checkpoint verification feedback:\n" + checkpoint_note)
@@ -1182,6 +1248,8 @@ class ModelClient:
             compacted: list[dict[str, Any]] = [system_msg, task_msg]
             if parts:
                 compacted.append({"role": "user", "content": "\n\n".join(parts)})
+            for exchange in retained:
+                compacted.extend(exchange)
             return compacted
 
         def rebase_restored_source() -> None:
@@ -1398,7 +1466,8 @@ class ModelClient:
             if getattr(self, "is_deepseek", False):
                 # Keep DeepSeek thinking enabled for implementation by default.
                 # Retained tool-call turns must include their reasoning_content.
-                thinking = "disabled" if thinking_disabled_epoch else (getattr(self, "implementation_thinking", "") or "enabled")
+                thinking = ("disabled" if thinking_disabled_epoch or scope_key in self._nonthinking_scopes
+                    else (getattr(self, "implementation_thinking", "") or "enabled"))
                 request_options["extra_body"] = {
                     "thinking": {"type": thinking}
                 }
@@ -1446,6 +1515,9 @@ class ModelClient:
             ):
                 # Discard the incomplete output and allow one smaller, focused
                 # continuation. Never execute tool calls from a truncated reply.
+                if scope_key is not None and self._pure_reasoning_length(response):
+                    self._nonthinking_scopes.add(scope_key)
+                    LOGGER.info("Pure reasoning output limit: keeping this requirement scope nonthinking across compaction and continuation")
                 LOGGER.warning("DeepSeek implementation output was truncated; retrying one focused tool turn")
                 phase_requests = getattr(self, "model_requests_used", 0) - starting_requests
                 phase_tokens = getattr(self, "prompt_tokens_used", 0) + getattr(self, "completion_tokens_used", 0) - starting_tokens

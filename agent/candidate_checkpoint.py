@@ -7,6 +7,7 @@ from pathlib import Path
 
 from .verify import CheckResult
 from .browser_contract import BROWSER_CHECK
+from .command_output import compact_command_output, failure_details
 
 PUBLIC_CHECK = "public interaction regression (reconstructed jsdom, not Stage 3)"
 EXCLUDED = {".git", ".arc", "node_modules", "dist", "build", ".venv", "venv", "requirements",
@@ -14,6 +15,28 @@ EXCLUDED = {".git", ".arc", "node_modules", "dist", "build", ".venv", "venv", "r
 SUFFIXES = {".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".css", ".html", ".json",
             ".yaml", ".yml", ".svg", ".png", ".jpg", ".webp", ".md"}
 MAX_SNAPSHOT_BYTES = 8 * 1024 * 1024
+
+
+def _rejected_diagnostics(checks: tuple[CheckResult, ...]) -> str:
+    priority = {'project dependencies', 'frontend JavaScript undefined names',
+                'frontend: npm run build', 'web template structure'}
+    failures = sorted((check for check in checks if not check.passed),
+                      key=lambda check: check.name not in priority)
+    if not failures:
+        return ''
+    parts = ['Rejected candidate diagnostics (before restore; these are not current-source results). '
+             'Reread restored source before correcting the rejected change:']
+    remaining = 8000
+    for check in failures:
+        detail = f'{check.name}: exit={check.exit_code}\n' + compact_command_output(
+            failure_details(check.output), min(3000, remaining))
+        # Historical case lines must not enter current-failure routing/signatures.
+        detail = '\n'.join('  ' + line for line in detail.splitlines())
+        parts.append(detail[:remaining])
+        remaining -= len(parts[-1])
+        if remaining <= 0:
+            break
+    return '\n'.join(parts)
 
 
 def public_checks_ready(project_checks: tuple[CheckResult, ...], structure_passed: bool) -> bool:
@@ -96,6 +119,9 @@ class CandidateCheckpoint:
             note = (f"Restored the last candidate preserving {len(self.passing)}/{len(self.case_ids)} local case passes. "
                     f"Rejected regression: {reason}. Reread changed source before another focused repair. "
                     "This is local regression evidence, not formal Stage 3 acceptance.")
+            diagnostics = _rejected_diagnostics(checks)
+            if diagnostics:
+                note += '\n\n' + diagnostics
             self._record(note)
             return note
         if build_ok and layout_ok and comparable:

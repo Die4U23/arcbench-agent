@@ -685,7 +685,9 @@ def _run_model_agent(runtime: AgentRuntime, config: AgentConfig, tree: dict[str,
         feedback = _repair_feedback(result)
         guidance = repair_guidance(result, focus)
         if guidance:
-            feedback = guidance + '\n\n' + feedback
+            feedback = ('Complete verification report (preserve passing behavior; '
+                        'the active repair task follows):\n' + feedback
+                        + '\n\nCurrent repair task:\n' + guidance)
         repair_checkpoint = (
             coverage_repair_checkpoint_feedback
             if any(check.name == "requirement coverage" and not check.passed for check in result.checks)

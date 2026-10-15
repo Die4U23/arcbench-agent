@@ -100,6 +100,11 @@ class RepairPolicyTests(unittest.TestCase):
             self.assertEqual([r['subtree']['id'] for r in repairs], ['REQ-1.1','REQ-2.1','REQ-3.2'])
             self.assertTrue(all(r['subtree']['project_requirements']==tree for r in repairs))
             self.assertTrue(all(r['request_allowance']==12 for r in repairs))
+            for repair in repairs:
+                full_report, focused_task = repair['repair_feedback'].split('\n\nCurrent repair task:\n')
+                self.assertIn(public[0].output, full_report)
+                self.assertTrue(focused_task.startswith('Active repair scope: ' + repair['subtree']['id']))
+                self.assertIn('unrelated generated self-test failure', focused_task)
             # Initial verification, three repair slices, fresh final verification,
             # then the independent runtime startup needed for evaluator handoff.
             self.assertEqual(check.call_count,6)

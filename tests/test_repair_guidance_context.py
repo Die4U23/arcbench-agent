@@ -1,6 +1,9 @@
 import unittest
 
 from agent.candidate_checkpoint import PUBLIC_CHECK
+from agent.browser_contract import BROWSER_CASE, BROWSER_CHECK
+from agent.booking_completion import CASE as COMPLETION_CASE
+from agent.station_units import CASES as LOCATION_CASES
 from agent.repair_policy import repair_guidance
 from agent.verify import CheckResult, VerificationResult
 
@@ -11,6 +14,26 @@ def guidance(output, scope):
 
 
 class RepairGuidanceContextTests(unittest.TestCase):
+    def test_native_booking_failure_cannot_redirect_focused_registration_repair(self):
+        public = CheckResult(PUBLIC_CHECK, False, 1,
+            'REQ-1.1: reject duplicate email with a different username: '
+            'expected 0 to be greater than 0 | alerts=["Email address is already registered."]')
+        native = CheckResult(BROWSER_CHECK, False, 1,
+            'individual visible named location missing; confirmation failed',
+            ('REQ-1.1', 'REQ-2.1', 'REQ-2.2', 'REQ-3.2'),
+            ((BROWSER_CASE, 'passed'), (COMPLETION_CASE, 'failed'),
+             *((case, 'failed') for case in LOCATION_CASES)))
+        result = VerificationResult(False, (public, native))
+        feedback = repair_guidance(result, 'REQ-1.1')
+        self.assertIn('Active repair scope: REQ-1.1', feedback)
+        self.assertIn('already exists, duplicate, taken or conflict', feedback)
+        self.assertNotIn('Repair this first blocking native interaction', feedback)
+        self.assertNotIn('Persist the owned selected journey', feedback)
+        self.assertIn('Repair this first blocking native interaction',
+                      repair_guidance(result, 'REQ-3.2'))
+        self.assertIn('individual visible named location', repair_guidance(result, 'REQ-2.2'))
+        self.assertIn('confirmation failed', repair_guidance(result, None))
+
     def test_observed_registered_wording_is_compared_with_unchanged_duplicate_expression(self):
         failure=('REQ-1.1: reject a duplicate username without creating a signed-in session: '
                  'AssertionError: expected 0 to be greater than 0 | '

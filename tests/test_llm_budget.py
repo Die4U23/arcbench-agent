@@ -969,7 +969,9 @@ class ImplementBudgetTests(unittest.TestCase):
         self.assertIn("test plan", serialized_later)
         self.assertIn("END-PAYLOAD-f5.txt", serialized_later)
         self.assertNotIn("END-PAYLOAD-f0.txt", serialized_later)
-        self.assertLess(len(serialized_later), 75_000)
+        # A bounded recent exchange now survives the reset so the next edit can
+        # use its exact source anchors. The configured context ceiling still holds.
+        self.assertLess(len(serialized_later), 100_000)
 
         # Every retained assistant tool call has its matching tool result; compaction
         # must never leave orphan tool messages that break Chat Completions requests.
@@ -1195,6 +1197,17 @@ class ImplementBudgetTests(unittest.TestCase):
             for index in range(6)]
         model, checkpoint = self._run_fixed_checkpoint_sequence(failures)
         self.assertEqual(checkpoint.call_count, 3)
+        self.assertLess(model.model_requests_used, 25)
+
+    def test_uppercase_duplicate_email_diagnostics_do_not_restart_repair_allowance(self):
+        failures = [
+            'REQ-1.1: reject duplicate email with a different username: '
+            'AssertionError: expected 0 to be greater than 0 | Observed DOM snapshot: '
+            f'alerts=["That email address is already registered: TB-USER-179205823183{index}-DXF5Y{index}@EXAMPLE.TEST"]'
+            for index in range(6)]
+        model, checkpoint = self._run_fixed_checkpoint_sequence(failures)
+        self.assertEqual(checkpoint.call_count, 3)
+        self.assertEqual(model.last_implementation_stop_reason, 'unchanged_checkpoint')
         self.assertLess(model.model_requests_used, 25)
 
     def test_a_case_becoming_passing_resets_deferral_despite_generated_accounts(self):

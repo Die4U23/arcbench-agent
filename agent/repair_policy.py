@@ -5,6 +5,7 @@ import re
 
 from .candidate_checkpoint import PUBLIC_CHECK
 from .browser_contract import BROWSER_CASE, BROWSER_CHECK
+from .booking_completion import CASE as COMPLETION_CASE
 from .ticketbooking_contract import PUBLIC_CASES
 from .verify import VerificationResult
 
@@ -64,6 +65,9 @@ def failed_behavior_ids(result: VerificationResult) -> tuple[str, ...]:
         booking_name_failure = (native.output.startswith('search and booking with real CSS and backend:')
             and 'get_by_role("textbox"' in native.output and '^name$' in native.output)
         native_ids = native.requirement_ids
+        if (dict(native.case_statuses).get(BROWSER_CASE) == 'passed'
+                and dict(native.case_statuses).get(COMPLETION_CASE) == 'failed'):
+            native_ids = ('REQ-3.2', *(node for node in native_ids if node != 'REQ-3.2'))
         if original_failed and booking_name_failure and 'REQ-3.2' in native_ids:
             native_ids = ('REQ-3.2', *(node for node in native_ids if node != 'REQ-3.2'))
         # A native registration blocker can invalidate many later journeys even
@@ -91,12 +95,20 @@ def repair_guidance(result: VerificationResult, requirement_id: str | None) -> s
     native = next((check for check in result.checks if check.name == BROWSER_CHECK), None)
     native_note = ''
     if native is not None and not native.passed and not native.output.startswith('Not executed:'):
-        native_note = ('Actual original Chromium probe failure (additional local evidence, not Stage 3):\n'
+        native_note = ('Actual Chromium verification failure (original probe and additional local checks, not Stage 3):\n'
                        + native.output + '\nRepair this first blocking native interaction before later '
                        'jsdom failures. getByLabel with an anchored expression uses associated label '
                        'text; a radio accessible role name alone does not establish that exact label '
                        'selector matches. Inspect whitespace and explicit aria-label in the rendered '
                        'control. Keep the published selector and original probe unchanged.\n\n')
+        if dict(native.case_statuses).get(COMPLETION_CASE) == 'failed':
+            native_note += ('The completion probe continues beyond review to confirmation and document reload. '
+                            'Fix every reported stage, not only its first assertion. Compare the actual '
+                            'backend response keys with the success UI and restoration predicate; verify '
+                            'both identifier type and field name. Persist the owned selected journey and '
+                            'confirmed reference across document reload using the real API contract. '
+                            'Do not repeat the journey summary in review or success, and do not hide '
+                            'required passenger details to avoid duplicate matches.\n\n')
         if 'individual visible named location' in native.output:
             native_note += ('The location aliases in the requirement identify supported city/station '
                             'names. Render departure and arrival as separate readable named units, '

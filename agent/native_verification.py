@@ -11,6 +11,7 @@ from .browser_contract import BROWSER_CHECK, browser_guard_result, verify_browse
 from .contract_checks import verify_public_acceptance as original_public_acceptance
 from .visual_acceptance import _wait_for_server
 from .station_units import verify_station_units, unavailable
+from .booking_completion import verify_booking_completion, completion_result
 from .verify import CheckResult
 
 
@@ -34,12 +35,13 @@ def _stop_owned_server(server):
         server.wait(timeout=5)
 
 
-def _combine(original, locations):
-    passed = original.passed and locations.passed
+def _combine(original, *additional):
+    checks = (original, *additional)
+    passed = all(check.passed for check in checks)
     return CheckResult(BROWSER_CHECK, passed, 0 if passed else 1,
-        original.output+'\n\n'+locations.name+': '+locations.output,
-        tuple(sorted(set(original.requirement_ids + locations.requirement_ids))),
-        original.case_statuses + locations.case_statuses)
+        original.output + ''.join('\n\n' + check.name + ': ' + check.output for check in additional),
+        tuple(sorted({node for check in checks for node in check.requirement_ids})),
+        tuple(status for check in checks for status in check.case_statuses))
 
 
 def _run_owned_browser(project: Path, original=None):
@@ -68,7 +70,9 @@ def _run_owned_browser(project: Path, original=None):
                 creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == 'nt' else 0)
             _wait_for_server(server, 3000, log_path)
             native = original if original is not None else verify_browser_contract(protected)
-            result = _combine(native, verify_station_units(protected))
+            completion = (verify_booking_completion(protected) if native.passed else
+                          completion_result(False, 'Not executed: original native booking entry failed'))
+            result = _combine(native, verify_station_units(protected), completion)
     except Exception as exc:
         message = f'Independent native guard: {exc}'
         result = _combine(original or browser_guard_result(False, message), unavailable(message))

@@ -4,6 +4,7 @@ from pathlib import Path
 import tempfile
 
 from agent.browser_contract import browser_guard_result
+from agent.booking_completion import completion_result
 from agent.native_verification import _combine, _run_owned_browser
 from agent.repair_policy import failed_behavior_ids, repair_guidance
 from agent.candidate_checkpoint import PUBLIC_CHECK
@@ -52,11 +53,14 @@ class StationUnitTests(unittest.TestCase):
              patch('agent.native_verification._wait_for_server'), \
              patch('agent.native_verification._stop_owned_server') as stop, \
              patch('agent.native_verification.verify_browser_contract') as original_probe, \
-             patch('agent.native_verification.verify_station_units',return_value=locations) as location_probe:
+             patch('agent.native_verification.verify_station_units',return_value=locations) as location_probe, \
+             patch('agent.native_verification.verify_booking_completion',
+                   return_value=completion_result(True,'passed')) as completion_probe:
             result=_run_owned_browser(Path(directory),original)
             self.assertTrue(result.passed)
             original_probe.assert_not_called()
             location_probe.assert_called_once()
+            completion_probe.assert_called_once()
             stop.assert_called_once_with(server.return_value)
 
 

@@ -107,8 +107,11 @@ def _native_failure_families(native) -> set[str]:
 def repair_guidance(result: VerificationResult, requirement_id: str | None) -> str:
     native = next((check for check in result.checks if check.name == BROWSER_CHECK), None)
     scope_note = (f'Active repair scope: {requirement_id}. Resolve this family first in this slice. '
-                  'The complete report below also contains other families for regression context; '
+                  'The complete report also contains other families for regression context; '
                   'do not switch to their repairs unless evidence shows they block this family. '
+                  'An unrelated generated self-test failure does not by itself block this family. '
+                  'Leave its source and test repairs for their own slice; do not rewrite a passing '
+                  'search or booking display during an authentication feedback repair. '
                   'Keep related cross-file edits atomic and rerun the complete protected regression.\n\n'
                   if requirement_id else '')
     native_note = scope_note

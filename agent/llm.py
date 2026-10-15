@@ -1200,15 +1200,28 @@ class ModelClient:
             nonlocal thinking_disabled_epoch
             # Reset only at a context boundary. Between resets, append complete
             # turns so the provider can reuse the entire previous request prefix.
-            for older in epoch_exchanges:
+            # Retain a bounded suffix of complete exchanges so a just-read source
+            # anchor survives compaction. Dropping every payload made the next
+            # turn reread files instead of using the evidence it had just fetched.
+            retained: list[list[dict[str, Any]]] = []
+            retained_chars = 0
+            for exchange in reversed(epoch_exchanges[-2:]):
+                size = self._message_context_chars(exchange)
+                if retained_chars + size > min(80_000, MAX_CONVERSATION_CHARS // 3):
+                    break
+                retained.insert(0, exchange)
+                retained_chars += size
+            older_exchanges = epoch_exchanges[:-len(retained)] if retained else epoch_exchanges
+            for older in older_exchanges:
                 summary = self._compact_tool_exchange(older[0], older[1:])
                 if summary:
                     compacted_summaries.append(summary)
             del compacted_summaries[:-MAX_COMPACTED_EXCHANGES]
-            epoch_exchanges.clear()
+            epoch_exchanges[:] = retained
             epoch_reads.clear()
             epoch_file_reads.clear()
-            thinking_disabled_epoch = False
+            if not retained:
+                thinking_disabled_epoch = False
             parts = [compact_user_content] if compact_user_content else []
             if checkpoint_note:
                 parts.append("Latest checkpoint verification feedback:\n" + checkpoint_note)
@@ -1229,6 +1242,8 @@ class ModelClient:
             compacted: list[dict[str, Any]] = [system_msg, task_msg]
             if parts:
                 compacted.append({"role": "user", "content": "\n\n".join(parts)})
+            for exchange in retained:
+                compacted.extend(exchange)
             return compacted
 
         def rebase_restored_source() -> None:

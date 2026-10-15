@@ -969,7 +969,9 @@ class ImplementBudgetTests(unittest.TestCase):
         self.assertIn("test plan", serialized_later)
         self.assertIn("END-PAYLOAD-f5.txt", serialized_later)
         self.assertNotIn("END-PAYLOAD-f0.txt", serialized_later)
-        self.assertLess(len(serialized_later), 75_000)
+        # A bounded recent exchange now survives the reset so the next edit can
+        # use its exact source anchors. The configured context ceiling still holds.
+        self.assertLess(len(serialized_later), 100_000)
 
         # Every retained assistant tool call has its matching tool result; compaction
         # must never leave orphan tool messages that break Chat Completions requests.

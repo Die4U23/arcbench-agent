@@ -72,9 +72,10 @@ def _fixed_regression_signature(feedback: str) -> tuple[str, ...]:
         parts = failure.split(": ", 2)
         if len(parts) == 3:
             # uniqueTicketBookingAccount emits Date.now() plus up to six base36
-            # characters. Mask this reserved username shape only in diagnostics.
+            # characters. The duplicate-email case uppercases the identifier.
+            # Mask this reserved username shape only in diagnostics.
             parts[2] = re.sub(r"(?<![\w-])tb-user-[0-9]{13}-[a-z0-9]{1,6}(?![\w-])",
-                              "<generated-ticket-account>", parts[2])
+                              "<generated-ticket-account>", parts[2], flags=re.IGNORECASE)
         signatures.append(": ".join(parts))
     return tuple(signatures)
 

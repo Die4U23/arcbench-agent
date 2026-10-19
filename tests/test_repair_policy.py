@@ -77,8 +77,11 @@ class RepairPolicyTests(unittest.TestCase):
                               review_requirements=MagicMock(return_value=''))
             model.last_budget_report = None
             tools = SimpleNamespace(written_paths=[], ensure_dependencies=lambda:None)
+            on_demand_reports = []
             def implement(**kwargs):
                 tools.written_paths.append('frontend/src/App.jsx')
+                if kwargs.get('verification_feedback'):
+                    on_demand_reports.append((kwargs['subtree']['id'], kwargs['verification_feedback']()))
                 return False
             model.implement.side_effect = implement
             project = VerificationResult(True, (CheckResult('frontend: npm run build',True,0,'ok'),))
@@ -105,12 +108,16 @@ class RepairPolicyTests(unittest.TestCase):
                 self.assertIn(public[0].output, full_report)
                 self.assertTrue(focused_task.startswith('Active repair scope: ' + repair['subtree']['id']))
                 self.assertIn('unrelated generated self-test failure', focused_task)
+            self.assertEqual(len(on_demand_reports), 3)
+            for scope, report in on_demand_reports:
+                self.assertIn(public[0].output, report)
+                self.assertIn('Current repair task:\nActive repair scope: ' + scope, report)
             # Initial verification, three repair slices, fresh final verification,
             # then the independent runtime startup needed for evaluator handoff.
-            self.assertEqual(check.call_count,6)
+            self.assertEqual(check.call_count,9)
             check.assert_called_with(config.output_dir, {}, startup_only=True)
             self.assertEqual(sum(not call.kwargs.get('startup_only', False)
-                                 for call in check.call_args_list), 5)
+                                 for call in check.call_args_list), 8)
             self.assertFalse(result.passed)
             self.assertTrue(result.ready_for_evaluation)
             remaining = next(item for item in result.checks if item.name == PUBLIC_CHECK)

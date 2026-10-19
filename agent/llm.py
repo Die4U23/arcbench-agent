@@ -856,10 +856,21 @@ class ModelClient:
         reference_dir: Path | None = None,
         checkpoint_feedback: Callable[[], str] | None = None,
         boundary_feedback: Callable[[], str] | None = None,
+        verification_feedback: Callable[[], str] | None = None,
         token_allowance: int | None = None,
         request_allowance: int | None = None,
     ) -> bool:
         """Run implementation, keeping repair fragments within an atomic request slice."""
+        tool_schemas = list(TOOL_SCHEMAS)
+        if verification_feedback is not None:
+            tool_schemas.append({"type": "function", "function": {
+                "name": "verify_candidate",
+                "description": "Run the complete local build, self-tests, protected public regression and Chromium checks after an atomic edit. Does not roll back source. At most two executions per repair slice; unchanged source reuses the result. This is not formal Stage 3.",
+                "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+            }})
+        verification_runs = 0
+        verified_revision = None
+        verified_feedback = ""
         visual_inputs = self._visual_inputs(subtree, reference_dir)
         if getattr(self, "visual_implementation", "enabled") == "disabled":
             visual_inputs = []
@@ -1014,6 +1025,14 @@ class ModelClient:
             "The runner prepared the target project; do not copy or replace a starter template. "
             "When implementation is complete, provide a short summary."
         )
+        if verification_feedback is not None:
+            system_message += (
+                " During this repair use verify_candidate after completing related source edits, "
+                "before declaring completion. It returns the current protected behavioral failures "
+                "as well as self-tests, without reverting your edits. A generated self-test alone "
+                "cannot establish that the active requirement is repaired. Reserve requests to "
+                "read this result and correct remaining failures in the active scope."
+            )
         text_message = (
             requirement_context(task_type, subtree)
             + f"\n\nImplementation plan:\n{plan}"
@@ -1489,7 +1508,7 @@ class ModelClient:
                 response = self._create_completion("implementation",
                     model=model,
                     messages=messages,
-                    tools=TOOL_SCHEMAS,
+                    tools=tool_schemas,
                     tool_choice={"type": "function", "function": {"name": refresh_tool or edit_tool}}
                         if write_only or refresh_tool else "auto",
                     max_tokens=max_tokens,
@@ -1552,7 +1571,7 @@ class ModelClient:
                     "implementation-retry",
                     model=model,
                     messages=retry_messages,
-                    tools=TOOL_SCHEMAS,
+                    tools=tool_schemas,
                     tool_choice={"type": "function", "function": {"name": refresh_tool or edit_tool}},
                     max_tokens=self._edit_output_cap(model),
                     **request_options,
@@ -1634,6 +1653,19 @@ class ModelClient:
                         note_source_failure((stale_path, required_source_reads[stale_path]), result)
                     elif write_only and tool_call.function.name != edit_tool:
                         result = f"Only {edit_tool} is available for this focused edit. Make a concrete change now."
+                    elif tool_call.function.name == "verify_candidate" and verification_feedback is not None:
+                        if arguments != {}:
+                            raise ValueError("verify_candidate takes no arguments")
+                        revision = (len(progress_paths), getattr(project_tools, "source_revision", 0))
+                        if revision == verified_revision:
+                            result = "Unchanged source; previous complete local verification:\n" + verified_feedback
+                        elif verification_runs >= 2:
+                            result = "On-demand verification limit reached for this slice. Finish the active repair; full boundary verification remains mandatory."
+                        else:
+                            verification_runs += 1
+                            verified_feedback = verification_feedback()
+                            verified_revision = (len(progress_paths), getattr(project_tools, "source_revision", 0))
+                            result = verified_feedback
                     elif tool_call.function.name in {"list_files", "read_files", "search_text"} and read_key in epoch_reads:
                         result = (
                             "The same read already returned in this conversation and no project file "
@@ -1667,6 +1699,8 @@ class ModelClient:
                         elif len(progress_paths) > observed_writes:
                             epoch_reads.clear()
                             epoch_file_reads.clear()
+                except ModelRequestInterrupted:
+                    raise
                 except Exception as exc:
                     result = f"Tool error: {type(exc).__name__}: {exc}"
                     if isinstance(arguments, dict):

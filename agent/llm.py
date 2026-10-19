@@ -1459,8 +1459,16 @@ class ModelClient:
                 })
             refresh_target = next(iter(required_source_reads.items()), None)
             refresh_tool = ("read_file" if refresh_target[1] == "replacement_match" else "list_files") if refresh_target else None
+            # An optional tool can be ignored until the slice runs out. Reserve
+            # the third-last request for fresh feedback, leaving two for repair.
+            verification_due = (
+                verification_feedback is not None and request_allowance is not None
+                and request_allowance - phase_requests == 3 and verification_runs < 2
+                and len(progress_paths) > initial_writes and refresh_tool is None
+                and verified_revision != (len(progress_paths), getattr(project_tools, "source_revision", 0))
+            )
             write_only = (idle_tool_turns >= getattr(self, "max_idle_tool_turns", DEFAULT_MAX_IDLE_TOOL_TURNS) // 2
-                          and not passing_checkpoint and refresh_tool is None)
+                          and not passing_checkpoint and refresh_tool is None and not verification_due)
             edit_tool = ("write_files" if bootstrap_incomplete else
                 "replace_text" if (resumed_project or repair_text or checkpoint_note or len(progress_paths) > initial_writes) else "write_files")
             if write_only and not write_only_prompted:
@@ -1474,6 +1482,13 @@ class ModelClient:
                         "again. Current check failures:\n" + checkpoint_note[:2_000]
                     ),
                 })
+            if verification_due:
+                conversation.append({"role": "user", "content": (
+                    "Three requests remain in this repair slice. Run verify_candidate now on the current "
+                    "edits; use the remaining two requests to correct its feedback. This diagnostic does "
+                    "not roll back incomplete edits. Complete related file changes before finishing."
+                )})
+            forced_tool = refresh_tool or ("verify_candidate" if verification_due else edit_tool if write_only else None)
             messages = list(conversation)
             try:
                 self._record_model_request()
@@ -1495,7 +1510,7 @@ class ModelClient:
                     # Low effort preserves thinking while leaving room for tool calls.
                     request_options["reasoning_effort"] = "low"
                     max_tokens = DEEPSEEK_THINKING_IMPLEMENTATION_MAX_TOKENS
-                if write_only or refresh_tool:
+                if forced_tool:
                     # DeepSeek only supports required tool choice outside thinking mode.
                     # Keep the focused edit bounded while retaining the inspected source.
                     thinking = "disabled"
@@ -1509,8 +1524,8 @@ class ModelClient:
                     model=model,
                     messages=messages,
                     tools=tool_schemas,
-                    tool_choice={"type": "function", "function": {"name": refresh_tool or edit_tool}}
-                        if write_only or refresh_tool else "auto",
+                    tool_choice={"type": "function", "function": {"name": forced_tool}}
+                        if forced_tool else "auto",
                     max_tokens=max_tokens,
                     **request_options,
                 )
@@ -1651,6 +1666,8 @@ class ModelClient:
                     if stale_path is not None:
                         result = "Tool error: SourceRefreshRequired: " + source_refresh_notice()
                         note_source_failure((stale_path, required_source_reads[stale_path]), result)
+                    elif verification_due and tool_call.function.name != "verify_candidate":
+                        result = "Run verify_candidate now; two requests remain after verification for source corrections."
                     elif write_only and tool_call.function.name != edit_tool:
                         result = f"Only {edit_tool} is available for this focused edit. Make a concrete change now."
                     elif tool_call.function.name == "verify_candidate" and verification_feedback is not None:

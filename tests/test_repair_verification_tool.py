@@ -7,7 +7,7 @@ from unittest.mock import MagicMock
 from agent.model_transport import ModelRequestInterrupted
 from agent.tools import ProjectTools, TOOL_SCHEMAS
 from tests.test_checkpoint_boundaries import BoundaryFixture, write_files
-from tests.test_llm_budget import _FakeMessage, _FakeToolCall, _make_client
+from tests.test_llm_budget import _FakeMessage, _FakeToolCall, _make_client, _read_call
 
 
 def verify():
@@ -15,6 +15,64 @@ def verify():
 
 
 class RepairVerificationToolTests(unittest.TestCase):
+    def test_slice_reserves_feedback_before_last_two_corrections(self):
+        with TemporaryDirectory() as directory:
+            fixture = BoundaryFixture(Path(directory))
+            model = _make_client(None, None, [
+                _FakeMessage([write_files(**{'frontend/src/provider.js': 'new'})]),
+                *[_FakeMessage([_read_call('frontend/src/provider.js')]) for _ in range(8)],
+                verify(),
+                _FakeMessage([write_files(**{'backend/src/consumer.js': 'new'})]),
+                _FakeMessage(None, 'done')])
+            model.is_deepseek = True
+            model.max_idle_tool_turns = 100
+            fixture.implement(model, repair_feedback='Repair shared contract', request_allowance=12,
+                verification_feedback=lambda: fixture.feedback(boundary=False))
+            requests = model.client.completions.requests
+            self.assertEqual(requests[9]['tool_choice']['function']['name'], 'verify_candidate')
+            self.assertEqual(requests[9]['extra_body']['thinking']['type'], 'disabled')
+            self.assertEqual(requests[10]['tool_choice'], 'auto')
+            self.assertEqual(model.model_requests_used, 12)
+            self.assertEqual(fixture.observed, [('new', 'old')])
+            self.assertEqual(fixture.boundaries, [('new', 'new')])
+            self.assertTrue(model.last_implementation_handoff)
+
+    def test_verified_or_unmodified_source_does_not_force_another_check(self):
+        for edited in (False, True):
+            with self.subTest(edited=edited), TemporaryDirectory() as directory:
+                tools = ProjectTools(Path(directory))
+                tools.write_file('a.js', 'old')
+                start = ([_FakeMessage([write_files(**{'a.js': 'new'})]), verify()] if edited else [])
+                messages = start + [_FakeMessage([_read_call('a.js')]) for _ in range(11-len(start))]
+                model = _make_client(None, None, [*messages, _FakeMessage(None, 'done')])
+                model.max_idle_tool_turns = 100
+                diagnostic = MagicMock(return_value='still failed')
+                model.implement(task_type='web', subtree={'id':'ROOT'}, plan='repair', project_tools=tools,
+                    repair_feedback='failed', request_allowance=12,
+                    verification_feedback=diagnostic, boundary_feedback=lambda:'still failed')
+                self.assertEqual(model.client.completions.requests[9]['tool_choice'], 'auto')
+                self.assertEqual(diagnostic.call_count, int(edited))
+
+    def test_truncated_reserved_verification_is_discarded_before_boundary(self):
+        with TemporaryDirectory() as directory:
+            fixture = BoundaryFixture(Path(directory))
+            truncated = verify()
+            truncated.finish_reason = 'length'
+            model = _make_client(None, None, [
+                _FakeMessage([write_files(**{'frontend/src/provider.js':'new'})]),
+                *[_FakeMessage([_read_call('frontend/src/provider.js')]) for _ in range(8)],
+                truncated])
+            model.is_deepseek = True
+            model.max_idle_tool_turns = 100
+            fixture.implement(model, repair_feedback='Repair shared contract', request_allowance=12,
+                verification_feedback=lambda: fixture.feedback(boundary=False))
+            self.assertEqual(model.client.completions.requests[9]['tool_choice']['function']['name'], 'verify_candidate')
+            self.assertEqual(model.model_requests_used, 10)
+            self.assertEqual(fixture.observed, [])
+            self.assertEqual(fixture.boundaries, [('new', 'old')])
+            self.assertEqual(fixture.source(), ('old', 'old'))
+            self.assertEqual(model.last_implementation_stop_reason, 'truncated')
+
     def test_incomplete_cross_file_edit_is_diagnosed_then_fixed_without_rollback(self):
         with TemporaryDirectory() as directory:
             fixture = BoundaryFixture(Path(directory))

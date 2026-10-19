@@ -185,6 +185,25 @@ class RepairPolicyTests(unittest.TestCase):
                 self.assertIn('passing signed-out submission rejection', feedback)
                 self.assertNotIn('Multiple matching locator nodes', feedback)
 
+    def test_zero_word_boundary_text_checks_alias_semantics_without_changing_other_diagnoses(self):
+        for kind, expression, count, expected in (
+            ('text', r'/\bParis\b/', '+0', True),
+            ('text', r'/\bParis\b/', '2', False),
+            ('text', '/train information/i', '0', False),
+            ('role', r'textbox name=/\bName\b/', '0', False),
+        ):
+            with self.subTest(kind=kind, expression=expression, count=count):
+                failure = (f'REQ-3.2: review: Strict visibility {kind} {expression} must resolve once: '
+                           f'expected {count} to be 1 // Object.is equality')
+                result = VerificationResult(False, (CheckResult(PUBLIC_CHECK, False, 1, failure),))
+                feedback = repair_guidance(result, 'REQ-3.2')
+                self.assertEqual('A whole-word text expression' in feedback, expected)
+                self.assertIn(failure, feedback)
+                if expected:
+                    self.assertIn('anchored individual-location', feedback)
+                    self.assertIn("required route's canonical city", feedback)
+                    self.assertNotIn('A whole-word text expression', repair_guidance(result, 'REQ-1.1'))
+
     def test_plain_review_count_failure_inspects_instances_without_inventing_a_locator(self):
         failure = ('REQ-3.2: local probe - one selected-train summary during review: '
                    'expected 2 to be 1 // Object.is equality')

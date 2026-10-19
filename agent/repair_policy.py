@@ -166,6 +166,15 @@ def repair_guidance(result: VerificationResult, requirement_id: str | None) -> s
                      'conditional rendering and early returns, then any real API error or validation '
                      'feedback. A missing heading or booking number can be a blocked flow rather '
                      'than a wording defect; establish which interaction was reached.')
+    if any('Strict visibility text' in line and r'\b' in line and
+           re.search(r'\bexpected \+?0 to be 1\b', line) for line in visibility_lines):
+        notes.append('A whole-word text expression can match zero nodes even when a longer alias '
+                     'contains the same letters. Compare the exact expression with the rendered text '
+                     'before changing routing or authentication. For journey endpoints, use the '
+                     'required route\'s canonical city value in one separate visible location node; '
+                     'do not append a slash/station alias or merge it with time/route text. Satisfy '
+                     'both the whole-word city expression and the anchored individual-location '
+                     'check together, rather than alternating between two failing representations.')
     if any(count > 1 for count in visibility_counts):
         notes.append('Multiple matching locator nodes: inspect every rendered match and accessible '
                      'name. For text locators, include city substrings inside station names, headings '

@@ -14,15 +14,17 @@ from .ticketbooking_contract import public_acceptance_context
 _STATE_RULES = (
     (("REQ-2.1",), "Search results",
      "Render each departure/arrival location in its own visible text node. "
-     "A station containing its city already supplies that city: do not repeat "
-     "the city in a criteria summary. Keep the selected date and times visible."),
+     "Use the required route's canonical city value, not joined city/station aliases; "
+     "a city substring inside a station name need not match a whole-word city expression. "
+     "Do not repeat the city in a criteria summary. Keep the selected date and times visible."),
     (("REQ-2.2", "REQ-3.1"), "Selected journey / signed out",
      "Keep Train Information and the selected train, locations, times and date "
      "visible to the visitor; request sign-in and provide no working booking "
      "submission. Do not hide the read-only summary behind a page-wide auth return."),
     (("REQ-3.1", "REQ-3.2"), "Entry / review / success",
      "Use one selected-journey summary. Each endpoint must be a separate visible "
-     "location; do not repeat city and station aliases or duplicate train/date "
+     "location using the required route's canonical city value; a concatenated station "
+     "alias is not a whole-word city. Do not repeat city and station aliases or duplicate train/date "
      "in another card. Preserve the selected journey when the state changes."),
     (("REQ-3.2",), "Valid Place order -> review -> Confirm",
      "Show Please confirm the following information with read-only passenger "

@@ -87,7 +87,19 @@ def _run_owned_browser(project: Path, original=None):
 
 
 def verify_public_acceptance(output_dir: Path, tree: dict, *, startup_only=False):
-    checks = original_public_acceptance(output_dir, tree, startup_only=startup_only)
+    try:
+        checks = original_public_acceptance(output_dir, tree, startup_only=startup_only)
+    finally:
+        # The original runner regenerates this exact fixture on every invocation.
+        # Retain its bytes as evidence after execution, outside ordinary Vitest
+        # discovery: generated self-tests do not own the regression's backend.
+        protected = output_dir.resolve() / 'frontend/.arc'
+        fixture = protected / 'public-case-reconstruction.test.tsx'
+        evidence = protected / 'public-case-reconstruction.fixture.txt'
+        if fixture.exists() or fixture.is_symlink():
+            if fixture.resolve() != fixture or evidence.resolve() != evidence:
+                raise RuntimeError('Cannot archive a linked protected regression fixture')
+            fixture.replace(evidence)
     if not startup_only and checks:
         public = checks[0]
         if (not public.passed and public.exit_code not in (None, 0)

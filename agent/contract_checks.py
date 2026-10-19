@@ -125,6 +125,36 @@ def _prerequisite_diagnostic(output_dir: Path, *, node: str | None, npm: str | N
     return "\n".join(details)
 
 
+def _wait_for_homepage(server, *, timeout: float = 20.0) -> None:
+    """Require HTTP 200 within the startup deadline on every response path."""
+    deadline = time.monotonic() + timeout
+    failure = "Backend did not serve the public homepage on port 3000"
+    while True:
+        if server.poll() is not None:
+            raise RuntimeError(
+                f"Backend exited with code {server.returncode} before the public homepage was reachable"
+            )
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise RuntimeError(failure)
+        try:
+            with urlopen("http://127.0.0.1:3000", timeout=min(1.0, remaining)) as response:
+                # A response received after the deadline does not establish
+                # timely readiness, even if its status is otherwise acceptable.
+                if response.status == 200:
+                    if time.monotonic() >= deadline:
+                        raise RuntimeError(failure)
+                    return
+        except OSError:
+            # Connection failures and HTTP errors share the same bounded retry
+            # path as successful HTTP responses that are not ready (e.g. 204).
+            pass
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise RuntimeError(failure)
+        time.sleep(min(0.1, remaining))
+
+
 def verify_public_acceptance(output_dir: Path, tree: dict, *, startup_only: bool = False) -> tuple[CheckResult, ...]:
     if not startup_only and not public_acceptance_context(tree):
         return ()
@@ -193,18 +223,7 @@ def verify_public_acceptance(output_dir: Path, tree: dict, *, startup_only: bool
                 shell=isinstance(command, str), start_new_session=os.name != "nt",
                 creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0)
             (protected / (prefix + ".pid")).write_text(str(server.pid), encoding="utf-8")
-            deadline = time.monotonic() + 20
-            while True:
-                if server.poll() is not None:
-                    raise RuntimeError(f"Backend exited with code {server.returncode} before the public homepage was reachable")
-                try:
-                    with urlopen("http://127.0.0.1:3000", timeout=1) as response:
-                        if response.status == 200:
-                            break
-                except OSError:
-                    if time.monotonic() >= deadline:
-                        raise RuntimeError("Backend did not serve the public homepage on port 3000")
-                    time.sleep(0.1)
+            _wait_for_homepage(server)
             if startup_only:
                 return (CheckResult(name, True, 0,
                     "Owned backend npm start served HTTP 200 on port 3000; behavior acceptance remains pending."),)

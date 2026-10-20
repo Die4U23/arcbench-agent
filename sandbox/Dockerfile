@@ -13,9 +13,11 @@ RUN python -m playwright install --with-deps chromium
 COPY sandbox/toolchain/package.json sandbox/toolchain/package-lock.json /opt/toolchain/
 RUN cd /opt/toolchain && npm ci --ignore-scripts --no-audit --no-fund --cache=/opt/npm-cache
 # npm ci caches locked tarballs but fresh generated projects also need registry
-# metadata for offline resolution. Seed reviewed package names/versions without
+# registry metadata for offline resolution. npm CLI adds /_cacache to its cache
+# root, whereas pacote expects the content-cache directory directly. Use the same
+# store and full metadata request as npm install. Seed reviewed versions without
 # running any package scripts or downloading every foreign-platform tarball.
-RUN cd /opt/toolchain && node -e "const p=require('/usr/local/lib/node_modules/npm/node_modules/pacote'); const lock=require('./package-lock.json'); (async()=>{ for (const [path,item] of Object.entries(lock.packages)) { if (!path || !item.version || !item.resolved) continue; const name=path.split('node_modules/').at(-1); await p.manifest(name+'@'+item.version,{cache:'/opt/npm-cache',registry:'https://registry.npmjs.org/',fullMetadata:true,ignoreScripts:true}); } })().catch(e=>{console.error(e);process.exit(1)});"
+RUN cd /opt/toolchain && node -e "const p=require('/usr/local/lib/node_modules/npm/node_modules/pacote'); const lock=require('./package-lock.json'); (async()=>{ for (const [path,item] of Object.entries(lock.packages)) { if (!path || !item.version || !item.resolved) continue; const name=path.split('node_modules/').at(-1); await p.manifest(name+'@'+item.version,{cache:'/opt/npm-cache/_cacache',registry:'https://registry.npmjs.org/',fullMetadata:true,ignoreScripts:true}); } })().catch(e=>{console.error(e);process.exit(1)});"
 # A no-lock install validates that current cached metadata resolves to cached
 # tarballs. Cache drift fails the image build instead of becoming a runtime trap.
 RUN mkdir /tmp/cache-smoke && cp /opt/toolchain/package.json /tmp/cache-smoke/ \

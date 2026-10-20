@@ -58,8 +58,18 @@ if (Object.keys(os.networkInterfaces()).some(name => name !== 'lo')) process.exi
 if (fs.existsSync('.env') || fs.existsSync(HOST_PATH)) process.exit(4);
 fs.mkdirSync('.git'); fs.writeFileSync('.git/config', 'untrusted');
 fs.writeFileSync('audit.json', JSON.stringify({isolated: true, uid: process.getuid()}));
-""".replace("HOST_PATH", json.dumps(str(outside)))
+""".replace("HOST_PATH", json.dumps(str(outside))),
+            script="build",
         )
+        (self.root / "install-check.cjs").write_text(
+            "if (process.env.OPENAI_API_KEY || process.env.AWS_SECRET_ACCESS_KEY || "
+            "process.env.NODE_OPTIONS) process.exit(9); "
+            "require('node:fs').writeFileSync('install-isolated.txt','ok');"
+        )
+        manifest = json.loads((self.root / "package.json").read_text())
+        manifest["dependencies"] = {"react": "19.1.1"}
+        manifest["scripts"]["postinstall"] = "node install-check.cjs"
+        (self.root / "package.json").write_text(json.dumps(manifest))
         with patch.dict(
             os.environ,
             {
@@ -96,10 +106,13 @@ fs.writeFileSync('audit.json', JSON.stringify({isolated: true, uid: process.getu
             result = sandbox.invoke(
                 "project_script",
                 self.root,
-                options={"directory": ".", "script": "test"},
+                options={"directory": ".", "script": "build"},
                 timeout=60,
             )
         self.assertEqual(result["exit_code"], 0)
+        self.assertEqual((self.root / "install-isolated.txt").read_text(), "ok")
+        self.assertNotIn("FAKE_HOST_SECRET", json.dumps(result))
+        self.assertNotIn("FAKE_AWS_SECRET", json.dumps(result))
         self.assertEqual(
             json.loads((self.root / "audit.json").read_text()),
             {"isolated": True, "uid": 1000},
@@ -249,6 +262,7 @@ fs.writeFileSync('child.json', JSON.stringify({pid: child.pid})); child.unref();
         self.project(
             """
 const http = require('node:http');
+if (process.env.OPENAI_API_KEY || process.env.AWS_SECRET_ACCESS_KEY) process.exit(9);
 http.createServer((req,res) => { res.setHeader('Content-Type','text/html');
 res.end('<html><body><label for="x">Name</label><input id="x"></body></html>');
 }).listen(Number(process.env.PORT), '127.0.0.1');
@@ -287,13 +301,16 @@ res.end('<html><body><label for="x">Name</label><input id="x"></body></html>');
             self.assertTrue(kwargs["screenshot"].startswith(b"\x89PNG\r\n\x1a\n"))
             return {"verdict": "pass", "issues": [], "matched": ["input"]}
 
-        checked = verify_visual_acceptance(
-            self.root,
-            self.root,
-            ["reference.png"],
-            SimpleNamespace(review_visual_case=review),
-        )
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "FAKE_VISUAL_SECRET",
+                                     "AWS_SECRET_ACCESS_KEY": "FAKE_VISUAL_CLOUD_SECRET"}):
+            checked = verify_visual_acceptance(
+                self.root,
+                self.root,
+                ["reference.png"],
+                SimpleNamespace(review_visual_case=review),
+            )
         self.assertTrue(checked.passed, checked.summary())
+        self.assertNotIn("FAKE_VISUAL_SECRET", checked.summary())
         self.assertEqual(len(calls), 1)
         self.assertTrue(
             (self.root / "artifacts/visual-acceptance/report.json").is_file()

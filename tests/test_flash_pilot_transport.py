@@ -88,6 +88,16 @@ class FlashPilotTransportTests(unittest.TestCase):
                     wrapped.create(**request())
             self.assertIsNotNone(budget.data["stopped"])
             self.assertEqual(len(budget.data["requests"]), 1)
+            stored = json.loads(self.path.read_text())
+            self.assertEqual(stored["requests"][0]["account_delta_cny"], "2")
+            self.assertEqual(stored["requests"][0]["reconciliation"], "mismatch")
+            self.assertNotIn("total_balance", self.path.read_text())
+            with self.assertRaises(ExperimentStopped):
+                budget.reserve(request())
+            budget.finish_round("interrupted")
+        with self.assertRaises(ExperimentStopped):
+            with ExperimentBudget(self.path):
+                pass
 
 
 if __name__ == "__main__":

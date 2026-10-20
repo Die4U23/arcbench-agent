@@ -92,13 +92,18 @@ class GuardedTransport:
             # The expected charge must lie between off-peak and peak prices.
             after = balance(self.values["OPENAI_API_KEY"])
             delta, upper = before - after, usage_cost(usage)
-            if not upper / 2 - Decimal("0.000001") <= delta <= upper + Decimal("0.000001"):
+            reconciled = upper / 2 - Decimal("0.000001") <= delta <= upper + Decimal("0.000001")
+            record = self.budget.data["requests"][-1]
+            # Preserve mismatch evidence too, without recording either balance.
+            # A delta alone is never a verified per-request charge.
+            record.update(account_delta_cny=str(delta),
+                          expected_charge_lower_cny=str(upper / 2),
+                          expected_charge_upper_cny=str(upper),
+                          reconciliation="within_offpeak_peak_usage_bounds" if reconciled else "mismatch")
+            self.budget.save()
+            if not reconciled:
                 self.budget.stop("Account delta does not reconcile with provider usage; stop all paid work")
                 raise ExperimentStopped("Account reconciliation failed")
-            record = self.budget.data["requests"][-1]
-            record["account_delta_cny"] = str(delta)
-            record["reconciliation"] = "within_offpeak_peak_usage_bounds"
-            self.budget.save()
             return response
         except BaseException as exc:
             if not self.budget.data["stopped"]:
@@ -242,6 +247,8 @@ def main():
                 "known_upper_cost_cny": str(sum((Decimal(r["upper_cost_cny"]) for r in requests), Decimal(0))),
                 "account_delta_cny": str(sum((Decimal(r.get("account_delta_cny", "0")) for r in requests), Decimal(0)))
                     if all("account_delta_cny" in r for r in requests) else None,
+                "account_reconciliation_complete": bool(requests) and all(
+                    r.get("reconciliation") == "within_offpeak_peak_usage_bounds" for r in requests),
                 "verified_invoice_cost": None,
                 "note": "Balance deltas corroborate usage; not an itemized invoice. No A/B conclusion."}
             (directory / "result.json").write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n",

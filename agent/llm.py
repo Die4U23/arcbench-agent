@@ -1712,7 +1712,7 @@ class ModelClient:
                             verified_feedback = verification_feedback()
                             verified_revision = (len(progress_paths), getattr(project_tools, "source_revision", 0))
                             result = verified_feedback
-                    elif tool_call.function.name in {"list_files", "read_files", "search_text"} and read_key in epoch_reads:
+                    elif tool_call.function.name in {"list_files", "search_text"} and read_key in epoch_reads:
                         result = (
                             "The same read already returned in this conversation and no project file "
                             "has changed. Use its earlier result to make the next concrete edit."
@@ -1732,6 +1732,11 @@ class ModelClient:
                                         path, content = file.get("path"), file.get("content")
                                         if not isinstance(path, str) or not isinstance(content, str):
                                             continue
+                                        if read_payload.get("truncated"):
+                                            # An equal excerpt cannot prove the unseen source
+                                            # is unchanged. Keep partial evidence explicit.
+                                            epoch_file_reads.pop(path, None)
+                                            continue
                                         digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
                                         if epoch_file_reads.get(path) == digest:
                                             file["content"] = "[unchanged since earlier read in this conversation]"
@@ -1744,7 +1749,15 @@ class ModelClient:
                             epoch_reads.add(read_key)
                         elif len(progress_paths) > observed_writes:
                             epoch_reads.clear()
-                            epoch_file_reads.clear()
+                            # A source edit invalidates that file's digest, not every
+                            # unrelated file still present in the conversation.
+                            # read_files always rereads disk before comparing hashes,
+                            # including identical batches and external changes.
+                            changed = {_normalized_source_path(path)
+                                for path in progress_paths[observed_writes:] if isinstance(path, str)}
+                            for path in tuple(epoch_file_reads):
+                                if _normalized_source_path(path) in changed:
+                                    epoch_file_reads.pop(path)
                 except ModelRequestInterrupted:
                     raise
                 except Exception as exc:

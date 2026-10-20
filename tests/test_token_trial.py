@@ -63,6 +63,22 @@ class TokenTrialTests(unittest.TestCase):
                     with TokenBudget(path).trial("candidate-1", {}):
                         self.fail("Parallel trial acquired the same budget")
 
+    def test_second_phase_preserves_spent_tokens_and_cannot_extend_token_ceiling(self):
+        with TemporaryDirectory() as folder:
+            path = Path(folder) / "usage.json"
+            with TokenBudget(path).trial("baseline-1", {}) as budget:
+                request = budget.reserve()
+                budget.settle(request, {"prompt_tokens": 950_000, "completion_tokens": 0}, "deepseek-flash")
+                budget.current["outcome"] = "passed"
+            before = json.loads(path.read_text())
+            with TokenBudget(path, extend_requests=True).trial("v2-1", {}) as budget:
+                self.assertEqual(budget.data["requests"], before["requests"])
+                self.assertEqual(budget.data["policy"]["requests"], 96)
+                self.assertEqual(budget.data["policy"]["total_tokens"], 2_000_000)
+                self.assertEqual(len(budget.data["phase_extensions"]), 1)
+                with self.assertRaisesRegex(TokenStop, "token headroom"):
+                    budget.reserve()
+
 
 if __name__ == "__main__":
     unittest.main()

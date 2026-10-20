@@ -29,8 +29,9 @@ class TokenStop(RuntimeError):
 
 
 class TokenBudget:
-    def __init__(self, path):
+    def __init__(self, path, *, extend_requests=False):
         self.path = Path(path)
+        self.extend_requests = extend_requests
 
     def save(self):
         temporary = self.path.with_suffix(".next")
@@ -48,8 +49,10 @@ class TokenBudget:
             stream.write(str(os.getpid()))
         try:
             self.data = json.loads(self.path.read_text(encoding="utf-8")) if self.path.exists() else {
-                "policy": POLICY, "requests": [], "trials": [], "stopped": None}
-            if self.data["policy"] != POLICY or self.data["stopped"]:
+                "policy": dict(POLICY), "requests": [], "trials": [], "stopped": None}
+            policy = self.data["policy"]
+            if (policy.get("requests") not in (48, 96)
+                    or dict(policy, requests=REQUEST_LIMIT) != POLICY or self.data["stopped"]):
                 raise TokenStop("Policy mismatch or stopped token study")
             if any(r["status"] != "settled" for r in self.data["requests"]):
                 raise TokenStop("Unknown usage remains reserved; no automatic retry")
@@ -57,8 +60,17 @@ class TokenBudget:
                 self.validate_usage(record["usage"])
             if any(t["label"] == label or t["outcome"] == "running" for t in self.data["trials"]):
                 raise TokenStop("Trial already exists or prior trial did not finish")
-            if len(self.data["trials"]) >= 6:
-                raise TokenStop("Six planned trials exhausted")
+            if self.extend_requests and policy["requests"] == 48:
+                if not self.path.exists():
+                    raise TokenStop("Second phase requires an existing token study")
+                self.data.setdefault("phase_extensions", []).append({
+                    "previous_file_sha256": hashlib.sha256(self.path.read_bytes()).hexdigest(),
+                    "previous_requests": 48, "new_requests": 96,
+                    "total_tokens_unchanged": TOKEN_LIMIT,
+                    "reason": "Second reviewed candidate; preserve every earlier outcome and token"})
+                policy["requests"] = 96
+            if len(self.data["trials"]) >= policy["requests"] // ROUND_REQUEST_LIMIT:
+                raise TokenStop("Planned trials exhausted")
             self.label, self.started = label, time.monotonic()
             self.current = dict(label=label, outcome="running", metadata=metadata)
             self.data["trials"].append(self.current)
@@ -88,7 +100,7 @@ class TokenBudget:
         spent = sum(r["usage"]["prompt_tokens"] + r["usage"]["completion_tokens"] for r in requests)
         if spent + INPUT_BOUND + OUTPUT_BOUND > TOKEN_LIMIT:
             raise TokenStop("Insufficient token headroom for maximum possible request")
-        if len(requests) >= REQUEST_LIMIT or sum(r["label"] == self.label for r in requests) >= ROUND_REQUEST_LIMIT:
+        if len(requests) >= self.data["policy"]["requests"] or sum(r["label"] == self.label for r in requests) >= ROUND_REQUEST_LIMIT:
             raise TokenStop("Request limit reached")
         if self.remaining_seconds() < 240:
             raise TokenStop("Insufficient time for request and cleanup")
@@ -126,6 +138,8 @@ def main():
     parser.add_argument("--study", type=Path, required=True)
     parser.add_argument("--label", required=True)
     parser.add_argument("--image", required=True)
+    parser.add_argument("--extend-requests", action="store_true",
+                        help="One recorded second phase, at most 96 attempts; same 2M total token limit")
     args = parser.parse_args()
     if not args.execute:
         print(json.dumps({"status": "UNRUN", "policy": POLICY}))
@@ -144,7 +158,7 @@ def main():
     docker_module.IMAGE = args.image
     spec_bytes = args.spec.read_bytes()
     spec = json.loads(spec_bytes)
-    with TokenBudget(args.study / "token-usage.json").trial(args.label, {
+    with TokenBudget(args.study / "token-usage.json", extend_requests=args.extend_requests).trial(args.label, {
             "source_commit": args.source_commit, "image": args.image,
             "spec_sha256": hashlib.sha256(spec_bytes).hexdigest(),
             "source_sha256": {str(p.relative_to(args.source)): hashlib.sha256(p.read_bytes()).hexdigest()
@@ -223,6 +237,7 @@ def main():
             model.raise_if_request_interrupted()
             tools.protection()
             checks = [json.loads(tools.run_project_script(".", name)) for name in ("build", "test")]
+            (directory / "checks.json").write_text(json.dumps(checks, ensure_ascii=False, indent=2), encoding="utf-8")
             outcome = "passed" if all(c["exit_code"] == 0 for c in checks) else "failed"
         except Exception as exc:
             error_type = type(exc).__name__

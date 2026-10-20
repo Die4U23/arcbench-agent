@@ -76,8 +76,44 @@ class ReadEvidenceTests(unittest.TestCase):
         cache.clear()
         self.assertEqual(cache.filter("read_file", {"path": "b.js"}, SOURCE), SOURCE)
 
+    def test_successful_write_is_evidence_only_for_exact_bytes_while_message_remains(self):
+        cache = ReadEvidence()
+        owner = {"role": "assistant", "tool_calls": []}
+        cache.remember_write("write_files", {"files": [{"path": "a.js", "content": SOURCE}]}, owner)
+        self.assertEqual(cache.filter("read_file", {"path": "a.js"}, SOURCE), UNCHANGED)
+        self.assertEqual(cache.filter("read_file", {"path": "a.js"}, SOURCE + "normalized"), SOURCE + "normalized")
+        cache.retain([[owner]])
+        self.assertEqual(cache.filter("read_file", {"path": "a.js"}, SOURCE), UNCHANGED)
+        cache.retain([])
+        self.assertEqual(cache.filter("read_file", {"path": "a.js"}, SOURCE), SOURCE)
+
 
 class SourceReuseIntegrationTests(unittest.TestCase):
+    def test_successful_full_write_avoids_rereading_its_contents_into_context(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            write = _FakeToolCall("write", "write_files", json.dumps({"files": [{"path": "a.js", "content": SOURCE}]}))
+            model = _make_client(None, None, [_FakeMessage([write]), _FakeMessage([single()]), _FakeMessage(None)])
+            model.implement(task_type="library", subtree={"id": "X"}, plan="fixed", project_tools=ProjectTools(root))
+            self.assertEqual(model.client.completions.requests[2]["messages"][-1]["content"], UNCHANGED)
+            self.assertEqual((root / "a.js").read_text(encoding="utf-8"), SOURCE)
+
+    def test_failed_full_write_does_not_register_the_proposed_source(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "a.js").write_text(SOURCE, encoding="utf-8")
+            tools = ProjectTools(root)
+            original = tools.call
+            def call(name, args):
+                if name == "write_files":
+                    raise ValueError("simulated write rejection")
+                return original(name, args)
+            tools.call = call
+            write = _FakeToolCall("write", "write_files", json.dumps({"files": [{"path": "a.js", "content": SOURCE}]}))
+            model = _make_client(None, None, [_FakeMessage([write]), _FakeMessage([single()]), _FakeMessage(None)])
+            model.implement(task_type="library", subtree={"id": "X"}, plan="fixed", project_tools=tools)
+            self.assertEqual(model.client.completions.requests[2]["messages"][-1]["content"], SOURCE)
+
     def test_mixed_reads_preserve_request_prefix_and_emit_saved_characters(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

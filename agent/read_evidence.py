@@ -7,7 +7,7 @@ import os
 from typing import Any
 
 
-UNCHANGED = "[unchanged since earlier read in this conversation]"
+UNCHANGED = "[unchanged since earlier read or write in this conversation]"
 
 
 def source_path(path: str) -> str:
@@ -105,3 +105,18 @@ class ReadEvidence:
                     if file["content"] != UNCHANGED:
                         key = source_path(file["path"]), 1, None
                         self._entries[key] = self._digest(file["content"]), message
+
+    def remember_write(self, name: str, arguments: dict[str, Any], message: dict[str, Any]) -> None:
+        """Successful full-file arguments are source already shown to the model.
+
+        A later real read must still match exactly. This also handles writers
+        that normalize JSON or preserve dependencies: transformed bytes do not
+        match the proposed content, so the read is returned in full.
+        """
+        files = arguments.get("files", []) if name == "write_files" else [arguments] if name == "write_file" else []
+        if not isinstance(files, list):
+            return
+        for file in files:
+            if isinstance(file, dict) and isinstance(file.get("path"), str) and isinstance(file.get("content"), str):
+                key = source_path(file["path"]), 1, None
+                self._entries[key] = self._digest(file["content"]), message

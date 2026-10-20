@@ -1737,6 +1737,8 @@ class ModelClient:
                             changed = {_normalized_source_path(path)
                                 for path in progress_paths[observed_writes:] if isinstance(path, str)}
                             read_evidence.invalidate(changed)
+                        if tool_call.function.name in {"write_files", "write_file"}:
+                            read_evidence.remember_write(tool_call.function.name, arguments, assistant_payload)
                 except ModelRequestInterrupted:
                     raise
                 except Exception as exc:

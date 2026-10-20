@@ -1,0 +1,402 @@
+{
+  "groups": {
+    "baseline": {
+      "trials": 4,
+      "passed": 4,
+      "requests": 32,
+      "usage": {
+        "prompt_tokens": 201149,
+        "completion_tokens": 8152,
+        "prompt_cache_hit_tokens": 190208,
+        "prompt_cache_miss_tokens": 10941
+      },
+      "hit_rate": 0.9456074849986825,
+      "tokens_per_success": 52325.25,
+      "reuse_events": 0
+    },
+    "candidate-v1": {
+      "trials": 3,
+      "passed": 2,
+      "requests": 24,
+      "usage": {
+        "prompt_tokens": 141016,
+        "completion_tokens": 4302,
+        "prompt_cache_hit_tokens": 133760,
+        "prompt_cache_miss_tokens": 7256
+      },
+      "hit_rate": 0.9485448459749248,
+      "tokens_per_success": 72659.0,
+      "reuse_events": 0
+    },
+    "candidate-v2": {
+      "trials": 2,
+      "passed": 0,
+      "requests": 16,
+      "usage": {
+        "prompt_tokens": 98759,
+        "completion_tokens": 2285,
+        "prompt_cache_hit_tokens": 94848,
+        "prompt_cache_miss_tokens": 3911
+      },
+      "hit_rate": 0.9603985459553054,
+      "tokens_per_success": null,
+      "reuse_events": 3
+    },
+    "candidate-v3": {
+      "trials": 3,
+      "passed": 3,
+      "requests": 24,
+      "usage": {
+        "prompt_tokens": 150269,
+        "completion_tokens": 5102,
+        "prompt_cache_hit_tokens": 143744,
+        "prompt_cache_miss_tokens": 6525
+      },
+      "hit_rate": 0.9565778703525012,
+      "tokens_per_success": 51790.333333333336,
+      "reuse_events": 1
+    }
+  },
+  "rows": [
+    {
+      "label": "baseline-1",
+      "outcome": "passed",
+      "error_type": null,
+      "requests": 8,
+      "seconds": 46.84400000000096,
+      "usage": {
+        "prompt_tokens": 51332,
+        "completion_tokens": 2920,
+        "prompt_cache_hit_tokens": 47488,
+        "prompt_cache_miss_tokens": 3844
+      },
+      "usage_complete": true,
+      "checks": [
+        {
+          "exit_code": 0
+        },
+        {
+          "exit_code": 0
+        }
+      ],
+      "scope": "Synthetic shared-module repair, not platform 30/30",
+      "source_reuse_events": 0,
+      "result_sha256": "c150c144e43220bfc70501541ea1ab175d658485a6c4f14fb163ee2c05ad8dc0",
+      "source_commit": "9179d73cf7a10ec69e20cde10f75750b7963cb82"
+    },
+    {
+      "label": "baseline-2",
+      "outcome": "passed",
+      "error_type": null,
+      "requests": 8,
+      "seconds": 29.4220000000023,
+      "usage": {
+        "prompt_tokens": 50454,
+        "completion_tokens": 1859,
+        "prompt_cache_hit_tokens": 47488,
+        "prompt_cache_miss_tokens": 2966
+      },
+      "usage_complete": true,
+      "checks": [
+        {
+          "exit_code": 0
+        },
+        {
+          "exit_code": 0
+        }
+      ],
+      "scope": "Synthetic shared-module repair, not platform 30/30",
+      "source_reuse_events": 0,
+      "result_sha256": "d86ae51ef431c1844c3269e62242cf6e640d15d01376caed22ca367515cd6cf2",
+      "source_commit": "9179d73cf7a10ec69e20cde10f75750b7963cb82"
+    },
+    {
+      "label": "baseline-3",
+      "outcome": "passed",
+      "error_type": null,
+      "requests": 8,
+      "seconds": 28.360000000000582,
+      "usage": {
+        "prompt_tokens": 49649,
+        "completion_tokens": 1678,
+        "prompt_cache_hit_tokens": 47616,
+        "prompt_cache_miss_tokens": 2033
+      },
+      "usage_complete": true,
+      "checks": [
+        {
+          "exit_code": 0
+        },
+        {
+          "exit_code": 0
+        }
+      ],
+      "scope": "Synthetic shared-module repair, not platform 30/30",
+      "source_reuse_events": 0,
+      "result_sha256": "15aa7917317845a90578006b7112226ab549f65a6225f0d29cd9034f0be340e9",
+      "source_commit": "9179d73cf7a10ec69e20cde10f75750b7963cb82"
+    },
+    {
+      "label": "baseline-v2-1",
+      "outcome": "passed",
+      "error_type": null,
+      "requests": 8,
+      "seconds": 31.10899999999674,
+      "usage": {
+        "prompt_tokens": 49714,
+        "completion_tokens": 1695,
+        "prompt_cache_hit_tokens": 47616,
+        "prompt_cache_miss_tokens": 2098
+      },
+      "usage_complete": true,
+      "checks": [
+        {
+          "exit_code": 0
+        },
+        {
+          "exit_code": 0
+        }
+      ],
+      "scope": "Synthetic shared-module repair, not platform 30/30",
+      "source_reuse_events": 0,
+      "result_sha256": "d2f531b9955b8bdcce40930931733a9ff231d6f2916b66725badebb9d14b47be",
+      "source_commit": "9179d73cf7a10ec69e20cde10f75750b7963cb82"
+    },
+    {
+      "label": "candidate-1",
+      "outcome": "failed",
+      "error_type": null,
+      "requests": 8,
+      "seconds": 36.85900000000038,
+      "usage": {
+        "prompt_tokens": 47142,
+        "completion_tokens": 1415,
+        "prompt_cache_hit_tokens": 44032,
+        "prompt_cache_miss_tokens": 3110
+      },
+      "usage_complete": true,
+      "checks": [
+        {
+          "exit_code": 0
+        },
+        {
+          "exit_code": 1
+        }
+      ],
+      "scope": "Synthetic shared-module repair, not platform 30/30",
+      "source_reuse_events": 0,
+      "result_sha256": "46e5e59d668430c0065d09aa51a316129618b34af455379a0432f89a1beeb190",
+      "source_commit": "ae1cdd7459aefcf00a1a34925d80ee45cb7ce34b"
+    },
+    {
+      "label": "candidate-2",
+      "outcome": "passed",
+      "error_type": null,
+      "requests": 8,
+      "seconds": 29.65599999999904,
+      "usage": {
+        "prompt_tokens": 47116,
+        "completion_tokens": 1485,
+        "prompt_cache_hit_tokens": 44928,
+        "prompt_cache_miss_tokens": 2188
+      },
+      "usage_complete": true,
+      "checks": [
+        {
+          "exit_code": 0
+        },
+        {
+          "exit_code": 0
+        }
+      ],
+      "scope": "Synthetic shared-module repair, not platform 30/30",
+      "source_reuse_events": 0,
+      "result_sha256": "3061ab2f4dc3add7a04a65b80e297b73a29d1ee816138a15b23fc713e19bfd12",
+      "source_commit": "ae1cdd7459aefcf00a1a34925d80ee45cb7ce34b"
+    },
+    {
+      "label": "candidate-3",
+      "outcome": "passed",
+      "error_type": null,
+      "requests": 8,
+      "seconds": 25.906999999999243,
+      "usage": {
+        "prompt_tokens": 46758,
+        "completion_tokens": 1402,
+        "prompt_cache_hit_tokens": 44800,
+        "prompt_cache_miss_tokens": 1958
+      },
+      "usage_complete": true,
+      "checks": [
+        {
+          "exit_code": 0
+        },
+        {
+          "exit_code": 0
+        }
+      ],
+      "scope": "Synthetic shared-module repair, not platform 30/30",
+      "source_reuse_events": 0,
+      "result_sha256": "6350a66a8a76f06ef99c429d4089a39bf14053fa0ef7ca452a7d1cadbe30e749",
+      "source_commit": "ae1cdd7459aefcf00a1a34925d80ee45cb7ce34b"
+    },
+    {
+      "label": "candidate-v2-1",
+      "outcome": "failed",
+      "error_type": null,
+      "requests": 8,
+      "seconds": 24.718000000000757,
+      "usage": {
+        "prompt_tokens": 49863,
+        "completion_tokens": 1179,
+        "prompt_cache_hit_tokens": 47744,
+        "prompt_cache_miss_tokens": 2119
+      },
+      "usage_complete": true,
+      "checks": [
+        {
+          "exit_code": 0
+        },
+        {
+          "exit_code": 1
+        }
+      ],
+      "scope": "Synthetic shared-module repair, not platform 30/30",
+      "source_reuse_events": 1,
+      "result_sha256": "ae82b7c4cfdefd574bb43a4cd73d920eabb9d994f5758fca268009c2beb505a4",
+      "source_commit": "5d62407b23a8b6d406cc7bced5ec3ece2ed9c30e"
+    },
+    {
+      "label": "candidate-v2-2",
+      "outcome": "failed",
+      "error_type": null,
+      "requests": 8,
+      "seconds": 21.2809999999954,
+      "usage": {
+        "prompt_tokens": 48896,
+        "completion_tokens": 1106,
+        "prompt_cache_hit_tokens": 47104,
+        "prompt_cache_miss_tokens": 1792
+      },
+      "usage_complete": true,
+      "checks": [
+        {
+          "exit_code": 0
+        },
+        {
+          "exit_code": 1
+        }
+      ],
+      "scope": "Synthetic shared-module repair, not platform 30/30",
+      "source_reuse_events": 2,
+      "result_sha256": "b52c398ce6a69a10ccb40b8b9538aa25802a947abd8ff4944cbb2c446d244b37",
+      "source_commit": "5d62407b23a8b6d406cc7bced5ec3ece2ed9c30e"
+    },
+    {
+      "label": "candidate-v3-1",
+      "outcome": "passed",
+      "error_type": null,
+      "requests": 8,
+      "seconds": 30.95300000000134,
+      "usage": {
+        "prompt_tokens": 49735,
+        "completion_tokens": 1242,
+        "prompt_cache_hit_tokens": 47744,
+        "prompt_cache_miss_tokens": 1991
+      },
+      "usage_complete": true,
+      "checks": [
+        {
+          "exit_code": 0
+        },
+        {
+          "exit_code": 0
+        }
+      ],
+      "scope": "Synthetic shared-module repair, not platform 30/30",
+      "source_reuse_events": 1,
+      "result_sha256": "7c4b2e4b83874a36ac6ca8b36f984c751ab9d190e6a84e831002a8edcc45f324",
+      "source_commit": "8e32b42b56a4e5ad6735956c18108f549ff76d70"
+    },
+    {
+      "label": "candidate-v3-2",
+      "outcome": "passed",
+      "error_type": null,
+      "requests": 8,
+      "seconds": 28.56199999999808,
+      "usage": {
+        "prompt_tokens": 49636,
+        "completion_tokens": 1692,
+        "prompt_cache_hit_tokens": 47616,
+        "prompt_cache_miss_tokens": 2020
+      },
+      "usage_complete": true,
+      "checks": [
+        {
+          "exit_code": 0
+        },
+        {
+          "exit_code": 0
+        }
+      ],
+      "scope": "Synthetic shared-module repair, not platform 30/30",
+      "source_reuse_events": 0,
+      "result_sha256": "ee553c25513d1ca55f57c8c0b4b37c85c32db6d2e82a42818a3118c23a0fe2cc",
+      "source_commit": "8e32b42b56a4e5ad6735956c18108f549ff76d70"
+    },
+    {
+      "label": "candidate-v3-3",
+      "outcome": "passed",
+      "error_type": null,
+      "requests": 8,
+      "seconds": 27.67199999999866,
+      "usage": {
+        "prompt_tokens": 50898,
+        "completion_tokens": 2168,
+        "prompt_cache_hit_tokens": 48384,
+        "prompt_cache_miss_tokens": 2514
+      },
+      "usage_complete": true,
+      "checks": [
+        {
+          "exit_code": 0
+        },
+        {
+          "exit_code": 0
+        }
+      ],
+      "scope": "Synthetic shared-module repair, not platform 30/30",
+      "source_reuse_events": 0,
+      "result_sha256": "8bae718bdbd15de7e5b830202992441f767eadf51daf49098bf49bcd86e2e3cc",
+      "source_commit": "8e32b42b56a4e5ad6735956c18108f549ff76d70"
+    }
+  ],
+  "total_tokens": 611034,
+  "date": "2026-10-20",
+  "scope": "One synthetic repair fixture; adaptive candidates, no causal performance or platform acceptance claim",
+  "spec_sha256": "4018400a6a0a946bbab7932317b2c556526e94a72e456863a02cd40e20824c7a",
+  "image": "sha256:3c9ee4121afa393a13ffa0d6d278b30545735781610e430aa2c4a08e7948296c",
+  "policy": {
+    "model": "deepseek-flash",
+    "total_tokens": 2000000,
+    "requests": 96,
+    "round_requests": 8,
+    "round_seconds": 600,
+    "input_bound": 1100000,
+    "max_output": 4096
+  },
+  "execution_order": [
+    "baseline-1",
+    "candidate-1",
+    "candidate-2",
+    "baseline-2",
+    "baseline-3",
+    "candidate-3",
+    "baseline-v2-1",
+    "candidate-v2-1",
+    "candidate-v2-2",
+    "candidate-v3-1",
+    "candidate-v3-2",
+    "candidate-v3-3"
+  ]
+}

@@ -1,5 +1,7 @@
 # #21：离线观测与对照准备
 
+> 历史协议：用户随后明确要求“别按账本，关心 token”。当前真实对照使用 `scripts/run_token_trial.py`，仅 Flash，两阶段合计上限 2,000,000 token / 96 次请求，不查询账户余额，不以旧费用核对作为启动条件。旧 pilot 及其停止记录保留，不重置。当前结果见 [缓存分析](issue21-cache-analysis.md)；本文下列金额规则只描述此前 pilot。
+
 本阶段提供观测和离线台账，不自动执行 Claude Code 或平台任务，不据此声明性能提升。`benchmark_trials.py` 不导入 Agent 配置、不加载 `.env`，也没有模型或命令执行入口。初始零预算授权已更新为 **仅 DeepSeek Flash，累计人民币 80 元**。后续新增的 `run_flash_pilot.py` 默认仅离线预检，必须显式 `--execute --expected-commit <SHA>` 才可能执行已授权试点。
 
 ## 起点与证据类别

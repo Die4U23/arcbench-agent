@@ -1,5 +1,7 @@
 # #21 本轮执行记录（2026-10-20）
 
+> 本文保留早期离线准备及费用 pilot 的历史记录。用户随后将评估重点改为 token，已另行运行真实 Flash 对照；当前改动、失败样本、完整分母及供应商 usage 见 [缓存分析](issue21-cache-analysis.md)。下文“未启动”等状态不代表后续 token 对照的当前状态。
+
 ## 工作区与保护
 
 起点为包含已合并 #34 Docker 隔离的 main `b9be372ff9319dbe6e6887852921a1c64bab3c27`，已核对最新 issue 正文、实际远端及合并状态。工作区 `E:\codex\arc_agent`，分支 `codex/issue-21-offline-benchmark`。初始只有未跟踪 `HANDOFF.md`，没有修改或提交；相关路径没有适用 AGENTS.md 或 `.agents/skills`。

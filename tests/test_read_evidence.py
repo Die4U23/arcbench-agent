@@ -65,13 +65,13 @@ class ReadEvidenceTests(unittest.TestCase):
         for payload in ('{"files":', "[]", "null",
                         json.dumps({"files": [{"path": "a.js", "content": SOURCE}], "truncated": True})):
             cache.remember("read_files", {}, {"content": payload})
-        self.assertEqual(cache.filter("read_file", args, SOURCE), SOURCE)
+        self.assertEqual(batch_content(cache), SOURCE)
         cache.remember("read_file", args, {"content": "tiny"})
         self.assertEqual(cache.filter("read_file", args, "tiny"), "tiny")
         batch = json.dumps({"files": [{"path": "a.js", "content": "tiny"}], "truncated": False})
         self.assertEqual(cache.filter("read_files", {}, batch), batch)
 
-    def test_invalidation_removes_all_ranges_of_only_the_changed_file(self):
+    def test_invalidation_removes_only_the_changed_complete_file(self):
         cache = ReadEvidence()
         for path in ("a.js", "b.js"):
             for start in (1, 3):

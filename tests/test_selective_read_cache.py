@@ -20,7 +20,7 @@ class SelectiveReadCacheTests(unittest.TestCase):
         with TemporaryDirectory() as folder:
             root = Path(folder)
             for name in ("a", "b", "c"):
-                (root / (name + ".js")).write_text(name + " source")
+                (root / (name + ".js")).write_text((name + " source") * (20 if name == "b" else 1))
             model = _make_client(10, 10, [
                 _FakeMessage([_read_files_call(["a.js", "b.js"])]),
                 _FakeMessage([write("a.js", "a changed")]),

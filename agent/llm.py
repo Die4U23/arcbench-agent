@@ -24,6 +24,7 @@ from .ticketbooking_contract import public_acceptance_context
 from .initial_bootstrap import initial_bootstrap_gaps
 from .generation_contract import generation_contract_context
 from .prompt_context import requirement_context
+from .read_evidence import ReadEvidence, source_path as _normalized_source_path
 from .visual_acceptance import REPORT_RELATIVE_PATH, SCREENSHOT_RELATIVE_DIR, collect_visual_references
 
 LOGGER = logging.getLogger(__name__)
@@ -41,11 +42,6 @@ MAX_REPAIR_REQUESTS = 12
 EARLY_CHECKPOINT_TURN = 4
 CHECKPOINT_INTERVAL_TURNS = 6
 PASSING_CHECKPOINT_IDLE_TURNS = 4
-
-
-def _normalized_source_path(path: str) -> str:
-    normalized = os.path.normpath(path.replace("\\", "/")).replace("\\", "/")
-    return normalized.casefold() if os.name == "nt" else normalized
 
 
 def _source_tool_failure(name: str, arguments: dict[str, Any], error: Exception) -> tuple[str, str] | None:
@@ -1118,7 +1114,7 @@ class ModelClient:
             conversation.append({"role": "user", "content": first_dynamic_content})
         epoch_exchanges: list[list[dict[str, Any]]] = []
         epoch_reads: set[tuple[str, str]] = set()
-        epoch_file_reads: dict[str, str] = {}
+        read_evidence = ReadEvidence()
         compacted_summaries: list[str] = []
         checkpoint_note = ""
         budget_warned = False
@@ -1195,7 +1191,7 @@ class ModelClient:
                 required_source_reads[key[0]] = key[1]
                 # Cached reads cannot establish fresh source after failed edits.
                 epoch_reads.clear()
-                epoch_file_reads.clear()
+                read_evidence.clear()
 
         def clear_fresh_source_reads(name: str, arguments: dict[str, Any], result: str) -> None:
             refreshed = set()
@@ -1225,9 +1221,7 @@ class ModelClient:
                     if key[0] == path:
                         source_failures.pop(key)
                         source_failure_details.pop(key, None)
-                for cached_path in tuple(epoch_file_reads):
-                    if _normalized_source_path(cached_path) == path:
-                        epoch_file_reads.pop(cached_path)
+                read_evidence.invalidate([path])
             if name == "list_files" and isinstance(arguments.get("path"), str):
                 parent = _normalized_source_path(arguments["path"])
                 for path, family in tuple(required_source_reads.items()):
@@ -1267,7 +1261,7 @@ class ModelClient:
             del compacted_summaries[:-MAX_COMPACTED_EXCHANGES]
             epoch_exchanges[:] = retained
             epoch_reads.clear()
-            epoch_file_reads.clear()
+            read_evidence.retain(retained)
             if not retained:
                 thinking_disabled_epoch = False
             parts = [compact_user_content] if compact_user_content else []
@@ -1675,6 +1669,7 @@ class ModelClient:
                 self.tool_calls_used += 1
                 tool_started = time.perf_counter()
                 arguments: Any = {}
+                source_read_returned = False
                 try:
                     arguments = json.loads(tool_call.function.arguments or "{}")
                     reset_changed_source_failures()
@@ -1721,30 +1716,16 @@ class ModelClient:
                         result = project_tools.call(tool_call.function.name, arguments)
                         reset_changed_source_failures()
                         clear_fresh_source_reads(tool_call.function.name, arguments, result)
-                        if tool_call.function.name == "read_files":
-                            try:
-                                read_payload = json.loads(result)
-                                files = read_payload.get("files", [])
-                                if isinstance(files, list):
-                                    for file in files:
-                                        if not isinstance(file, dict):
-                                            continue
-                                        path, content = file.get("path"), file.get("content")
-                                        if not isinstance(path, str) or not isinstance(content, str):
-                                            continue
-                                        if read_payload.get("truncated"):
-                                            # An equal excerpt cannot prove the unseen source
-                                            # is unchanged. Keep partial evidence explicit.
-                                            epoch_file_reads.pop(path, None)
-                                            continue
-                                        digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
-                                        if epoch_file_reads.get(path) == digest:
-                                            file["content"] = "[unchanged since earlier read in this conversation]"
-                                        else:
-                                            epoch_file_reads[path] = digest
-                                    result = json.dumps(read_payload, ensure_ascii=False)
-                            except (TypeError, ValueError):
-                                pass
+                        if tool_call.function.name in {"read_file", "read_files"}:
+                            source_read_returned = True
+                            original_chars = len(result)
+                            filtered = read_evidence.filter(tool_call.function.name, arguments, result)
+                            if len(filtered) <= MAX_BATCH_OUTPUT_CHARS:
+                                result = filtered
+                            if len(result) < original_chars:
+                                emit_metric("source_read_reused", request=self.model_requests_used,
+                                    tool=tool_call.function.name, original_chars=original_chars,
+                                    sent_chars=len(result), removed_chars=original_chars - len(result))
                         if tool_call.function.name in {"list_files", "read_files", "search_text"}:
                             epoch_reads.add(read_key)
                         elif len(progress_paths) > observed_writes:
@@ -1755,12 +1736,11 @@ class ModelClient:
                             # including identical batches and external changes.
                             changed = {_normalized_source_path(path)
                                 for path in progress_paths[observed_writes:] if isinstance(path, str)}
-                            for path in tuple(epoch_file_reads):
-                                if _normalized_source_path(path) in changed:
-                                    epoch_file_reads.pop(path)
+                            read_evidence.invalidate(changed)
                 except ModelRequestInterrupted:
                     raise
                 except Exception as exc:
+                    source_read_returned = False
                     result = f"Tool error: {type(exc).__name__}: {exc}"
                     if isinstance(arguments, dict):
                         source_failure = _source_tool_failure(tool_call.function.name, arguments, exc)
@@ -1779,6 +1759,8 @@ class ModelClient:
                 tool_payloads.append(
                     {"role": "tool", "tool_call_id": tool_call.id, "content": result[:MAX_BATCH_OUTPUT_CHARS]}
                 )
+                if source_read_returned and len(result) <= MAX_BATCH_OUTPUT_CHARS:
+                    read_evidence.remember(tool_call.function.name, arguments, tool_payloads[-1])
             exchange = [assistant_payload, *tool_payloads]
             conversation.extend(exchange)
             epoch_exchanges.append(exchange)

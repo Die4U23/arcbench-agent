@@ -28,10 +28,24 @@ class PromptCacheTests(unittest.TestCase):
         self.assertTrue(all(value == prefixes[0] for value in prefixes))
         self.assertEqual(tree, untouched)
         self.assertEqual(contexts[0].count('"id": "ROOT"'), 1)
-        project = json.loads(prefixes[0].split("Project requirements (shared context):\n")[1])
+        project = json.loads(prefixes[0].split("Project requirements (shared context):\n")[1].split("\n\nAn id-only scope")[0])
         scope = json.loads(contexts[0].split(delimiter)[1])
         self.assertEqual(project, tree)
-        self.assertEqual(scope, tree["children"][0])
+        self.assertEqual(scope, {"id": tree["children"][0]["id"]})
+
+    def test_augmented_missing_or_ambiguous_scope_is_not_replaced_with_an_id(self):
+        tree = tree_fixture()
+        scope = dict(tree["children"][0], repair_constraint="Keep this additional constraint")
+        delimiter = "\n\nRequirement subtree (current implementation scope):\n"
+        text = requirement_context("web", dict(scope, project_requirements=tree))
+        self.assertEqual(json.loads(text.split(delimiter)[1]), scope)
+        tree["children"].append(deepcopy(tree["children"][0]))
+        scope = tree["children"][0]
+        text = requirement_context("web", dict(scope, project_requirements=tree))
+        self.assertEqual(json.loads(text.split(delimiter)[1]), scope)
+        scope = {"id": "MISSING", "description": "Unshared requirement"}
+        text = requirement_context("web", dict(scope, project_requirements=tree))
+        self.assertEqual(json.loads(text.split(delimiter)[1]), scope)
 
     def test_key_insertion_order_does_not_reset_shared_prefix(self):
         tree = tree_fixture()

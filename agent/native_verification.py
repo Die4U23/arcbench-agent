@@ -1,5 +1,6 @@
 """Execute the original Chromium probe even while complete jsdom cases fail."""
 import os
+from dataclasses import replace
 from pathlib import Path
 import shutil
 import signal
@@ -10,6 +11,7 @@ from .browser_contract import BROWSER_CHECK, browser_guard_result, verify_browse
 from .contract_checks import verify_public_acceptance as original_public_acceptance
 from .visual_acceptance import _wait_for_server
 from .station_units import verify_station_units, unavailable
+from .booking_completion import verify_booking_completion, completion_result
 from .verify import CheckResult
 
 
@@ -33,12 +35,13 @@ def _stop_owned_server(server):
         server.wait(timeout=5)
 
 
-def _combine(original, locations):
-    passed = original.passed and locations.passed
+def _combine(original, *additional):
+    checks = (original, *additional)
+    passed = all(check.passed for check in checks)
     return CheckResult(BROWSER_CHECK, passed, 0 if passed else 1,
-        original.output+'\n\n'+locations.name+': '+locations.output,
-        tuple(sorted(set(original.requirement_ids + locations.requirement_ids))),
-        original.case_statuses + locations.case_statuses)
+        original.output + ''.join('\n\n' + check.name + ': ' + check.output for check in additional),
+        tuple(sorted({node for check in checks for node in check.requirement_ids})),
+        tuple(status for check in checks for status in check.case_statuses))
 
 
 def _run_owned_browser(project: Path, original=None):
@@ -71,7 +74,9 @@ def _run_owned_browser(project: Path, original=None):
                 creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == 'nt' else 0)
             _wait_for_server(server, 3000, log_path)
             native = original if original is not None else verify_browser_contract(protected)
-            result = _combine(native, verify_station_units(protected))
+            completion = (verify_booking_completion(protected) if native.passed else
+                          completion_result(False, 'Not executed: original native booking entry failed'))
+            result = _combine(native, verify_station_units(protected), completion)
     except Exception as exc:
         message = f'Independent native guard: {exc}'
         result = _combine(original or browser_guard_result(False, message), unavailable(message))
@@ -93,7 +98,32 @@ def verify_public_acceptance(output_dir: Path, tree: dict, *, startup_only=False
             return ()
         from .container_checks import run_checks
         return run_checks("native", output_dir, options={"tree": tree, "startup_only": startup_only})
-    checks = original_public_acceptance(output_dir, tree, startup_only=startup_only)
+    try:
+        checks = original_public_acceptance(output_dir, tree, startup_only=startup_only)
+    finally:
+        # The original runner regenerates this exact fixture on every invocation.
+        # Retain its bytes as evidence after execution, outside ordinary Vitest
+        # discovery: generated self-tests do not own the regression's backend.
+        protected = output_dir.resolve() / 'frontend/.arc'
+        fixture = protected / 'public-case-reconstruction.test.tsx'
+        evidence = protected / 'public-case-reconstruction.fixture.txt'
+        if fixture.exists() or fixture.is_symlink():
+            if fixture.resolve() != fixture or evidence.resolve() != evidence:
+                raise RuntimeError('Cannot archive a linked protected regression fixture')
+            fixture.replace(evidence)
+    if not startup_only and checks:
+        public = checks[0]
+        if (not public.passed and public.exit_code not in (None, 0)
+                and public.case_statuses
+                and all(status == 'passed' for _, status in public.case_statuses)):
+            public = replace(public, output=public.output + '\n\n'
+                'Runner-level failure: all recorded case assertions passed, but the test '
+                f'process exited with code {public.exit_code}. The original runner stdout/stderr '
+                'are not retained in this public summary, so the cause is unknown. '
+                'This is neither a failed business assertion nor a passing verification. '
+                'Investigate runner or asynchronous runtime errors before changing passing '
+                'business behavior; preserve the original tests and exit-code requirement.')
+            checks = (public, *checks[1:])
     if startup_only or len(checks) != 2 or not checks[0].case_statuses:
         return checks
     browser = checks[1]

@@ -552,11 +552,11 @@ class ImplementBudgetTests(unittest.TestCase):
         self.assertTrue({"write_files", "replace_text"}.issubset(
             {tool["function"]["name"] for tool in rescue_request["tools"]}
         ))
-        self.assertEqual(rescue_request["tool_choice"], {"type": "function", "function": {"name": "write_files"}})
-        self.assertEqual(rescue_request["extra_body"], {"thinking": {"type": "disabled"}})
+        self.assertEqual(rescue_request["tool_choice"], "auto")
+        self.assertEqual(rescue_request["extra_body"], {"thinking": {"type": "enabled"}})
         self.assertTrue(any(message.get("role") == "assistant" for message in rescue_request["messages"]))
         next_request = model.client.completions.requests[6]
-        self.assertEqual(next_request["extra_body"], {"thinking": {"type": "disabled"}})
+        self.assertEqual(next_request["extra_body"], {"thinking": {"type": "enabled"}})
         self.assertTrue(any(message.get("role") == "assistant" for message in next_request["messages"]))
         self.assertTrue((self.project_dir / "tests/behavior.test.js").is_file())
 
@@ -570,7 +570,7 @@ class ImplementBudgetTests(unittest.TestCase):
             max_tool_calls=None,
             scripted=[
                 *[_FakeMessage([_read_files_call(["backend.js"])], reasoning_content="analysis") for _ in range(3)],
-                _FakeMessage([replace]),
+                _FakeMessage([replace], reasoning_content="repair inspected source"),
                 _FakeMessage(None, "done"),
             ],
             env_overrides={
@@ -586,11 +586,31 @@ class ImplementBudgetTests(unittest.TestCase):
             project_tools=self.tools, repair_feedback="backend test failed",
         ))
         rescue_request = model.client.completions.requests[3]
-        self.assertEqual(rescue_request["tool_choice"], {
-            "type": "function", "function": {"name": "replace_text"},
-        })
+        self.assertEqual(rescue_request["tool_choice"], "auto")
+        self.assertEqual(rescue_request["extra_body"]["thinking"]["type"], "enabled")
         self.assertIn("function broken()", json.dumps(rescue_request["messages"]))
         self.assertIn("return true;", (self.project_dir / "backend.js").read_text(encoding="utf-8"))
+
+    def test_focused_thinking_edit_can_create_missing_test_files(self) -> None:
+        self.tools.write_file("backend.js", "export const answer = 42;")
+        create_test = _FakeToolCall("add-test", "write_files", json.dumps({"files": [{
+            "path": "tests/behavior.test.js",
+            "content": "import { answer } from '../backend.js';\nassert.equal(answer, 42);",
+        }]}))
+        model = _make_client(None, None, [
+            *[_FakeMessage([_read_files_call(["backend.js"])], reasoning_content="inspect") for _ in range(3)],
+            _FakeMessage([_read_call("backend.js")], reasoning_content="blocked inspection"),
+            _FakeMessage([create_test], reasoning_content="supply the missing test"),
+            _FakeMessage(None, "done"),
+        ], {"MODEL": "deepseek-flash", "ARCBENCH_MAX_IDLE_TOOL_TURNS": "6"})
+        model.client.completions.require_reasoning = True
+        self.assertFalse(model.implement(task_type="web", subtree=self.subtree, plan="complete tests",
+            project_tools=self.tools, repair_feedback="Missing behavior tests"))
+        self.assertTrue((self.project_dir / "tests/behavior.test.js").is_file())
+        requests = model.client.completions.requests
+        self.assertEqual(requests[3]["tool_choice"], "auto")
+        self.assertIn("Only source editing tools", str(requests[4]["messages"][-1]))
+        self.assertEqual(requests[4]["extra_body"]["thinking"]["type"], "enabled")
 
     def test_deepseek_planning_uses_short_low_effort_request(self) -> None:
         model = _make_client(
@@ -1013,7 +1033,9 @@ class ImplementBudgetTests(unittest.TestCase):
         self.assertIn("test plan", serialized_later)
         self.assertIn("END-PAYLOAD-f5.txt", serialized_later)
         self.assertNotIn("END-PAYLOAD-f0.txt", serialized_later)
-        self.assertLess(len(serialized_later), 75_000)
+        # A bounded recent exchange now survives the reset so the next edit can
+        # use its exact source anchors. The configured context ceiling still holds.
+        self.assertLess(len(serialized_later), 100_000)
 
         # Every retained assistant tool call has its matching tool result; compaction
         # must never leave orphan tool messages that break Chat Completions requests.
@@ -1239,6 +1261,17 @@ class ImplementBudgetTests(unittest.TestCase):
             for index in range(6)]
         model, checkpoint = self._run_fixed_checkpoint_sequence(failures)
         self.assertEqual(checkpoint.call_count, 3)
+        self.assertLess(model.model_requests_used, 25)
+
+    def test_uppercase_duplicate_email_diagnostics_do_not_restart_repair_allowance(self):
+        failures = [
+            'REQ-1.1: reject duplicate email with a different username: '
+            'AssertionError: expected 0 to be greater than 0 | Observed DOM snapshot: '
+            f'alerts=["That email address is already registered: TB-USER-179205823183{index}-DXF5Y{index}@EXAMPLE.TEST"]'
+            for index in range(6)]
+        model, checkpoint = self._run_fixed_checkpoint_sequence(failures)
+        self.assertEqual(checkpoint.call_count, 3)
+        self.assertEqual(model.last_implementation_stop_reason, 'unchanged_checkpoint')
         self.assertLess(model.model_requests_used, 25)
 
     def test_a_case_becoming_passing_resets_deferral_despite_generated_accounts(self):

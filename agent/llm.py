@@ -72,9 +72,10 @@ def _fixed_regression_signature(feedback: str) -> tuple[str, ...]:
         parts = failure.split(": ", 2)
         if len(parts) == 3:
             # uniqueTicketBookingAccount emits Date.now() plus up to six base36
-            # characters. Mask this reserved username shape only in diagnostics.
+            # characters. The duplicate-email case uppercases the identifier.
+            # Mask this reserved username shape only in diagnostics.
             parts[2] = re.sub(r"(?<![\w-])tb-user-[0-9]{13}-[a-z0-9]{1,6}(?![\w-])",
-                              "<generated-ticket-account>", parts[2])
+                              "<generated-ticket-account>", parts[2], flags=re.IGNORECASE)
         signatures.append(": ".join(parts))
     return tuple(signatures)
 
@@ -168,6 +169,7 @@ class ModelClient:
         self.tool_seconds = 0.0
         self.last_budget_report: BudgetExhaustion | None = None
         self._requirement_review_cache: tuple[str, str] | None = None
+        self._nonthinking_scopes: set[tuple[str, str, str, str, str]] = set()
         LOGGER.info("Model request policy: deadline_seconds=%g sdk_max_retries=0; read_timeout_seconds=%g; transport=%s; incomplete usage remains unknown",
                     self.client.deadline_seconds, self.client._options['timeout'].read,
                     'assembled_stream' if self.client.assemble_stream else 'complete_json')
@@ -206,6 +208,34 @@ class ModelClient:
         if getattr(self, 'is_official_deepseek', False) and model.casefold() == 'deepseek-v4-pro':
             return DEEPSEEK_PRO_EDIT_MAX_TOKENS
         return MAX_COMPLETION_TOKENS_PER_REQUEST
+
+    @staticmethod
+    def _implementation_scope_key(
+        task_type: str, subtree: dict[str, Any], project_dir: Path | None, model: str,
+    ) -> tuple[str, str, str, str, str] | None:
+        # Missing identity must not merge unrelated anonymous scopes. State is
+        # local to this client and never persists into a new run/client.
+        scope_id = subtree.get("id")
+        if not isinstance(scope_id, str) or not scope_id.strip() or not isinstance(project_dir, Path):
+            return None
+        project = subtree.get("project_requirements")
+        if not isinstance(project, dict):
+            project = subtree
+        fingerprint = hashlib.sha256(json.dumps(project, sort_keys=True,
+            ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
+        return task_type, scope_id, fingerprint, os.path.normcase(str(project_dir.resolve())), model
+
+    @staticmethod
+    def _pure_reasoning_length(response: Any) -> bool:
+        choice = response.choices[0]
+        usage = getattr(response, "usage", None)
+        completion = getattr(usage, "completion_tokens", None)
+        reasoning = getattr(getattr(usage, "completion_tokens_details", None), "reasoning_tokens", None)
+        return (getattr(choice, "finish_reason", None) == "length"
+            and type(completion) is int and completion > 0
+            and type(reasoning) is int and reasoning == completion
+            and not getattr(choice.message, "content", None)
+            and not getattr(choice.message, "tool_calls", None))
 
     def _check_model_budget(self, *, reserve_for_delivery: bool = False) -> None:
         requests_used = getattr(self, "model_requests_used", 0)
@@ -837,10 +867,21 @@ class ModelClient:
         reference_dir: Path | None = None,
         checkpoint_feedback: Callable[[], str] | None = None,
         boundary_feedback: Callable[[], str] | None = None,
+        verification_feedback: Callable[[], str] | None = None,
         token_allowance: int | None = None,
         request_allowance: int | None = None,
     ) -> bool:
         """Run implementation, keeping repair fragments within an atomic request slice."""
+        tool_schemas = list(TOOL_SCHEMAS)
+        if verification_feedback is not None:
+            tool_schemas.append({"type": "function", "function": {
+                "name": "verify_candidate",
+                "description": "Run the complete local build, self-tests, protected public regression and Chromium checks after an atomic edit. Does not roll back source. At most two executions per repair slice; unchanged source reuses the result. This is not formal Stage 3.",
+                "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+            }})
+        verification_runs = 0
+        verified_revision = None
+        verified_feedback = ""
         visual_inputs = self._visual_inputs(subtree, reference_dir)
         if getattr(self, "visual_implementation", "enabled") == "disabled":
             visual_inputs = []
@@ -857,6 +898,14 @@ class ModelClient:
             "If a generated test contradicts the original requirement, correct its expected behavior "
             "to the requirement while retaining meaningful assertions. Fix stale mocks, relative imports "
             "and setup helpers instead of changing correct product behavior to satisfy a faulty test. "
+            "Validate generated positive fixtures after adding uniqueness or retry suffixes: the "
+            "entire resulting value must stay within each documented length bound. When a supposed "
+            "valid fixture is rejected, inspect its returned validation error before blaming persistence. "
+            "Do not invent navigation or storage-key requirements: when successful login must return "
+            "home, preserve that destination even if the sign-in link carries a journey. Test account "
+            "isolation through visible behavior and authenticated API ownership, not an unspecified "
+            "localStorage key. Inspect the actual entry point before assuming provider order: every "
+            "context consumer, including another provider, must be below its provider. "
             "Reconcile access rules across all supplied scenarios: public read-only information must remain "
             "visible when required, while protected forms and mutations still require authentication. "
             "Do not apply a page-wide authentication guard that hides information another requirement "
@@ -920,6 +969,12 @@ class ModelClient:
             "dependencies. If the starter lacks this manifest, create it in the first write "
             "batch before running build or test scripts. If the root test script names "
             "`backend/tests`, create real executable tests there before running it. "
+            "Complete the first scaffold as one coherent write batch: include every relative import, "
+            "stylesheet and asset referenced by the entry and its components. Use .jsx/.tsx for files "
+            "containing JSX and keep import paths consistent, rather than assuming the default Vite "
+            "pipeline parses JSX in .js. Check these inputs before the first frontend build. "
+            "Check the actual test compiler too: a separate vitest.config can override Vite's React "
+            "plugin, so JSX transformation must be configured for both build and test execution. "
             "Run and pass the frontend build from `frontend/`. Keep a usable root-level "
             "package manifest and `start` script that binds to PORT and launches the generated "
             "application; if the root manifest defines `build`, it must also succeed. Do not "
@@ -970,9 +1025,25 @@ class ModelClient:
             "work on unmount or identity changes. In self-tests parse the real Authorization header "
             "format (including Bearer), destroy the prior component tree for an actual reload, and "
             "navigate to search before iterating the next route. "
+            "Async effects must also work under StrictMode setup/cleanup and document reloads. "
+            "Use an effect-local disposed flag and an operation generation to ignore stale success "
+            "and failure callbacks, including sign-in, sign-out and navigation; reset lifecycle state "
+            "on each setup. For fetch work shared with jsdom/Node, prefer this response invalidation "
+            "over cross-realm AbortController signals, which can reject before an HTTP request. "
+            "If cancellation is used, handle abort rejections on every derived promise without "
+            "suppressing genuine request errors. A JSON report with passing assertions and nonzero "
+            "exit is still failed: inspect asynchronous errors; never ignore unhandled errors. "
             "The runner prepared the target project; do not copy or replace a starter template. "
             "When implementation is complete, provide a short summary."
         )
+        if verification_feedback is not None:
+            system_message += (
+                " During this repair use verify_candidate after completing related source edits, "
+                "before declaring completion. It returns the current protected behavioral failures "
+                "as well as self-tests, without reverting your edits. A generated self-test alone "
+                "cannot establish that the active requirement is repaired. Reserve requests to "
+                "read this result and correct remaining failures in the active scope."
+            )
         text_message = (
             requirement_context(task_type, subtree)
             + f"\n\nImplementation plan:\n{plan}"
@@ -1059,6 +1130,7 @@ class ModelClient:
         passing_checkpoint_turn: int | None = None
         write_only_prompted = False
         thinking_disabled_epoch = False
+        scope_key = self._implementation_scope_key(task_type, subtree, project_dir, model)
         self.last_implementation_handoff = False
         self.last_implementation_deferred = False
         self.last_implementation_stop_reason = "error"
@@ -1164,15 +1236,28 @@ class ModelClient:
             nonlocal thinking_disabled_epoch
             # Reset only at a context boundary. Between resets, append complete
             # turns so the provider can reuse the entire previous request prefix.
-            for older in epoch_exchanges:
+            # Retain a bounded suffix of complete exchanges so a just-read source
+            # anchor survives compaction. Dropping every payload made the next
+            # turn reread files instead of using the evidence it had just fetched.
+            retained: list[list[dict[str, Any]]] = []
+            retained_chars = 0
+            for exchange in reversed(epoch_exchanges[-2:]):
+                size = self._message_context_chars(exchange)
+                if retained_chars + size > min(80_000, MAX_CONVERSATION_CHARS // 3):
+                    break
+                retained.insert(0, exchange)
+                retained_chars += size
+            older_exchanges = epoch_exchanges[:-len(retained)] if retained else epoch_exchanges
+            for older in older_exchanges:
                 summary = self._compact_tool_exchange(older[0], older[1:])
                 if summary:
                     compacted_summaries.append(summary)
             del compacted_summaries[:-MAX_COMPACTED_EXCHANGES]
-            epoch_exchanges.clear()
+            epoch_exchanges[:] = retained
             epoch_reads.clear()
             epoch_file_reads.clear()
-            thinking_disabled_epoch = False
+            if not retained:
+                thinking_disabled_epoch = False
             parts = [compact_user_content] if compact_user_content else []
             if checkpoint_note:
                 parts.append("Latest checkpoint verification feedback:\n" + checkpoint_note)
@@ -1193,6 +1278,8 @@ class ModelClient:
             compacted: list[dict[str, Any]] = [system_msg, task_msg]
             if parts:
                 compacted.append({"role": "user", "content": "\n\n".join(parts)})
+            for exchange in retained:
+                compacted.extend(exchange)
             return compacted
 
         def rebase_restored_source() -> None:
@@ -1383,8 +1470,16 @@ class ModelClient:
                 })
             refresh_target = next(iter(required_source_reads.items()), None)
             refresh_tool = ("read_file" if refresh_target[1] == "replacement_match" else "list_files") if refresh_target else None
+            # An optional tool can be ignored until the slice runs out. Reserve
+            # the third-last request for fresh feedback, leaving two for repair.
+            verification_due = (
+                verification_feedback is not None and request_allowance is not None
+                and request_allowance - phase_requests == 3 and verification_runs < 2
+                and len(progress_paths) > initial_writes and refresh_tool is None
+                and verified_revision != (len(progress_paths), getattr(project_tools, "source_revision", 0))
+            )
             write_only = (idle_tool_turns >= getattr(self, "max_idle_tool_turns", DEFAULT_MAX_IDLE_TOOL_TURNS) // 2
-                          and not passing_checkpoint and refresh_tool is None)
+                          and not passing_checkpoint and refresh_tool is None and not verification_due)
             edit_tool = ("write_files" if bootstrap_incomplete else
                 "replace_text" if (resumed_project or repair_text or checkpoint_note or len(progress_paths) > initial_writes) else "write_files")
             if write_only and not write_only_prompted:
@@ -1394,10 +1489,19 @@ class ModelClient:
                     "content": (
                         "You have inspected the project repeatedly without changing a file. "
                         "The next step must be a concrete source or behavior-test edit for this "
-                        f"requirement. Use {edit_tool} now; do not read or list files "
-                        "again. Current check failures:\n" + checkpoint_note[:2_000]
+                        f"requirement. Prefer {edit_tool} for the focused change; "
+                        "write_file or write_files may create missing source or behavior tests. "
+                        "Make a concrete edit now; do not read or list files again. "
+                        "Current check failures:\n" + checkpoint_note[:2_000]
                     ),
                 })
+            if verification_due:
+                conversation.append({"role": "user", "content": (
+                    "Three requests remain in this repair slice. Run verify_candidate now on the current "
+                    "edits; use the remaining two requests to correct its feedback. This diagnostic does "
+                    "not roll back incomplete edits. Complete related file changes before finishing."
+                )})
+            forced_tool = refresh_tool or ("verify_candidate" if verification_due else edit_tool if write_only else None)
             messages = list(conversation)
             try:
                 self._record_model_request()
@@ -1406,10 +1510,12 @@ class ModelClient:
             context_chars = self._message_context_chars(messages)
             request_options: dict[str, Any] = {}
             max_tokens = self._edit_output_cap(model)
+            api_forced_tool = forced_tool
             if getattr(self, "is_deepseek", False):
                 # Keep DeepSeek thinking enabled for implementation by default.
                 # Retained tool-call turns must include their reasoning_content.
-                thinking = "disabled" if thinking_disabled_epoch else (getattr(self, "implementation_thinking", "") or "enabled")
+                thinking = ("disabled" if thinking_disabled_epoch or scope_key in self._nonthinking_scopes
+                    else (getattr(self, "implementation_thinking", "") or "enabled"))
                 request_options["extra_body"] = {
                     "thinking": {"type": thinking}
                 }
@@ -1418,22 +1524,19 @@ class ModelClient:
                     # Low effort preserves thinking while leaving room for tool calls.
                     request_options["reasoning_effort"] = "low"
                     max_tokens = DEEPSEEK_THINKING_IMPLEMENTATION_MAX_TOKENS
-                if write_only or refresh_tool:
-                    # DeepSeek only supports required tool choice outside thinking mode.
-                    # Keep the focused edit bounded while retaining the inspected source.
-                    thinking = "disabled"
-                    request_options["extra_body"] = {"thinking": {"type": thinking}}
-                    request_options.pop("reasoning_effort", None)
-                    max_tokens = self._edit_output_cap(model)
+                    # Named tool_choice is unsupported in thinking mode. Enforce
+                    # the required action locally instead of disabling reasoning
+                    # for every later turn that retains this tool conversation.
+                    api_forced_tool = None
             if getattr(self, "is_glm", False) and self.implementation_thinking:
                 request_options["extra_body"] = {"thinking": {"type": self.implementation_thinking}}
             try:
                 response = self._create_completion("implementation",
                     model=model,
                     messages=messages,
-                    tools=TOOL_SCHEMAS,
-                    tool_choice={"type": "function", "function": {"name": refresh_tool or edit_tool}}
-                        if write_only or refresh_tool else "auto",
+                    tools=tool_schemas,
+                    tool_choice={"type": "function", "function": {"name": api_forced_tool}}
+                        if api_forced_tool else "auto",
                     max_tokens=max_tokens,
                     **request_options,
                 )
@@ -1457,6 +1560,9 @@ class ModelClient:
             ):
                 # Discard the incomplete output and allow one smaller, focused
                 # continuation. Never execute tool calls from a truncated reply.
+                if scope_key is not None and self._pure_reasoning_length(response):
+                    self._nonthinking_scopes.add(scope_key)
+                    LOGGER.info("Pure reasoning output limit: keeping this requirement scope nonthinking across compaction and continuation")
                 LOGGER.warning("DeepSeek implementation output was truncated; retrying one focused tool turn")
                 phase_requests = getattr(self, "model_requests_used", 0) - starting_requests
                 phase_tokens = getattr(self, "prompt_tokens_used", 0) + getattr(self, "completion_tokens_used", 0) - starting_tokens
@@ -1475,6 +1581,7 @@ class ModelClient:
                     "content": (
                         "Your previous response exceeded the output limit and was discarded. "
                         + (f"First complete the required {refresh_tool} of the affected source. " if refresh_tool else
+                           "Run verify_candidate now before making further edits. " if verification_due else
                            "Use the files already inspected. Make one concrete, small tool call now (prefer write_files or replace_text). ")
                         + "Use at most 4,000 characters of new content. Do not repeat the analysis or reread the whole project."
                     ),
@@ -1491,8 +1598,8 @@ class ModelClient:
                     "implementation-retry",
                     model=model,
                     messages=retry_messages,
-                    tools=TOOL_SCHEMAS,
-                    tool_choice={"type": "function", "function": {"name": refresh_tool or edit_tool}},
+                    tools=tool_schemas,
+                    tool_choice={"type": "function", "function": {"name": forced_tool or edit_tool}},
                     max_tokens=self._edit_output_cap(model),
                     **request_options,
                 )
@@ -1571,8 +1678,28 @@ class ModelClient:
                     if stale_path is not None:
                         result = "Tool error: SourceRefreshRequired: " + source_refresh_notice()
                         note_source_failure((stale_path, required_source_reads[stale_path]), result)
-                    elif write_only and tool_call.function.name != edit_tool:
-                        result = f"Only {edit_tool} is available for this focused edit. Make a concrete change now."
+                    elif refresh_tool and api_forced_tool is None and tool_call.function.name not in (
+                        {"read_file", "read_files"} if refresh_tool == "read_file" else {"list_files"}
+                    ):
+                        result = f"Only {refresh_tool} is available until the required source refresh completes. " + source_refresh_notice()
+                        note_source_failure(refresh_target, result)
+                    elif verification_due and tool_call.function.name != "verify_candidate":
+                        result = "Run verify_candidate now; two requests remain after verification for source corrections."
+                    elif write_only and tool_call.function.name not in {"replace_text", "write_file", "write_files"}:
+                        result = "Only source editing tools are available for this focused edit: replace_text, write_file, write_files. Make a concrete change now."
+                    elif tool_call.function.name == "verify_candidate" and verification_feedback is not None:
+                        if arguments != {}:
+                            raise ValueError("verify_candidate takes no arguments")
+                        revision = (len(progress_paths), getattr(project_tools, "source_revision", 0))
+                        if revision == verified_revision:
+                            result = "Unchanged source; previous complete local verification:\n" + verified_feedback
+                        elif verification_runs >= 2:
+                            result = "On-demand verification limit reached for this slice. Finish the active repair; full boundary verification remains mandatory."
+                        else:
+                            verification_runs += 1
+                            verified_feedback = verification_feedback()
+                            verified_revision = (len(progress_paths), getattr(project_tools, "source_revision", 0))
+                            result = verified_feedback
                     elif tool_call.function.name in {"list_files", "read_files", "search_text"} and read_key in epoch_reads:
                         result = (
                             "The same read already returned in this conversation and no project file "
@@ -1606,6 +1733,8 @@ class ModelClient:
                         elif len(progress_paths) > observed_writes:
                             epoch_reads.clear()
                             epoch_file_reads.clear()
+                except ModelRequestInterrupted:
+                    raise
                 except Exception as exc:
                     result = f"Tool error: {type(exc).__name__}: {exc}"
                     if isinstance(arguments, dict):

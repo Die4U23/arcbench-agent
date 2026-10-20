@@ -81,8 +81,11 @@ class RepairPolicyTests(unittest.TestCase):
                               review_requirements=MagicMock(return_value=''))
             model.last_budget_report = None
             tools = SimpleNamespace(written_paths=[], ensure_dependencies=lambda:None)
+            on_demand_reports = []
             def implement(**kwargs):
                 tools.written_paths.append('frontend/src/App.jsx')
+                if kwargs.get('verification_feedback'):
+                    on_demand_reports.append((kwargs['subtree']['id'], kwargs['verification_feedback']()))
                 return False
             model.implement.side_effect = implement
             project = VerificationResult(True, (CheckResult('frontend: npm run build',True,0,'ok'),))
@@ -104,12 +107,21 @@ class RepairPolicyTests(unittest.TestCase):
             self.assertEqual([r['subtree']['id'] for r in repairs], ['REQ-1.1','REQ-2.1','REQ-3.2'])
             self.assertTrue(all(r['subtree']['project_requirements']==tree for r in repairs))
             self.assertTrue(all(r['request_allowance']==12 for r in repairs))
+            for repair in repairs:
+                full_report, focused_task = repair['repair_feedback'].split('\n\nCurrent repair task:\n')
+                self.assertIn(public[0].output, full_report)
+                self.assertTrue(focused_task.startswith('Active repair scope: ' + repair['subtree']['id']))
+                self.assertIn('unrelated generated self-test failure', focused_task)
+            self.assertEqual(len(on_demand_reports), 3)
+            for scope, report in on_demand_reports:
+                self.assertIn(public[0].output, report)
+                self.assertIn('Current repair task:\nActive repair scope: ' + scope, report)
             # Initial verification, three repair slices, fresh final verification,
             # then the independent runtime startup needed for evaluator handoff.
-            self.assertEqual(check.call_count,6)
+            self.assertEqual(check.call_count,9)
             check.assert_called_with(config.output_dir, {}, startup_only=True)
             self.assertEqual(sum(not call.kwargs.get('startup_only', False)
-                                 for call in check.call_args_list), 5)
+                                 for call in check.call_args_list), 8)
             self.assertFalse(result.passed)
             self.assertTrue(result.ready_for_evaluation)
             remaining = next(item for item in result.checks if item.name == PUBLIC_CHECK)
@@ -176,6 +188,25 @@ class RepairPolicyTests(unittest.TestCase):
                 self.assertIn('authentication for booking submission and private saved results', feedback)
                 self.assertIn('passing signed-out submission rejection', feedback)
                 self.assertNotIn('Multiple matching locator nodes', feedback)
+
+    def test_zero_word_boundary_text_checks_alias_semantics_without_changing_other_diagnoses(self):
+        for kind, expression, count, expected in (
+            ('text', r'/\bParis\b/', '+0', True),
+            ('text', r'/\bParis\b/', '2', False),
+            ('text', '/train information/i', '0', False),
+            ('role', r'textbox name=/\bName\b/', '0', False),
+        ):
+            with self.subTest(kind=kind, expression=expression, count=count):
+                failure = (f'REQ-3.2: review: Strict visibility {kind} {expression} must resolve once: '
+                           f'expected {count} to be 1 // Object.is equality')
+                result = VerificationResult(False, (CheckResult(PUBLIC_CHECK, False, 1, failure),))
+                feedback = repair_guidance(result, 'REQ-3.2')
+                self.assertEqual('A whole-word text expression' in feedback, expected)
+                self.assertIn(failure, feedback)
+                if expected:
+                    self.assertIn('anchored individual-location', feedback)
+                    self.assertIn("required route's canonical city", feedback)
+                    self.assertNotIn('A whole-word text expression', repair_guidance(result, 'REQ-1.1'))
 
     def test_plain_review_count_failure_inspects_instances_without_inventing_a_locator(self):
         failure = ('REQ-3.2: local probe - one selected-train summary during review: '

@@ -155,7 +155,7 @@ class ModelRequestDeliveryTests(unittest.TestCase):
         self.assertTrue(any(call.kwargs.get("final") is True for call in guard.consider.call_args_list))
         self.assertIsNone(_requirement_test_status(result, "REQ-1"))
         runtime.events.mark_test_passed.assert_not_called()
-        runtime.events.mark_test_failed.assert_not_called()
+        self.assertEqual([call.args[0] for call in runtime.events.mark_test_failed.call_args_list], ['ROOT'])
         report = json.loads((root / ".arc/delivery-report.json").read_text(encoding="utf-8"))
         self.assertFalse(report["local_verification_passed"])
         self.assertEqual(report["formal_acceptance"], "pending")
@@ -306,7 +306,7 @@ class ModelRequestDeliveryTests(unittest.TestCase):
         self.assertFalse(outcome.result.passed)
         self.assertTrue(outcome.result.ready_for_evaluation)
         outcome.runtime.events.mark_test_passed.assert_not_called()
-        outcome.runtime.events.mark_test_failed.assert_not_called()
+        self.assertEqual([call.args[0] for call in outcome.runtime.events.mark_test_failed.call_args_list], ['ROOT'])
         for node_id in ("REQ-1", "REQ-2"):
             self.assertIsNone(_requirement_test_status(outcome.result, node_id))
         self.assertTrue(any(call.kwargs.get("final") is True for call in outcome.guard.consider.call_args_list))

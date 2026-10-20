@@ -120,8 +120,9 @@ class DeliveryTests(unittest.TestCase):
             model.review_requirements.assert_not_called()
             self.assertEqual(model.implement.call_count, 1)
             runtime.events.mark_test_passed.assert_not_called()
-            runtime.events.mark_test_failed.assert_not_called()
-            runtime.traceability.set_test_pass_status.assert_called_once_with("TEST-REQ-1", None)
+            self.assertEqual([call.args[0] for call in runtime.events.mark_test_failed.call_args_list], ['ROOT'])
+            runtime.traceability.set_test_pass_status.assert_any_call("TEST-REQ-1", None)
+            runtime.traceability.set_test_pass_status.assert_any_call("TEST-ROOT", False)
 
     def test_global_failures_and_unrun_audits_do_not_fail_every_requirement(self):
         for result in (candidate(), VerificationResult(False, (

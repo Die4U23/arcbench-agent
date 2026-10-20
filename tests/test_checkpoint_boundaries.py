@@ -11,6 +11,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 from agent.candidate_checkpoint import CandidateCheckpoint, PUBLIC_CHECK
+from agent.llm import _fixed_regression_signature
 from agent.model_transport import ModelRequestInterrupted
 from agent.orchestrator import _prepare_local_candidate, _repair_feedback, run_model_agent
 from agent.requirements import RequirementModule
@@ -102,6 +103,38 @@ class BoundaryFixture:
 
 @_sandbox_mock.patch("agent.sandbox_context._WORKER", True)
 class CheckpointBoundaryTests(unittest.TestCase):
+    def test_restored_source_keeps_rejected_build_diagnostic_without_failing_current_build(self):
+        with TemporaryDirectory() as directory:
+            fixture = BoundaryFixture(Path(directory))
+            fixture.tools.write_files([{'path': 'frontend/src/provider.js', 'content': 'new'}])
+            with ExitStack() as stack:
+                fixture.install_checks(stack)
+                result = _prepare_local_candidate(fixture.config, fixture.tree, fixture.guard,
+                                                  fixture.tools)
+            self.assertEqual(fixture.source(), ('old', 'old'))
+            self.assertTrue(next(check.passed for check in result.checks
+                                 if check.name == 'frontend: npm run build'))
+            note = next(check.output for check in result.checks
+                        if check.name == 'candidate regression prevention')
+            self.assertIn('before restore; these are not current-source results', note)
+            self.assertIn('frontend: npm run build: exit=1', note)
+            self.assertIn('shared import contract', _repair_feedback(result))
+            self.assertFalse(result.passed)  # The restored baseline still needs its upgrade.
+
+    def test_rejected_case_diagnostics_do_not_become_current_failure_signatures(self):
+        with TemporaryDirectory() as directory:
+            fixture = BoundaryFixture(Path(directory))
+            rejected = CheckResult(PUBLIC_CHECK, False, 1,
+                'REQ-9.1: rejected assertion: expected 1 to equal 2\n' + 'x' * 20000,
+                case_statuses=fixture.public()[0].case_statuses)
+            fixture.tools.write_files([{'path': 'frontend/src/provider.js', 'content': 'new'}])
+            note = fixture.guard.consider((*fixture.build().checks, rejected))
+            current = 'REQ-1.1: current assertion: expected 0 to equal 1'
+            self.assertIn('REQ-9.1: rejected assertion', note)
+            self.assertLess(len(note), 9000)
+            self.assertEqual(_fixed_regression_signature(current + '\n' + note), (current,))
+            self.assertEqual(fixture.source(), ('old', 'old'))
+
     def test_atomic_repair_completes_related_files_before_full_boundary(self):
         with TemporaryDirectory() as directory:
             fixture = BoundaryFixture(Path(directory))

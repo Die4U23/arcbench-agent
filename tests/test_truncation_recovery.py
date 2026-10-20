@@ -58,7 +58,7 @@ class TruncationRecoveryTests(unittest.TestCase):
             self.assertEqual(model.completion_tokens_used, 800)
             self.assertFalse((root/'partial.js').exists())
             self.assertFalse((root/'retry-partial.js').exists())
-            self.assertIn('deferred', runtime.events.mark_implementation_done.call_args.args[1])
+            runtime.events.mark_implementation_done.assert_not_called()
             model.log_usage.assert_called_once()
 
 

@@ -4,14 +4,45 @@ from pathlib import Path
 import tempfile
 
 from agent.browser_contract import browser_guard_result
+from agent.booking_completion import completion_result
 from agent.native_verification import _combine, _run_owned_browser
 from agent.repair_policy import failed_behavior_ids, repair_guidance
 from agent.candidate_checkpoint import PUBLIC_CHECK
-from agent.station_units import check_locations, unavailable, CASES
+from agent.station_units import check_locations, check_search_presentation, unavailable, CASES
 from agent.verify import CheckResult, VerificationResult
 
 
 class StationUnitTests(unittest.TestCase):
+    def test_real_chromium_reference_count_and_time_captions(self):
+        from playwright.sync_api import sync_playwright
+        from agent.visual_acceptance import _ensure_chromium
+        with sync_playwright() as playwright:
+            browser = _ensure_chromium(playwright)
+            try:
+                page = browser.new_page()
+                examples = (
+                    ('<p>1 train found</p><time>06:26</time><time>12:20</time>', 'result count'),
+                    ('<p>1 result</p><time>06:26</time><time>12:20</time>', 'Departure time'),
+                    ('<p>1 result</p><p hidden>Departure time Arrival time</p>', 'Departure time'),
+                    ('<p>2 results</p><p>Departure time 06:26 Arrival time 12:20</p>', 'result count'),
+                    ('<p>1 result</p><p>1 result</p><p>Departure time Arrival time</p>', 'result count'),
+                )
+                for markup, error in examples:
+                    with self.subTest(markup=markup):
+                        page.set_content(markup)
+                        with self.assertRaisesRegex(ValueError, error):
+                            check_search_presentation(page, 1)
+                for markup, count in (
+                    ('<p>(1 result)</p><p>Departure time <time>06:26</time></p>'
+                     '<p>Arrival time <time>12:20</time></p>', 1),
+                    ('<p>53 results</p><table><tr><th>Departure time</th>'
+                     '<th>Arrival time</th></tr></table>', 53),
+                ):
+                    page.set_content(markup)
+                    check_search_presentation(page, count)
+            finally:
+                browser.close()
+
     def test_real_chromium_rejects_joined_aliases_and_accepts_individual_locations(self):
         from playwright.sync_api import sync_playwright
         from agent.visual_acceptance import _ensure_chromium
@@ -52,11 +83,14 @@ class StationUnitTests(unittest.TestCase):
              patch('agent.native_verification._wait_for_server'), \
              patch('agent.native_verification._stop_owned_server') as stop, \
              patch('agent.native_verification.verify_browser_contract') as original_probe, \
-             patch('agent.native_verification.verify_station_units',return_value=locations) as location_probe:
+             patch('agent.native_verification.verify_station_units',return_value=locations) as location_probe, \
+             patch('agent.native_verification.verify_booking_completion',
+                   return_value=completion_result(True,'passed')) as completion_probe:
             result=_run_owned_browser(Path(directory),original)
             self.assertTrue(result.passed)
             original_probe.assert_not_called()
             location_probe.assert_called_once()
+            completion_probe.assert_called_once()
             stop.assert_called_once_with(server.return_value)
 
 

@@ -260,7 +260,7 @@ class SourceToolFailureRecoveryTests(unittest.TestCase):
             self.assertNotIn("wrong two", context)
             self.assertEqual(model.client.completions.requests[4]["tool_choice"], "auto")
 
-    def test_recovery_read_works_with_deepseek_required_tool_choice(self):
+    def test_recovery_read_preserves_deepseek_thinking(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             tools = self.project(root)
@@ -269,10 +269,30 @@ class SourceToolFailureRecoveryTests(unittest.TestCase):
                 _FakeMessage(None, "done")], {"MODEL": "deepseek-flash", "OPENAI_BASE_URL": "https://api.deepseek.com"})
             self.implement(model, tools)
             recovery = model.client.completions.requests[2]
-            self.assertEqual(recovery["extra_body"], {"thinking": {"type": "disabled"}})
-            self.assertNotIn("reasoning_effort", recovery)
-            self.assertEqual(recovery["tool_choice"]["function"]["name"], "read_file")
+            self.assertEqual(recovery["extra_body"], {"thinking": {"type": "enabled"}})
+            self.assertEqual(recovery["reasoning_effort"], "low")
+            self.assertEqual(recovery["tool_choice"], "auto")
+            self.assertEqual(model.client.completions.requests[3]["extra_body"]["thinking"]["type"], "enabled")
             self.assertTrue(model.last_implementation_handoff)
+
+    def test_thinking_refresh_refuses_unrelated_write_before_execution(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            tools = self.project(root)
+            scripted = [message(replace("wrong one")), message(replace("wrong two")),
+                message(call("write_file", path=OTHER, content="must not execute"))]
+            for response in scripted:
+                response.reasoning_content = "inspect and repair source"
+            model = _make_client(None, None, scripted, {"MODEL": "deepseek-flash"})
+            model.client.completions.require_reasoning = True
+            self.implement(model, tools)
+            self.assertEqual((root / OTHER).read_text(), "other")
+            self.assertEqual((root / SOURCE).read_text(), BASELINE)
+            self.assertEqual(model.last_implementation_stop_reason, "repeated_tool_failure")
+            self.assertFalse(any(c.args[0] == "write_file" for c in tools.call.call_args_list))
+            request = model.client.completions.requests[2]
+            self.assertEqual(request["tool_choice"], "auto")
+            self.assertEqual(request["extra_body"]["thinking"]["type"], "enabled")
 
 
 if __name__ == "__main__":

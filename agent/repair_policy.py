@@ -5,6 +5,8 @@ import re
 
 from .candidate_checkpoint import PUBLIC_CHECK
 from .browser_contract import BROWSER_CASE, BROWSER_CHECK
+from .booking_completion import CASE as COMPLETION_CASE
+from .station_units import CASES as LOCATION_CASES
 from .ticketbooking_contract import PUBLIC_CASES
 from .verify import VerificationResult
 
@@ -64,6 +66,9 @@ def failed_behavior_ids(result: VerificationResult) -> tuple[str, ...]:
         booking_name_failure = (native.output.startswith('search and booking with real CSS and backend:')
             and 'get_by_role("textbox"' in native.output and '^name$' in native.output)
         native_ids = native.requirement_ids
+        if (dict(native.case_statuses).get(BROWSER_CASE) == 'passed'
+                and dict(native.case_statuses).get(COMPLETION_CASE) == 'failed'):
+            native_ids = ('REQ-3.2', *(node for node in native_ids if node != 'REQ-3.2'))
         if original_failed and booking_name_failure and 'REQ-3.2' in native_ids:
             native_ids = ('REQ-3.2', *(node for node in native_ids if node != 'REQ-3.2'))
         # A native registration blocker can invalidate many later journeys even
@@ -87,16 +92,45 @@ def focused_subtree(tree: dict, requirement_id: str) -> dict | None:
     return None
 
 
+def _native_failure_families(native) -> set[str]:
+    statuses = dict(native.case_statuses)
+    if statuses.get(BROWSER_CASE) != 'passed':
+        return set(native.requirement_ids)
+    families = set()
+    if statuses.get(COMPLETION_CASE) == 'failed':
+        families.add('REQ-3.2')
+    if any(statuses.get(case) == 'failed' for case in LOCATION_CASES):
+        families.update(('REQ-2.1', 'REQ-2.2'))
+    return families
+
+
 def repair_guidance(result: VerificationResult, requirement_id: str | None) -> str:
     native = next((check for check in result.checks if check.name == BROWSER_CHECK), None)
-    native_note = ''
-    if native is not None and not native.passed and not native.output.startswith('Not executed:'):
-        native_note = ('Actual original Chromium probe failure (additional local evidence, not Stage 3):\n'
+    scope_note = (f'Active repair scope: {requirement_id}. Resolve this family first in this slice. '
+                  'The complete report also contains other families for regression context; '
+                  'do not switch to their repairs unless evidence shows they block this family. '
+                  'An unrelated generated self-test failure does not by itself block this family. '
+                  'Leave its source and test repairs for their own slice; do not rewrite a passing '
+                  'search or booking display during an authentication feedback repair. '
+                  'Keep related cross-file edits atomic and rerun the complete protected regression.\n\n'
+                  if requirement_id else '')
+    native_note = scope_note
+    if (native is not None and not native.passed and not native.output.startswith('Not executed:')
+            and (not requirement_id or requirement_id in _native_failure_families(native))):
+        native_note += ('Actual Chromium verification failure (original probe and additional local checks, not Stage 3):\n'
                        + native.output + '\nRepair this first blocking native interaction before later '
                        'jsdom failures. getByLabel with an anchored expression uses associated label '
                        'text; a radio accessible role name alone does not establish that exact label '
                        'selector matches. Inspect whitespace and explicit aria-label in the rendered '
                        'control. Keep the published selector and original probe unchanged.\n\n')
+        if dict(native.case_statuses).get(COMPLETION_CASE) == 'failed':
+            native_note += ('The completion probe continues beyond review to confirmation and document reload. '
+                            'Fix every reported stage, not only its first assertion. Compare the actual '
+                            'backend response keys with the success UI and restoration predicate; verify '
+                            'both identifier type and field name. Persist the owned selected journey and '
+                            'confirmed reference across document reload using the real API contract. '
+                            'Do not repeat the journey summary in review or success, and do not hide '
+                            'required passenger details to avoid duplicate matches.\n\n')
         if 'individual visible named location' in native.output:
             native_note += ('The location aliases in the requirement identify supported city/station '
                             'names. Render departure and arrival as separate readable named units, '
@@ -132,6 +166,15 @@ def repair_guidance(result: VerificationResult, requirement_id: str | None) -> s
                      'conditional rendering and early returns, then any real API error or validation '
                      'feedback. A missing heading or booking number can be a blocked flow rather '
                      'than a wording defect; establish which interaction was reached.')
+    if any('Strict visibility text' in line and r'\b' in line and
+           re.search(r'\bexpected \+?0 to be 1\b', line) for line in visibility_lines):
+        notes.append('A whole-word text expression can match zero nodes even when a longer alias '
+                     'contains the same letters. Compare the exact expression with the rendered text '
+                     'before changing routing or authentication. For journey endpoints, use the '
+                     'required route\'s canonical city value in one separate visible location node; '
+                     'do not append a slash/station alias or merge it with time/route text. Satisfy '
+                     'both the whole-word city expression and the anchored individual-location '
+                     'check together, rather than alternating between two failing representations.')
     if any(count > 1 for count in visibility_counts):
         notes.append('Multiple matching locator nodes: inspect every rendered match and accessible '
                      'name. For text locators, include city substrings inside station names, headings '
@@ -165,7 +208,10 @@ def repair_guidance(result: VerificationResult, requirement_id: str | None) -> s
                      'including the date. Visible example dates, result headings and train-card '
                      'dates can all match the same substring locator. Inspect actual current '
                      'SearchForm, HomePage and result-card sources and keep required facts visible; '
-                     'a comment saying the criteria appear once does not establish DOM uniqueness.')
+                     'a comment saying the criteria appear once does not establish DOM uniqueness. '
+                     'Match the supplied search-results reference with an accurate N result(s) count '
+                     'and visible Departure time / Arrival time captions or column headings. '
+                     'These additional local presentation checks are not identified official failures.')
     if 'REQ-2.2' in families:
         notes.append('The published train-selection cases search and select a train without first '
                      'signing in. Inspect frontend/src/pages/HomePage.jsx and BookingPage.jsx, or '

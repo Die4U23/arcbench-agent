@@ -3,10 +3,12 @@ from __future__ import annotations
 import json
 import hashlib
 import fnmatch
+import logging
 import os
 import shutil
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 from .command_output import compact_command_output
@@ -20,6 +22,7 @@ MAX_BATCH_OUTPUT_CHARS = 40_000
 MAX_BATCH_SCRIPTS = 3
 IGNORED_DIRS = {".git", ".arc", "node_modules", "dist", "build", ".venv", "venv"}
 ALLOWED_PROJECT_SCRIPTS = {"build", "test", "lint", "typecheck", "check"}
+LOGGER = logging.getLogger(__name__)
 
 TOOL_SCHEMAS = [
     {
@@ -514,26 +517,55 @@ class ProjectTools:
                         "backend/tests has no executable JavaScript tests; create real backend tests "
                         "before running the root test script"
                     )
-        self.ensure_dependencies()
-        npm = shutil.which("npm") or shutil.which("npm.cmd")
-        if not npm:
-            raise RuntimeError("npm was not found on PATH")
-        command = [npm, "run", script]
-        kwargs: dict[str, Any] = {
-            "cwd": package_dir,
-            "capture_output": True,
-            "text": True,
-            "encoding": "utf-8",
-            "errors": "replace",
-            "timeout": self.timeout_seconds,
-            "check": False,
-        }
-        # Windows command shims require a shell. The script name is strictly allowlisted above.
-        if os.name == "nt" and npm.lower().endswith((".cmd", ".bat")):
-            command_text = f'"{npm}" run {script}'
-            result = subprocess.run(command_text, shell=True, **kwargs)
-        else:
-            result = subprocess.run(command, **kwargs)
+        dependency_seconds = None
+        command_seconds = None
+        exit_code = None
+        status = "dependency_error"
+        try:
+            started = time.perf_counter()
+            try:
+                self.ensure_dependencies()
+            finally:
+                dependency_seconds = time.perf_counter() - started
+            status = "command_not_started"
+            npm = shutil.which("npm") or shutil.which("npm.cmd")
+            if not npm:
+                raise RuntimeError("npm was not found on PATH")
+            command = [npm, "run", script]
+            kwargs: dict[str, Any] = {
+                "cwd": package_dir,
+                "capture_output": True,
+                "text": True,
+                "encoding": "utf-8",
+                "errors": "replace",
+                "timeout": self.timeout_seconds,
+                "check": False,
+            }
+            status = "command_error"
+            started = time.perf_counter()
+            try:
+                # Windows command shims require a shell. The script name is strictly allowlisted above.
+                if os.name == "nt" and npm.lower().endswith((".cmd", ".bat")):
+                    command_text = f'"{npm}" run {script}'
+                    result = subprocess.run(command_text, shell=True, **kwargs)
+                else:
+                    result = subprocess.run(command, **kwargs)
+            finally:
+                command_seconds = time.perf_counter() - started
+            exit_code = result.returncode
+            status = "command_completed"
+        finally:
+            # Emit only validated metadata, never manifest command text, process
+            # output, environment, exception messages, or absolute workspace paths.
+            LOGGER.info(
+                "Project script timing: directory=%s script=%s exit_code=%s "
+                "dependency_seconds=%s command_seconds=%s status=%s",
+                json.dumps(package_dir.relative_to(self.project_dir).as_posix(), ensure_ascii=True),
+                script, exit_code,
+                f"{dependency_seconds:.3f}" if dependency_seconds is not None else "not_started",
+                f"{command_seconds:.3f}" if command_seconds is not None else "not_started",
+                status,
+            )
         stdout = result.stdout or ""
         stderr = result.stderr or ""
         combined = (stdout + ("\n" if stdout and stderr else "") + stderr).strip()

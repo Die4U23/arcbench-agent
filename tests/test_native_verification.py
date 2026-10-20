@@ -13,6 +13,36 @@ from agent.verify import CheckResult, VerificationResult
 
 
 class NativeVerificationTests(unittest.TestCase):
+    def test_all_assertions_passed_with_nonzero_exit_is_a_runner_failure(self):
+        public = CheckResult(PUBLIC_CHECK, False, 1, '32/32 passed', (),
+                             tuple((f'case {index}', 'passed') for index in range(32)))
+        placeholder = browser_guard_result(False, 'Not executed: fix preceding jsdom')
+        native = browser_guard_result(True, 'Native executed')
+        with patch('agent.native_verification.original_public_acceptance',
+                   return_value=(public, placeholder)), \
+             patch('agent.native_verification._run_owned_browser', return_value=native):
+            annotated, browser = verify_public_acceptance(Path('generated'), {})
+        self.assertFalse(annotated.passed)
+        self.assertEqual(annotated.exit_code, public.exit_code)
+        self.assertEqual(annotated.case_statuses, public.case_statuses)
+        self.assertEqual(annotated.requirement_ids, public.requirement_ids)
+        self.assertIn('Runner-level failure', annotated.output)
+        self.assertIn('cause is unknown', annotated.output)
+        self.assertIn('before changing passing business behavior', annotated.output)
+        self.assertIs(browser, native)
+        self.assertEqual(failed_behavior_ids(VerificationResult(False, (annotated, browser))), ())
+
+    def test_runner_annotation_does_not_infer_cause_from_incomplete_cases(self):
+        for statuses, exit_code, passed in (((), 1, False),
+                                           ((('case', 'failed'),), 1, False),
+                                           ((('case', 'passed'),), None, False),
+                                           ((('case', 'passed'),), 0, True)):
+            public = CheckResult(PUBLIC_CHECK, passed, exit_code, 'original report', (), statuses)
+            with self.subTest(statuses=statuses, exit_code=exit_code), \
+                 patch('agent.native_verification.original_public_acceptance', return_value=(public,)):
+                checks = verify_public_acceptance(Path('generated'), {})
+            self.assertIs(checks[0], public)
+
     def incomplete_cases(self):
         return (CheckResult(PUBLIC_CHECK, False, 1, 'REQ-3.2: later failure',
                             ('REQ-3.2',), (('REQ-1.1: registration', 'passed'),

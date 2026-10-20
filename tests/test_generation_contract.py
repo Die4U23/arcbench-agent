@@ -32,7 +32,7 @@ class GenerationContractTests(unittest.TestCase):
     def test_search_scope_has_location_rules_without_booking_states(self):
         context = self.context("REQ-2.1")
         self.assertIn("each departure/arrival location in its own visible text node", context)
-        self.assertIn("do not repeat the city", context)
+        self.assertIn("Do not repeat the city", context)
         self.assertNotIn("signed out", context)
         self.assertNotIn("Invalid Place order", context)
         self.assertNotIn("Please confirm", context)
@@ -63,6 +63,14 @@ class GenerationContractTests(unittest.TestCase):
                 self.assertIn(evidence, context)
         self.assertNotIn("Search results:", context)
         self.assertNotIn("signed out:", context)
+
+    def test_location_guidance_preserves_whole_word_and_individual_endpoint_constraints(self):
+        for scope in ('ROOT', 'REQ-2.1', 'REQ-3.1', 'REQ-3.2'):
+            with self.subTest(scope=scope):
+                context = self.context(scope)
+                self.assertIn("required route's canonical city value", context)
+                self.assertIn('whole-word city', context)
+                self.assertNotIn('already supplies that city', context)
 
     def test_folder_scope_includes_only_its_descendants(self):
         context = self.context("REQ-2")

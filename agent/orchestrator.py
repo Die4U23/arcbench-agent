@@ -446,7 +446,8 @@ def _run_model_agent(runtime: AgentRuntime, config: AgentConfig, tree: dict[str,
             if not initial_result.passed:
                 initial_feedback = _repair_feedback(initial_result)
 
-    def checkpoint_feedback(*, include_root: bool = False, allow_restore: bool = False) -> str:
+    def checkpoint_feedback(*, include_root: bool = False, allow_restore: bool = False,
+                            repair_focus: str | None = None) -> str:
         local = _prepare_local_candidate(config, tree, candidate, project_tools,
             include_root=include_root, allow_restore=allow_restore)
         if include_root and allow_restore:
@@ -458,6 +459,8 @@ def _run_model_agent(runtime: AgentRuntime, config: AgentConfig, tree: dict[str,
             LOGGER.info("Implementation checkpoint: current build and test scripts passed")
             return "Current build and test scripts pass. Finish any uncovered requirements and run final checks."
         feedback = _repair_feedback(VerificationResult(False, checks))
+        if repair_focus:
+            feedback += "\n\nCurrent repair task:\n" + repair_guidance(local, repair_focus)
         LOGGER.warning("Implementation checkpoint found %d failing checks:\n%s", len(failures), feedback[:6000])
         return feedback
 
@@ -685,7 +688,9 @@ def _run_model_agent(runtime: AgentRuntime, config: AgentConfig, tree: dict[str,
         feedback = _repair_feedback(result)
         guidance = repair_guidance(result, focus)
         if guidance:
-            feedback = guidance + '\n\n' + feedback
+            feedback = ('Complete verification report (preserve passing behavior; '
+                        'the active repair task follows):\n' + feedback
+                        + '\n\nCurrent repair task:\n' + guidance)
         repair_checkpoint = (
             coverage_repair_checkpoint_feedback
             if any(check.name == "requirement coverage" and not check.passed for check in result.checks)
@@ -721,6 +726,7 @@ def _run_model_agent(runtime: AgentRuntime, config: AgentConfig, tree: dict[str,
                 # Enforce source locally at every slice stop. Coverage audits
                 # run in verify_current_project, outside the tool allocation.
                 boundary_feedback=repair_checkpoint_feedback,
+                verification_feedback=lambda: checkpoint_feedback(include_root=True, repair_focus=focus),
                 request_allowance=REPAIR_REQUEST_ALLOWANCE,
             )
             _raise_if_model_interrupted(model)

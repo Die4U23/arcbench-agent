@@ -5,7 +5,7 @@ import re
 
 from .verify import CheckResult
 
-NAME = 'Native individual journey locations (additional local check, not Stage3)'
+NAME = 'Native journey display (additional local check, not Stage3)'
 ROUTES = (
     ('Shanghai', 'Beijing', 'G532', r'^(?:Shanghai|ShanghaiHongqiao)$', r'^(?:Beijing|BeijingNan)$'),
     ('Beijing', 'Tianjin', 'G561', r'^(?:Beijing|BeijingNan)$', r'^Tianjin$'),
@@ -22,6 +22,19 @@ def check_locations(page, origin_pattern: str, destination_pattern: str):
                              f'matching {pattern}; found {count}. A combined slash-alias/arrow '
                              'route paragraph does not establish an individual location unit.')
         location.wait_for(state='visible', timeout=3000)
+
+
+def check_search_presentation(page, expected_count: int):
+    """Reference-image presentation check, not a reconstruction of hidden helpers."""
+    text = page.locator('body').inner_text()
+    counts = re.findall(r'\b(\d+)\s+results?\b', text, re.I)
+    if counts != [str(expected_count)]:
+        raise ValueError(f'Show one accurate result count as "{expected_count} result(s)" '
+                         f'following the supplied reference; visible counts were {counts}.')
+    for caption in ('Departure time', 'Arrival time'):
+        if not re.search(r'\b' + r'\s+'.join(caption.split()) + r'\b', text, re.I):
+            raise ValueError(f'Show a visible "{caption}" caption or column heading '
+                             'as in the supplied reference, not only unlabeled clock values.')
 
 
 def unavailable(message):
@@ -54,6 +67,9 @@ def verify_station_units(protected: Path):
                         action = page.get_by_role('button', name=re.compile(r'book\s+'+train+'|'+train+r'\s+book', re.I))
                         action.wait_for(state='visible')
                         check_locations(page, origin_pattern, destination_pattern)
+                        stage = 'reference search presentation'
+                        # Each published route fixture contains exactly one matching train.
+                        check_search_presentation(page, 1)
                         stage = 'selected booking entry'
                         action.click()
                         page.get_by_text(train, exact=True).wait_for(state='visible')
@@ -76,7 +92,7 @@ def verify_station_units(protected: Path):
     else:
         passed = len(statuses) == len(CASES) and all(status == 'passed' for _, status in statuses)
         result = CheckResult(NAME, passed, 0 if passed else 1,
-            '\n\n'.join(details) if details else 'Separate named locations verified in both published routes and booking entries; additional local evidence only.',
+            '\n\n'.join(details) if details else 'Separate named locations, reference result count and time captions verified in both published routes and booking entries; additional local evidence only.',
             () if passed else ('REQ-2.1', 'REQ-2.2'), tuple(statuses))
     (protected/'station-units.json').write_text(json.dumps({
         'passed':result.passed,'output':result.output,'case_statuses':result.case_statuses,

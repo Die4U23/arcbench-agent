@@ -208,7 +208,10 @@ def repair_guidance(result: VerificationResult, requirement_id: str | None) -> s
                      'including the date. Visible example dates, result headings and train-card '
                      'dates can all match the same substring locator. Inspect actual current '
                      'SearchForm, HomePage and result-card sources and keep required facts visible; '
-                     'a comment saying the criteria appear once does not establish DOM uniqueness.')
+                     'a comment saying the criteria appear once does not establish DOM uniqueness. '
+                     'Match the supplied search-results reference with an accurate N result(s) count '
+                     'and visible Departure time / Arrival time captions or column headings. '
+                     'These additional local presentation checks are not identified official failures.')
     if 'REQ-2.2' in families:
         notes.append('The published train-selection cases search and select a train without first '
                      'signing in. Inspect frontend/src/pages/HomePage.jsx and BookingPage.jsx, or '

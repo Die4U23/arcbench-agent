@@ -16,7 +16,10 @@ _STATE_RULES = (
      "Render each departure/arrival location in its own visible text node. "
      "Use the required route's canonical city value, not joined city/station aliases; "
      "a city substring inside a station name need not match a whole-word city expression. "
-     "Do not repeat the city in a criteria summary. Keep the selected date and times visible."),
+     "Do not repeat the city in a criteria summary. Keep the selected date and times visible. "
+     "Follow the supplied search-results reference: show the actual count as 'N result(s)' "
+     "and visible 'Departure time' / 'Arrival time' captions or column headings, rather "
+     "than two unlabeled clock values. Derive the count from the displayed search results."),
     (("REQ-2.2", "REQ-3.1"), "Selected journey / signed out",
      "Keep Train Information and the selected train, locations, times and date "
      "visible to the visitor; request sign-in and provide no working booking "

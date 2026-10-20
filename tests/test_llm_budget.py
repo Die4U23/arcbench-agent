@@ -547,6 +547,27 @@ class ImplementBudgetTests(unittest.TestCase):
         self.assertIn("function broken()", json.dumps(rescue_request["messages"]))
         self.assertIn("return true;", (self.project_dir / "backend.js").read_text(encoding="utf-8"))
 
+    def test_focused_thinking_edit_can_create_missing_test_files(self) -> None:
+        self.tools.write_file("backend.js", "export const answer = 42;")
+        create_test = _FakeToolCall("add-test", "write_files", json.dumps({"files": [{
+            "path": "tests/behavior.test.js",
+            "content": "import { answer } from '../backend.js';\nassert.equal(answer, 42);",
+        }]}))
+        model = _make_client(None, None, [
+            *[_FakeMessage([_read_files_call(["backend.js"])], reasoning_content="inspect") for _ in range(3)],
+            _FakeMessage([_read_call("backend.js")], reasoning_content="blocked inspection"),
+            _FakeMessage([create_test], reasoning_content="supply the missing test"),
+            _FakeMessage(None, "done"),
+        ], {"MODEL": "deepseek-flash", "ARCBENCH_MAX_IDLE_TOOL_TURNS": "6"})
+        model.client.completions.require_reasoning = True
+        self.assertFalse(model.implement(task_type="web", subtree=self.subtree, plan="complete tests",
+            project_tools=self.tools, repair_feedback="Missing behavior tests"))
+        self.assertTrue((self.project_dir / "tests/behavior.test.js").is_file())
+        requests = model.client.completions.requests
+        self.assertEqual(requests[3]["tool_choice"], "auto")
+        self.assertIn("Only source editing tools", str(requests[4]["messages"][-1]))
+        self.assertEqual(requests[4]["extra_body"]["thinking"]["type"], "enabled")
+
     def test_deepseek_planning_uses_short_low_effort_request(self) -> None:
         model = _make_client(
             max_turns=None,

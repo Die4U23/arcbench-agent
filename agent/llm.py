@@ -1478,8 +1478,10 @@ class ModelClient:
                     "content": (
                         "You have inspected the project repeatedly without changing a file. "
                         "The next step must be a concrete source or behavior-test edit for this "
-                        f"requirement. Use {edit_tool} now; do not read or list files "
-                        "again. Current check failures:\n" + checkpoint_note[:2_000]
+                        f"requirement. Prefer {edit_tool} for the focused change; "
+                        "write_file or write_files may create missing source or behavior tests. "
+                        "Make a concrete edit now; do not read or list files again. "
+                        "Current check failures:\n" + checkpoint_note[:2_000]
                     ),
                 })
             if verification_due:
@@ -1672,8 +1674,8 @@ class ModelClient:
                         note_source_failure(refresh_target, result)
                     elif verification_due and tool_call.function.name != "verify_candidate":
                         result = "Run verify_candidate now; two requests remain after verification for source corrections."
-                    elif write_only and tool_call.function.name != edit_tool:
-                        result = f"Only {edit_tool} is available for this focused edit. Make a concrete change now."
+                    elif write_only and tool_call.function.name not in {"replace_text", "write_file", "write_files"}:
+                        result = "Only source editing tools are available for this focused edit: replace_text, write_file, write_files. Make a concrete change now."
                     elif tool_call.function.name == "verify_candidate" and verification_feedback is not None:
                         if arguments != {}:
                             raise ValueError("verify_candidate takes no arguments")

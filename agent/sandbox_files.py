@@ -11,6 +11,7 @@ import os
 from pathlib import Path, PurePosixPath
 import stat
 import tempfile
+import unicodedata
 from collections.abc import Mapping
 
 MAX_FILES = 5000
@@ -59,8 +60,9 @@ def validate_relative_path(value: str) -> PurePosixPath:
         not isinstance(value, str)
         or not value
         or "\\" in value
-        or ":" in value
-        or any(ord(ch) < 32 for ch in value)
+        or any(ch in value for ch in ':~<>"|?*')
+        or unicodedata.normalize("NFC", value) != value
+        or any(unicodedata.category(ch) in {"Cc", "Cf"} for ch in value)
     ):
         raise UnsafeSandboxFile("invalid sandbox path")
     parts = value.split("/")
@@ -185,6 +187,15 @@ def apply_snapshot(
     """Apply a bounded export only if the controller workspace has not changed."""
     validate_snapshot(files)
     validate_snapshot(before)
+    spellings: dict[str, str] = {}
+    for name in set(files) | set(before):
+        parts = name.split("/")
+        for count in range(1, len(parts) + 1):
+            prefix = "/".join(parts[:count])
+            key = prefix.casefold()
+            if key in spellings and spellings[key] != prefix:
+                raise UnsafeSandboxFile("case-aliasing rename/export is not portable")
+            spellings[key] = prefix
     root = root.resolve(strict=True)
     if snapshot_project(root) != dict(before):
         raise UnsafeSandboxFile("host project changed during sandbox execution")

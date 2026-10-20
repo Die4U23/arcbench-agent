@@ -58,6 +58,10 @@ class DockerBoundaryTests(unittest.TestCase):
         self.assertEqual(run[run.index("--cap-drop") + 1], "ALL")
         self.assertIn("--read-only", run)
         self.assertIn("--pull=never", run)
+        for name in ("HTTP_PROXY", "HTTPS_PROXY", "FTP_PROXY", "ALL_PROXY", "NO_PROXY"):
+            for key in (name, name.lower()):
+                self.assertIn(key + "=", run)
+                self.assertEqual(run[run.index(key + "=") - 1], "--env")
         self.assertNotIn("FAKE_API_KEY", kwargs["env"])
         self.assertNotIn(str(self.root), " ".join(run))
         self.assertFalse(any("/var/run/docker.sock" in arg for arg in run))

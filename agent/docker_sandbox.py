@@ -49,6 +49,7 @@ _CLI_ENV = {
     "DOCKER_HOST",
 }
 _MAX_RESPONSE = 48 * 1024 * 1024
+_PROXY_NAMES = ("HTTP_PROXY", "HTTPS_PROXY", "FTP_PROXY", "ALL_PROXY", "NO_PROXY")
 
 
 def _encode(files: dict[str, bytes]) -> dict[str, str]:
@@ -200,7 +201,7 @@ class DockerSandbox:
                 "--pids-limit",
                 "256",
                 "--memory",
-                "1024m",
+                "2048m",
                 "--cpus",
                 "2",
                 "--log-driver",
@@ -210,7 +211,7 @@ class DockerSandbox:
                 "--tmpfs",
                 "/work:rw,nosuid,nodev,size=512m,mode=0700,uid=1000,gid=1000",
                 "--tmpfs",
-                "/tmp:rw,nosuid,nodev,size=256m,mode=1777",
+                "/tmp:rw,nosuid,nodev,size=1024m,mode=1777",
                 "--mount",
                 f"type=bind,src={request},dst=/input/request.json,readonly",
                 "--env",
@@ -228,6 +229,17 @@ class DockerSandbox:
                 "agent.sandbox_worker",
                 "/input/request.json",
             ]
+            # Docker config.json can inject credential-bearing proxy variables
+            # independently of the CLI process environment. Explicit empty values
+            # override both upper/lowercase client defaults.
+            image_position = args.index("--entrypoint")
+            proxy_flags = [
+                value
+                for name in _PROXY_NAMES
+                for key in (name, name.lower())
+                for value in ("--env", key + "=")
+            ]
+            args[image_position:image_position] = proxy_flags
             try:
                 completed = self._command(
                     args, timeout=timeout + 15, limit=_MAX_RESPONSE

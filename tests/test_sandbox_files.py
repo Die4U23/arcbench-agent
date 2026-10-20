@@ -39,6 +39,14 @@ class SandboxFilesTests(unittest.TestCase):
             ".npmrc",
             ".env.production",
             "a/CON.txt",
+            "git~1/config",
+            ".g\u200cit/config",
+            "cafe\u0301.txt",
+            "GIT~2/hooks/post-checkout",
+            "nested/longna~1/file",
+            "a*",
+            "a?",
+            "a|",
             "a.",
             "a ",
         ):
@@ -46,10 +54,30 @@ class SandboxFilesTests(unittest.TestCase):
                 files.apply_snapshot(self.root, {name: b"bad"}, before={})
         self.assertEqual(list(self.root.iterdir()), [])
 
+    def test_short_alias_export_never_changes_git_metadata(self):
+        (self.root / ".git").mkdir()
+        (self.root / ".git/config").write_text("trusted")
+        with self.assertRaises(files.UnsafeSandboxFile):
+            files.apply_snapshot(self.root, {"git~1/config": b"malicious"}, before={})
+        self.assertEqual((self.root / ".git/config").read_text(), "trusted")
+
     def test_case_and_file_directory_collisions_are_rejected(self):
         for payload in ({"A": b"a", "a": b"b"}, {"a": b"a", "a/b": b"b"}):
             with self.assertRaises(files.UnsafeSandboxFile):
                 files.validate_snapshot(payload)
+
+    def test_case_only_renames_are_rejected_before_any_write(self):
+        (self.root / "readme.md").write_bytes(b"old")
+        before = files.snapshot_project(self.root)
+        with self.assertRaises(files.UnsafeSandboxFile):
+            files.apply_snapshot(self.root, {"README.md": b"new"}, before=before)
+        self.assertEqual((self.root / "readme.md").read_bytes(), b"old")
+        (self.root / "src").mkdir()
+        (self.root / "src/a.js").write_bytes(b"source")
+        before = files.snapshot_project(self.root)
+        with self.assertRaises(files.UnsafeSandboxFile):
+            files.apply_snapshot(self.root, {"Src/b.js": b"new"}, before=before)
+        self.assertEqual((self.root / "src/a.js").read_bytes(), b"source")
 
     def test_changes_on_host_abort_export(self):
         (self.root / "a").write_bytes(b"first")

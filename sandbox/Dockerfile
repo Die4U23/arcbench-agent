@@ -12,6 +12,15 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 RUN python -m playwright install --with-deps chromium
 COPY sandbox/toolchain/package.json sandbox/toolchain/package-lock.json /opt/toolchain/
 RUN cd /opt/toolchain && npm ci --ignore-scripts --no-audit --no-fund --cache=/opt/npm-cache
+# npm ci caches locked tarballs but fresh generated projects also need registry
+# metadata for offline resolution. Seed reviewed package names/versions without
+# running any package scripts or downloading every foreign-platform tarball.
+RUN cd /opt/toolchain && node -e "const p=require('/usr/local/lib/node_modules/npm/node_modules/pacote'); const lock=require('./package-lock.json'); (async()=>{ for (const [path,item] of Object.entries(lock.packages)) { if (!path || !item.version || !item.resolved) continue; const name=path.split('node_modules/').at(-1); await p.manifest(name+'@'+item.version,{cache:'/opt/npm-cache',registry:'https://registry.npmjs.org/',fullMetadata:true,ignoreScripts:true}); } })().catch(e=>{console.error(e);process.exit(1)});"
+# A no-lock install validates that current cached metadata resolves to cached
+# tarballs. Cache drift fails the image build instead of becoming a runtime trap.
+RUN mkdir /tmp/cache-smoke && cp /opt/toolchain/package.json /tmp/cache-smoke/ \
+    && cd /tmp/cache-smoke && npm install --offline --ignore-scripts --no-audit --no-fund --cache=/opt/npm-cache \
+    && rm -rf /tmp/cache-smoke && du -sh /opt/npm-cache
 COPY agent ./agent
 RUN python -c "from pathlib import Path; from agent.static_names import SCRIPT; Path('/opt/toolchain/check.cjs').write_text(SCRIPT)" \
     && mkdir -p /input /work \

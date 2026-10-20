@@ -52,6 +52,8 @@ class DockerIntegrationTests(unittest.TestCase):
             """
 const fs = require('node:fs'); const os = require('node:os');
 if (process.env.OPENAI_API_KEY || process.env.AWS_SECRET_ACCESS_KEY || process.env.NODE_OPTIONS) process.exit(2);
+for (const name of ['HTTP_PROXY','HTTPS_PROXY','FTP_PROXY','ALL_PROXY','NO_PROXY'])
+  if (process.env[name] || process.env[name.toLowerCase()]) process.exit(5);
 if (Object.keys(os.networkInterfaces()).some(name => name !== 'lo')) process.exit(3);
 if (fs.existsSync('.env') || fs.existsSync(HOST_PATH)) process.exit(4);
 fs.mkdirSync('.git'); fs.writeFileSync('.git/config', 'untrusted');
@@ -66,7 +68,32 @@ fs.writeFileSync('audit.json', JSON.stringify({isolated: true, uid: process.getu
                 "NODE_OPTIONS": "--require=/host-only-injection.js",
             },
         ):
-            result = DockerSandbox().invoke(
+            sandbox = DockerSandbox()
+            endpoint = sandbox._command(
+                ["context", "inspect", "--format", "{{.Endpoints.docker.Host}}"]
+            )
+            self.assertEqual(endpoint.returncode, 0)
+            config = Path(self.temp.name) / "docker-config"
+            config.mkdir()
+            (config / "config.json").write_text(
+                json.dumps(
+                    {
+                        "proxies": {
+                            "default": {
+                                "httpProxy": "http://fake-user:fake-password@proxy.invalid:8080",
+                                "httpsProxy": "http://fake-user:fake-password@proxy.invalid:8080",
+                                "ftpProxy": "http://fake-user:fake-password@proxy.invalid:8080",
+                                "allProxy": "http://fake-user:fake-password@proxy.invalid:8080",
+                                "noProxy": "private-host.invalid",
+                            }
+                        }
+                    }
+                )
+            )
+            sandbox.env.pop("DOCKER_CONTEXT", None)
+            sandbox.env["DOCKER_CONFIG"] = str(config)
+            sandbox.env["DOCKER_HOST"] = endpoint.stdout.decode().strip()
+            result = sandbox.invoke(
                 "project_script",
                 self.root,
                 options={"directory": ".", "script": "test"},
@@ -81,6 +108,23 @@ fs.writeFileSync('audit.json', JSON.stringify({isolated: true, uid: process.getu
             (self.root / ".git/config").read_text(), "trusted-host-metadata"
         )
         self.assertIn("FAKE_HOST_SECRET", (self.root / ".env").read_text())
+
+    def test_cached_dependencies_install_offline_without_a_project_lockfile(self):
+        self.project(
+            "const React = require('react'); if (React.version !== '19.1.1') process.exit(7); require('node:fs').writeFileSync('dependency-ok.txt', React.version);"
+        )
+        package = json.loads((self.root / "package.json").read_text())
+        package["dependencies"] = {"react": "19.1.1"}
+        (self.root / "package.json").write_text(json.dumps(package))
+        result = self.sandbox.invoke(
+            "project_script",
+            self.root,
+            options={"directory": ".", "script": "test"},
+            timeout=120,
+        )
+        self.assertEqual(result["exit_code"], 0)
+        self.assertEqual((self.root / "dependency-ok.txt").read_text(), "19.1.1")
+        self.assertFalse((self.root / "node_modules").exists())
 
     def test_symlink_export_is_rejected_without_host_mutation(self):
         self.project("require('node:fs').symlinkSync('/etc/passwd','escape');")

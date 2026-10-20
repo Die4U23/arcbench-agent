@@ -406,19 +406,63 @@ class ImplementBudgetTests(unittest.TestCase):
         self.assertEqual(model.review_requirements(self.subtree, self.tools), "")
         self.assertEqual(model.model_requests_used, 2)
 
-    def test_truncated_source_audit_is_not_reused_for_an_unseen_tail_change(self) -> None:
+    def test_truncated_source_audit_cannot_approve_an_unseen_tail(self) -> None:
         source = self.project_dir / "frontend/src/App.jsx"
         source.parent.mkdir(parents=True)
         prefix = "//" + "x" * 31_000
-        source.write_text(prefix + "\n// initial tail", encoding="utf-8")
-        model = _make_client(None, None, [
-            _FakeMessage(None, '{"verdict":"pass","issues":[]}'),
-            _FakeMessage(None, _repair_review("inspect unseen source", evidence="//xxx")),
-        ])
+        model = _make_client(None, None, [])
+        for tail in ("initial tail", "changed tail"):
+            source.write_text(prefix + "\n// " + tail, encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "source audit incomplete"):
+                model.review_requirements(self.subtree, self.tools)
+            self.assertIsNone(model._requirement_review_cache)
+        self.assertEqual(model.model_requests_used, 0)
+
+    def test_module_extensions_participate_in_audit_cache(self) -> None:
+        for extension in ("mjs", "cjs"):
+            with self.subTest(extension=extension):
+                name = f"frontend/src/module.{extension}"
+                self.tools.write_file(name, "export const value = 'before';")
+                model = _make_client(None, None, [
+                    _FakeMessage(None, '{"verdict":"pass","issues":[]}'),
+                    _FakeMessage(None, '{"verdict":"pass","issues":[]}'),
+                ])
+                self.assertEqual(model.review_requirements(self.subtree, self.tools), "")
+                self.tools.write_file(name, "export const value = 'after';")
+                self.assertEqual(model.review_requirements(self.subtree, self.tools), "")
+                self.assertEqual(model.model_requests_used, 2)
+                request = json.dumps(model.client.completions.requests[-1])
+                self.assertIn(name, request)
+                self.assertIn("'after'", request)
+
+    def test_truncated_listing_rejects_prior_pass_and_unseen_file_changes(self) -> None:
+        self.tools.write_file("000.js", "// initial")
+        model = _make_client(None, None, [_FakeMessage(None, '{"verdict":"pass","issues":[]}')])
         self.assertEqual(model.review_requirements(self.subtree, self.tools), "")
-        source.write_text(prefix + "\n// changed tail", encoding="utf-8")
-        self.assertIn("inspect unseen source", model.review_requirements(self.subtree, self.tools))
-        self.assertEqual(model.model_requests_used, 2)
+        for index in range(1, 301):
+            self.tools.write_file(f"{index:03}.js", "// production module")
+        for content in ("// original tail", "// modified tail"):
+            self.tools.write_file("300.js", content)
+            with self.assertRaisesRegex(RuntimeError, "source audit incomplete"):
+                model.review_requirements(self.subtree, self.tools)
+            self.assertIsNone(model._requirement_review_cache)
+        self.assertEqual(model.model_requests_used, 1)
+
+    def test_unreadable_production_source_cannot_be_silently_skipped(self) -> None:
+        self.tools.write_file("app.js", "// production source")
+        model = _make_client(None, None, [])
+        with patch.object(self.tools, "read_file", side_effect=FileNotFoundError("gone")):
+            with self.assertRaisesRegex(RuntimeError, "source audit incomplete"):
+                model.review_requirements(self.subtree, self.tools)
+        self.assertEqual(model.model_requests_used, 0)
+
+    def test_total_source_budget_cannot_produce_a_complete_verdict(self) -> None:
+        for index in range(5):
+            self.tools.write_file(f"{index}.js", "//" + "x" * 25_000)
+        model = _make_client(None, None, [])
+        with self.assertRaisesRegex(RuntimeError, "source audit incomplete"):
+            model.review_requirements(self.subtree, self.tools)
+        self.assertEqual(model.model_requests_used, 0)
 
     def test_requirement_change_invalidates_passing_source_audit(self) -> None:
         self.tools.write_file("frontend/src/App.jsx", "export default function App() { return null; }")

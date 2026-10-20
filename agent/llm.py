@@ -589,18 +589,20 @@ class ModelClient:
         sources = []
         source_contents = {}
         remaining = 120_000
-        audit_complete = True
-        for name in project_tools.list_files(".").splitlines():
+        listing = project_tools.list_files(".").splitlines()
+        audit_complete = not any(name.startswith("...[truncated at ") for name in listing)
+        for name in listing:
             parts = Path(name).parts
             if any(part in {"test", "tests", "__tests__"} for part in parts):
                 continue
-            if ".test." in name or ".spec." in name or Path(name).suffix not in {".js", ".jsx", ".ts", ".tsx", ".json"}:
+            if ".test." in name or ".spec." in name or Path(name).suffix not in {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".json"}:
                 continue
             if Path(name).suffix == ".json" and Path(name).name != "package.json":
                 continue
             try:
                 content = project_tools.read_file(name)
             except (ValueError, FileNotFoundError):
+                audit_complete = False
                 continue
             if len(content) > remaining:
                 audit_complete = False
@@ -611,6 +613,15 @@ class ModelClient:
             sources.append(f"--- {name} ---\n{content}")
             source_contents[name] = content
             remaining -= len(content)
+        if not audit_complete:
+            # Neither a prior verdict nor a model seeing only a prefix can
+            # certify the unseen source. Fail explicitly without a model call.
+            self._requirement_review_cache = None
+            raise RequirementReviewError(
+                "Requirement source audit incomplete: file listing or source content "
+                "was truncated, omitted, or unreadable; partition the audit input "
+                "before requesting a complete verdict"
+            )
         messages = [{"role": "system", "content": (
             "Audit production source against every supplied requirement. Green self-tests are not evidence of "
             "coverage. Trace actual entry points, route wiring, mutation APIs and durable state. Check that "

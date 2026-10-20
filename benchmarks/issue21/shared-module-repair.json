@@ -1,0 +1,43 @@
+{
+  "scope": "Synthetic multi-module repair; not platform acceptance",
+  "requirements": {
+    "id": "ROOT",
+    "name": "Checkout library",
+    "children": [
+      {
+        "id": "CHECKOUT",
+        "name": "Shared checkout calculation repair",
+        "description": "Repair the supplied CommonJS modules using Node built-ins. Preserve exports and the public integer-cent contract. Do not mutate inputs. Keep package.json and acceptance.cjs byte-for-byte unchanged. No dependencies or frontend scaffolding.",
+        "children": [
+          {
+            "id": "CHECKOUT.1",
+            "name": "Money validation and rounding",
+            "description": "discount(amount, percent) returns floor(amount * (100-percent)/100). Amount must be a nonnegative safe integer and percent an integer in [0,100]; otherwise throw RangeError. tax(amount, basisPoints) rounds the final integer-cent tax to nearest cent with Math.round(amount * basisPoints / 10000). Both inputs must be nonnegative safe integers, and basisPoints must be at most 10000. Do not use locale strings or floating currency amounts."
+          },
+          {
+            "id": "CHECKOUT.2",
+            "name": "Cart quantities",
+            "description": "subtotal(items) sums price times quantity, returns zero for an empty array and does not sort, replace or mutate items. Each price must be a nonnegative safe integer. Each quantity must be a positive safe integer. Invalid values throw RangeError. Keep calculations in integer cents, permit zero prices, and preserve the CommonJS exports."
+          },
+          {
+            "id": "CHECKOUT.3",
+            "name": "Invoice agreement",
+            "description": "invoice(items, percent, basisPoints) returns exactly {subtotal, discount, tax, payable}. Compute subtotal using the shared cart implementation; discount is the number of cents removed, not the discounted subtotal. Apply shared money.discount once to the complete subtotal, then tax once to that discounted amount. payable equals discounted amount plus tax. All invalid inputs rejected by the shared modules must also be rejected through invoice. Do not duplicate different arithmetic or mutate items. A 101-cent subtotal at 25 percent discount and 1000 basis points tax yields subtotal 101, discount 26, tax 8, payable 83."
+          }
+        ]
+      }
+    ]
+  },
+  "plan": "Inspect the supplied related modules, repair the shared contracts coherently, and run the protected build and test scripts. Keep package.json and acceptance.cjs immutable. Use Node built-ins only. Finish once the fixed acceptance passes; do not add features or weaken validation.",
+  "protected": [
+    "package.json",
+    "acceptance.cjs"
+  ],
+  "files": {
+    "package.json": "{\"name\": \"shared-checkout-trial\", \"private\": true, \"scripts\": {\"build\": \"node --check src/money.cjs && node --check src/cart.cjs && node --check src/invoice.cjs\", \"test\": \"node acceptance.cjs\"}}\n",
+    "src/money.cjs": "function discount(amount, percent) {\n  return Math.round(amount * (100 - percent) / 100);\n}\nfunction tax(amount, basisPoints) {\n  return Math.ceil(amount * basisPoints / 10000);\n}\nmodule.exports = { discount, tax };\n",
+    "src/cart.cjs": "function subtotal(items) {\n  return items.reduce((sum, item) => sum + item.price, 0);\n}\nmodule.exports = { subtotal };\n",
+    "src/invoice.cjs": "const { subtotal } = require('./cart.cjs');\nconst money = require('./money.cjs');\nfunction invoice(items, percent, basisPoints) {\n  const amount = subtotal(items);\n  const discounted = money.discount(amount, percent);\n  const tax = money.tax(amount, basisPoints);\n  return { subtotal: amount, discount: discounted, tax, payable: discounted + tax };\n}\nmodule.exports = { invoice };\n",
+    "acceptance.cjs": "const assert = require('node:assert/strict');\nconst { discount, tax } = require('./src/money.cjs');\nconst { subtotal } = require('./src/cart.cjs');\nconst { invoice } = require('./src/invoice.cjs');\nassert.equal(subtotal([]), 0);\nassert.equal(subtotal([{price:10, quantity:2},{price:3,quantity:4}]),32);\nassert.equal(subtotal([{price:0,quantity:7}]),0);\nfor (const item of [{price:-1,quantity:1},{price:1,quantity:0},{price:1.5,quantity:2},{price:2,quantity:1.5},{price:'2',quantity:1}]) {\n  assert.throws(()=>subtotal([item]),RangeError);\n  assert.throws(()=>invoice([item],0,0),RangeError);\n}\nassert.equal(discount(101,25),75);\nassert.equal(discount(20,100),0);\nassert.equal(discount(20,0),20);\nfor(const args of [[-1,5],[10,101],[10,-1],[10,1.5],['10',10],[NaN,10],[Infinity,10],[Number.MAX_SAFE_INTEGER+1,0]]) {\n  assert.throws(()=>discount(...args),RangeError);\n}\nassert.equal(tax(75,1000),8);\nassert.equal(tax(71,1000),7);\nfor(const args of [[-1,5],[10,10001],[10,-1],[10,1.5],['10',10]]) assert.throws(()=>tax(...args),RangeError);\nassert.deepEqual(invoice([{price:101,quantity:1}],25,1000),{subtotal:101,discount:26,tax:8,payable:83});\nassert.deepEqual(invoice([{price:11,quantity:3},{price:17,quantity:4}],25,1000),{subtotal:101,discount:26,tax:8,payable:83});\nassert.deepEqual(invoice([],0,0),{subtotal:0,discount:0,tax:0,payable:0});\nconst items=Object.freeze([Object.freeze({price:11,quantity:3}),Object.freeze({price:17,quantity:4})]);\nconst before=JSON.stringify(items); invoice(items,25,1000); assert.equal(JSON.stringify(items),before);\nconsole.log('protected shared checkout acceptance passed');\n"
+  }
+}

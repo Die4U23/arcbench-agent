@@ -1,4 +1,7 @@
 """Offline transport failures that used to wait indefinitely after HTTP 200."""
+
+# Legacy fixtures exercise worker internals; host isolation is tested separately.
+import unittest.mock as _sandbox_mock
 import asyncio
 from contextlib import contextmanager
 import json
@@ -76,6 +79,7 @@ def completion_client(deadline=0.08):
                             deadline_seconds=deadline)
 
 
+@_sandbox_mock.patch("agent.sandbox_context._WORKER", True)
 class CompletionTransportTests(unittest.TestCase):
     def test_real_local_socket_keepalive_disconnects_after_deadline(self):
         disconnected = threading.Event()

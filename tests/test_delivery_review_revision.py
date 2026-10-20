@@ -1,3 +1,6 @@
+
+# Legacy fixtures exercise worker internals; host isolation is tested separately.
+import unittest.mock as _sandbox_mock
 from contextlib import ExitStack
 from dataclasses import asdict
 import json
@@ -13,6 +16,7 @@ from agent.requirements import RequirementModule
 from agent.verify import CheckResult, VerificationResult
 
 
+@_sandbox_mock.patch("agent.sandbox_context._WORKER", True)
 class DeliveryReviewRevisionTests(unittest.TestCase):
     def test_final_restore_archives_old_reviews_and_starts_restored_source(self):
         self._run_case(coverage_missing=True)

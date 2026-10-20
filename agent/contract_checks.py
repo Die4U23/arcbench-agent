@@ -158,6 +158,10 @@ def _wait_for_homepage(server, *, timeout: float = 20.0) -> None:
 def verify_public_acceptance(output_dir: Path, tree: dict, *, startup_only: bool = False) -> tuple[CheckResult, ...]:
     if not startup_only and not public_acceptance_context(tree):
         return ()
+    from .sandbox_context import in_worker
+    if not in_worker():
+        from .container_checks import run_checks
+        return run_checks("public", output_dir, options={"tree": tree, "startup_only": startup_only})
     name = "web runtime startup" if startup_only else "public interaction regression (reconstructed jsdom, not Stage 3)"
     frontend = output_dir / "frontend"
     try:

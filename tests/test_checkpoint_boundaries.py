@@ -1,4 +1,7 @@
 """Real candidate protection at diagnostic, module and interruption boundaries."""
+
+# Legacy fixtures exercise worker internals; host isolation is tested separately.
+import unittest.mock as _sandbox_mock
 from contextlib import ExitStack
 import json
 from pathlib import Path
@@ -97,6 +100,7 @@ class BoundaryFixture:
                 boundary_feedback=lambda: self.feedback(boundary=True), **kwargs)
 
 
+@_sandbox_mock.patch("agent.sandbox_context._WORKER", True)
 class CheckpointBoundaryTests(unittest.TestCase):
     def test_atomic_repair_completes_related_files_before_full_boundary(self):
         with TemporaryDirectory() as directory:

@@ -1,4 +1,7 @@
 """Integration must leave budget for all observed failure families."""
+
+# Legacy fixtures exercise worker internals; host isolation is tested separately.
+import unittest.mock as _sandbox_mock
 import re
 import tempfile
 from pathlib import Path
@@ -14,6 +17,7 @@ from agent.ticketbooking_contract import PUBLIC_CASES
 from agent.verify import CheckResult, VerificationResult
 
 
+@_sandbox_mock.patch("agent.sandbox_context._WORKER", True)
 class IntegrationRepairBudgetTests(unittest.TestCase):
     def test_remaining_half_is_computed_from_current_usage_without_resetting_caps(self):
         model = SimpleNamespace(max_total_tokens=10_000_000, max_model_requests=250,

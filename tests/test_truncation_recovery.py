@@ -1,4 +1,7 @@
 """Reproduce the terminal length/length failure through the real orchestrator."""
+
+# Legacy fixtures exercise worker internals; host isolation is tested separately.
+import unittest.mock as _sandbox_mock
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -11,6 +14,7 @@ from agent.verify import CheckResult, VerificationResult
 from tests.test_llm_budget import _FakeMessage, _make_client, _write_call
 
 
+@_sandbox_mock.patch("agent.sandbox_context._WORKER", True)
 class TruncationRecoveryTests(unittest.TestCase):
     def test_truncated_module_without_edits_continues_but_does_not_pass_checks(self):
         with TemporaryDirectory() as directory:

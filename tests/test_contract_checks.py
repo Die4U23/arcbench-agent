@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+# Legacy fixtures exercise worker internals; host isolation is tested separately.
+import unittest.mock as _sandbox_mock
+
 import json
 from pathlib import Path
 import signal
@@ -17,6 +20,7 @@ def tree():
         {"id":node} for node in ("REQ-1.1","REQ-1.2","REQ-2.1","REQ-2.2","REQ-3.1","REQ-3.2")]}
 
 
+@_sandbox_mock.patch("agent.sandbox_context._WORKER", True)
 class ContractCheckTests(unittest.TestCase):
     def setUp(self):
         # Popen is mocked in these tests. Never signal a real process group

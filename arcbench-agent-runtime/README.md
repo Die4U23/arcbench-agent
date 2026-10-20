@@ -29,3 +29,7 @@ runtime.traceability.upsert_requirement(
 runtime.git.ensure_repo()
 runtime.git.commit("REQ-1 (design): Login")
 ```
+
+## Local Git execution boundary
+
+Runtime Git operations are local controller actions. They use explicit runtime identities, ignore global/system Git configuration, disable hooks and fsmonitor, and do not inherit model/cloud credentials. They require an owned project-local `.git` directory; linked metadata/worktree pointers are rejected. This client is not a general-purpose authenticated remote Git wrapper.

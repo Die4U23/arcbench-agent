@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+# Legacy fixtures exercise worker internals; host isolation is tested separately.
+import unittest.mock as _sandbox_mock
+
 import json
 from pathlib import Path
 import tempfile
@@ -26,6 +29,7 @@ def candidate(*, build=True):
     ))
 
 
+@_sandbox_mock.patch("agent.sandbox_context._WORKER", True)
 class DeliveryTests(unittest.TestCase):
     def test_browser_failure_is_preserved_on_budget_handoff_after_real_startup(self):
         from agent.browser_contract import browser_guard_result

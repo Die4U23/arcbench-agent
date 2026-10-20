@@ -1,6 +1,9 @@
 """Missing prerequisites stay failed and tell the implementer what blocked execution."""
 from __future__ import annotations
 
+# Legacy fixtures exercise worker internals; host isolation is tested separately.
+import unittest.mock as _sandbox_mock
+
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -12,6 +15,7 @@ from agent.contract_checks import verify_public_acceptance
 from tests import test_contract_checks as fixtures
 
 
+@_sandbox_mock.patch("agent.sandbox_context._WORKER", True)
 class PublicPrerequisiteDiagnosticsTests(unittest.TestCase):
     def prepare(self, root):
         fixtures.ContractCheckTests.prepare(self, root)

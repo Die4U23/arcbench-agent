@@ -1,3 +1,6 @@
+
+# Legacy fixtures exercise worker internals; host isolation is tested separately.
+import unittest.mock as _sandbox_mock
 import hashlib
 from pathlib import Path
 import shutil
@@ -11,6 +14,7 @@ from agent.verify import verify_project
 
 @unittest.skipUnless(shutil.which('node') and (shutil.which('npm') or shutil.which('npm.cmd')),
                      'Real Node/npm required')
+@_sandbox_mock.patch("agent.sandbox_context._WORKER", True)
 class StaticNameTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()

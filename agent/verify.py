@@ -48,6 +48,9 @@ def _truncate(text: str) -> str:
 
 
 def _run_npm_script(package_dir: Path, script: str) -> CheckResult:
+    from .sandbox_context import in_worker
+    if not in_worker():
+        return CheckResult("project script", False, None, "Use the isolated verify_project entrypoint")
     npm = shutil.which("npm") or shutil.which("npm.cmd")
     if not npm:
         return CheckResult(f"{package_dir.name}: npm run {script}", False, None, "npm was not found on PATH")
@@ -80,6 +83,11 @@ def _run_npm_script(package_dir: Path, script: str) -> CheckResult:
 
 
 def verify_project(project_dir: Path, *, include_root: bool = True) -> VerificationResult:
+    from .sandbox_context import in_worker
+    if not in_worker():
+        from .container_checks import run_checks
+        checks = run_checks("verify_project", project_dir, options={"include_root": include_root})
+        return VerificationResult(bool(checks) and all(check.passed for check in checks), checks)
     from .static_names import verify_frontend_names
     checks: list[CheckResult] = []
     names_check = verify_frontend_names(project_dir)

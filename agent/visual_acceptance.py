@@ -250,6 +250,9 @@ def _reserve_port() -> int:
 
 
 def _start_server(project_dir: Path, task_dir: Path, port: int, log_path: Path) -> subprocess.Popen[Any]:
+    from .sandbox_context import in_worker
+    if not in_worker():
+        raise RuntimeError("Generated servers must run inside the isolated worker")
     npm = shutil.which("npm") or shutil.which("npm.cmd")
     if not npm:
         raise RuntimeError("npm was not found; cannot start the generated application for visual checks")
@@ -326,29 +329,14 @@ def _wait_for_server(process: subprocess.Popen[Any], port: int, log_path: Path) 
 
 
 def _ensure_chromium(playwright: Any) -> Any:
+    from .sandbox_context import in_worker
+    if not in_worker():
+        raise RuntimeError("Chromium must run inside the isolated worker")
     try:
         return playwright.chromium.launch(headless=True)
-    except Exception as first_error:
-        install = subprocess.run(
-            [sys.executable, "-m", "playwright", "install", "chromium"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=BROWSER_INSTALL_TIMEOUT_SECONDS,
-            check=False,
-        )
-        if install.returncode != 0:
-            details = (install.stdout + "\n" + install.stderr).strip()
-            raise RuntimeError(
-                "Headless Chromium is unavailable and automatic browser setup failed. "
-                "Install Playwright's Chromium browser in the Runner environment. "
-                + details[-4000:]
-            ) from first_error
-        try:
-            return playwright.chromium.launch(headless=True)
-        except Exception as exc:
-            raise RuntimeError(f"Could not launch headless Chromium after setup: {exc}") from exc
+    except Exception as exc:
+        raise RuntimeError("Preinstalled Chromium is unavailable; rebuild the trusted sandbox image. "
+                           "Runtime browser downloads and host fallback are disabled.") from exc
 
 
 def _snapshot_expected_state(page: Any, assertion: dict[str, Any]) -> dict[str, Any]:
@@ -565,6 +553,10 @@ def verify_visual_acceptance(
 ) -> VerificationResult:
     if not references:
         return VerificationResult(True, ())
+    from .sandbox_context import in_worker
+    if not in_worker():
+        from .container_visual import verify_isolated_visual
+        return verify_isolated_visual(project_dir, task_dir, references, model)
 
     checks: list[CheckResult] = []
     report: dict[str, Any] = {"version": 1, "cases": [], "flows": []}

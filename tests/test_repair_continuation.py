@@ -1,3 +1,6 @@
+
+# Legacy fixtures exercise worker internals; host isolation is tested separately.
+import unittest.mock as _sandbox_mock
 from contextlib import ExitStack
 import json
 from pathlib import Path
@@ -14,6 +17,7 @@ from agent.requirements import RequirementModule
 from agent.verify import CheckResult, VerificationResult
 
 
+@_sandbox_mock.patch("agent.sandbox_context._WORKER", True)
 class RepairContinuationTests(unittest.TestCase):
     def run_repairs(self, steps, *, families=("REQ-1.1", "REQ-2.1"), status_for=None,
                     complete_report=True, case_names=None, native_ids=()):

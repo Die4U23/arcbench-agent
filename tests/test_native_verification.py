@@ -1,3 +1,6 @@
+
+# Legacy fixtures exercise worker internals; host isolation is tested separately.
+import unittest.mock as _sandbox_mock
 import re
 import socket
 import tempfile
@@ -12,6 +15,7 @@ from agent.repair_policy import failed_behavior_ids, repair_guidance
 from agent.verify import CheckResult, VerificationResult
 
 
+@_sandbox_mock.patch("agent.sandbox_context._WORKER", True)
 class NativeVerificationTests(unittest.TestCase):
     def incomplete_cases(self):
         return (CheckResult(PUBLIC_CHECK, False, 1, 'REQ-3.2: later failure',

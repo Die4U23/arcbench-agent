@@ -1,0 +1,260 @@
+"""Real image/engine tests, enabled only in the dedicated Docker CI job."""
+
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+import subprocess
+import tempfile
+from types import SimpleNamespace
+import unittest
+from unittest.mock import patch
+import uuid
+
+from agent.docker_sandbox import DockerSandbox, IMAGE
+from agent.sandbox_process import SandboxProcessError
+from agent.visual_acceptance import verify_visual_acceptance
+
+
+@unittest.skipUnless(
+    os.environ.get("ARCBENCH_RUN_DOCKER_TESTS") == "1",
+    "run in the explicit Docker integration job",
+)
+class DockerIntegrationTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name) / "project"
+        self.root.mkdir()
+        self.sandbox = DockerSandbox()
+
+    def project(self, source, script="test"):
+        (self.root / "package.json").write_text(
+            json.dumps(
+                {
+                    "name": "sandbox-fixture",
+                    "version": "1.0.0",
+                    "private": True,
+                    "scripts": {script: "node fixture.cjs"},
+                }
+            )
+        )
+        (self.root / "fixture.cjs").write_text(source)
+
+    def test_credentials_network_and_git_metadata_are_isolated(self):
+        (self.root / ".env").write_text("DO_NOT_COPY=FAKE_HOST_SECRET")
+        (self.root / ".git").mkdir()
+        (self.root / ".git/config").write_text("trusted-host-metadata")
+        outside = self.root.parent / "private.txt"
+        outside.write_text("FAKE_OUTSIDE_SECRET")
+        self.project(
+            """
+const fs = require('node:fs'); const os = require('node:os');
+if (process.env.OPENAI_API_KEY || process.env.AWS_SECRET_ACCESS_KEY || process.env.NODE_OPTIONS) process.exit(2);
+if (Object.keys(os.networkInterfaces()).some(name => name !== 'lo')) process.exit(3);
+if (fs.existsSync('.env') || fs.existsSync(HOST_PATH)) process.exit(4);
+fs.mkdirSync('.git'); fs.writeFileSync('.git/config', 'untrusted');
+fs.writeFileSync('audit.json', JSON.stringify({isolated: true, uid: process.getuid()}));
+""".replace("HOST_PATH", json.dumps(str(outside)))
+        )
+        with patch.dict(
+            os.environ,
+            {
+                "OPENAI_API_KEY": "FAKE_HOST_SECRET",
+                "AWS_SECRET_ACCESS_KEY": "FAKE_AWS_SECRET",
+                "NODE_OPTIONS": "--require=/host-only-injection.js",
+            },
+        ):
+            result = DockerSandbox().invoke(
+                "project_script",
+                self.root,
+                options={"directory": ".", "script": "test"},
+                timeout=60,
+            )
+        self.assertEqual(result["exit_code"], 0)
+        self.assertEqual(
+            json.loads((self.root / "audit.json").read_text()),
+            {"isolated": True, "uid": 1000},
+        )
+        self.assertEqual(
+            (self.root / ".git/config").read_text(), "trusted-host-metadata"
+        )
+        self.assertIn("FAKE_HOST_SECRET", (self.root / ".env").read_text())
+
+    def test_symlink_export_is_rejected_without_host_mutation(self):
+        self.project("require('node:fs').symlinkSync('/etc/passwd','escape');")
+        original = (self.root / "fixture.cjs").read_bytes()
+        with self.assertRaises(SandboxProcessError):
+            self.sandbox.invoke(
+                "project_script",
+                self.root,
+                options={"directory": ".", "script": "test"},
+                timeout=60,
+            )
+        self.assertFalse((self.root / "escape").exists())
+        self.assertEqual((self.root / "fixture.cjs").read_bytes(), original)
+
+    def test_offline_missing_dependency_fails_instead_of_host_fallback(self):
+        (self.root / "package.json").write_text(
+            json.dumps(
+                {
+                    "name": "missing-cache-fixture",
+                    "version": "1.0.0",
+                    "private": True,
+                    "dependencies": {"arcbench-not-in-cache-000000": "1.0.0"},
+                }
+            )
+        )
+        with self.assertRaises(SandboxProcessError):
+            self.sandbox.invoke("dependencies", self.root, timeout=60)
+        self.assertFalse((self.root / "node_modules").exists())
+
+    def test_timeout_leaves_unrelated_container_untouched(self):
+        other = "arcbench-control-" + uuid.uuid4().hex
+        subprocess.run(
+            [
+                "docker",
+                "run",
+                "-d",
+                "--rm",
+                "--name",
+                other,
+                "--network",
+                "none",
+                "--memory",
+                "64m",
+                "--user",
+                "1000:1000",
+                "--entrypoint",
+                "python",
+                IMAGE,
+                "-c",
+                "import time; time.sleep(120)",
+            ],
+            check=True,
+            capture_output=True,
+        )
+        try:
+            self.project("setInterval(() => {}, 1000);")
+            with self.assertRaises(SandboxProcessError):
+                self.sandbox.invoke(
+                    "project_script",
+                    self.root,
+                    options={"directory": ".", "script": "test"},
+                    timeout=10,
+                )
+            self.assertEqual(
+                subprocess.run(
+                    ["docker", "inspect", other], capture_output=True
+                ).returncode,
+                0,
+            )
+            owned = subprocess.run(
+                [
+                    "docker",
+                    "ps",
+                    "-a",
+                    "--filter",
+                    "label=arcbench.sandbox.owner",
+                    "--format",
+                    "{{.ID}}",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(owned.stdout.strip(), "")
+        finally:
+            subprocess.run(
+                ["docker", "rm", "-f", other], check=True, capture_output=True
+            )
+
+    def test_detached_child_dies_with_owned_container(self):
+        self.project("""
+const fs = require('node:fs');
+const child = require('node:child_process').spawn(process.execPath,
+  ['-e', 'setInterval(()=>{},1000)'], {detached: true, stdio: 'ignore'});
+fs.writeFileSync('child.json', JSON.stringify({pid: child.pid})); child.unref();
+""")
+        result = self.sandbox.invoke(
+            "project_script",
+            self.root,
+            options={"directory": ".", "script": "test"},
+            timeout=60,
+        )
+        self.assertEqual(result["exit_code"], 0)
+        self.assertGreater(json.loads((self.root / "child.json").read_text())["pid"], 1)
+        owned = subprocess.run(
+            [
+                "docker",
+                "ps",
+                "-a",
+                "--filter",
+                "label=arcbench.sandbox.owner",
+                "--format",
+                "{{.ID}}",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(owned.stdout.strip(), "")
+
+    def test_browser_and_server_share_isolated_loopback_and_model_stays_host_side(self):
+        self.project(
+            """
+const http = require('node:http');
+http.createServer((req,res) => { res.setHeader('Content-Type','text/html');
+res.end('<html><body><label for="x">Name</label><input id="x"></body></html>');
+}).listen(Number(process.env.PORT), '127.0.0.1');
+""",
+            script="start",
+        )
+        manifest = {
+            "version": 1,
+            "cases": [
+                {
+                    "name": "form",
+                    "reference": "reference.png",
+                    "route": "/",
+                    "viewport": {"width": 800, "height": 600},
+                    "visual_expectations": ["Visible input"],
+                }
+            ],
+            "flows": [
+                {
+                    "name": "edit",
+                    "route": "/",
+                    "viewport": {"width": 800, "height": 600},
+                    "covers": ["#x"],
+                    "steps": [
+                        {"action": "fill", "selector": "#x", "value": "hello"},
+                        {"action": "expect_value", "selector": "#x", "value": "hello"},
+                    ],
+                }
+            ],
+        }
+        (self.root / "arcbench-visual-acceptance.json").write_text(json.dumps(manifest))
+        calls = []
+
+        def review(**kwargs):
+            calls.append(kwargs)
+            self.assertTrue(kwargs["screenshot"].startswith(b"\x89PNG\r\n\x1a\n"))
+            return {"verdict": "pass", "issues": [], "matched": ["input"]}
+
+        checked = verify_visual_acceptance(
+            self.root,
+            self.root,
+            ["reference.png"],
+            SimpleNamespace(review_visual_case=review),
+        )
+        self.assertTrue(checked.passed, checked.summary())
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(
+            (self.root / "artifacts/visual-acceptance/report.json").is_file()
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

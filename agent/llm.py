@@ -19,6 +19,7 @@ from openai import APIStatusError
 
 from .tools import MAX_BATCH_OUTPUT_CHARS, ProjectTools, TOOL_SCHEMAS
 from .model_transport import CompletionClient, DEFAULT_MODEL_DEADLINE_SECONDS, ModelRequestInterrupted
+from .request_metrics import RequestObservation, emit as emit_metric, identifier as metric_identifier
 from .ticketbooking_contract import public_acceptance_context
 from .initial_bootstrap import initial_bootstrap_gaps
 from .generation_contract import generation_contract_context
@@ -123,6 +124,7 @@ class ModelClient:
         self.visual_model = os.environ.get("VISUAL_MODEL", "").strip() or self.model
         self.visual_review_model = os.environ.get("VISUAL_REVIEW_MODEL", "").strip() or self.visual_model
         base_url = os.environ.get("OPENAI_BASE_URL", "").strip()
+        self.metrics_provider = urlsplit(base_url).hostname or "api.openai.com"
         self.is_official_deepseek = urlsplit(base_url).hostname == 'api.deepseek.com'
         separate_visual_plan = (urlsplit(base_url).hostname == 'api.deepseek.com'
             and self.model.casefold() == 'deepseek-v4-pro'
@@ -181,8 +183,13 @@ class ModelClient:
         LOGGER.info('Model output policy: stage=%s request=%d max_tokens=%s',
                     stage, self.model_requests_used, kwargs.get('max_tokens'))
         started = time.perf_counter()
+        observation = RequestObservation(stage=stage, requested_model=kwargs.get("model"),
+            provider=getattr(self, "metrics_provider", None), request=self.model_requests_used)
+        response = None
+        error = None
         try:
-            return self.client.chat.completions.create(**kwargs)
+            response = self.client.chat.completions.create(**kwargs)
+            return response
         except ModelRequestInterrupted as exc:
             stopped = ModelRequestInterrupted(reason=exc.reason, deadline_seconds=exc.deadline_seconds,
                 stage=stage, request=self.model_requests_used, cause_types=exc.cause_types)
@@ -190,9 +197,14 @@ class ModelClient:
             LOGGER.warning("%s", stopped)
             LOGGER.info("Model request: stage=%s request=%d context_chars=%d token_counts=unavailable",
                 stage, self.model_requests_used, self._message_context_chars(kwargs.get("messages", [])))
+            error = stopped
             raise stopped from exc
+        except BaseException as exc:
+            error = exc
+            raise
         finally:
             elapsed = time.perf_counter() - started
+            observation.finish(response=response, elapsed=elapsed, error=error)
             self.model_seconds = getattr(self, "model_seconds", 0.0) + elapsed
             LOGGER.info("Model latency: stage=%s model=%s seconds=%.3f", stage, kwargs.get("model"), elapsed)
 
@@ -1748,6 +1760,9 @@ class ModelClient:
                     "Project tool: name=%s seconds=%.3f result_chars=%d",
                     tool_call.function.name, elapsed, len(result),
                 )
+                emit_metric("tool_returned", request=self.model_requests_used,
+                    tool=metric_identifier(tool_call.function.name), seconds=elapsed,
+                    result_chars=len(result), tool_error=result.startswith("Tool error:"))
                 tool_payloads.append(
                     {"role": "tool", "tool_call_id": tool_call.id, "content": result[:MAX_BATCH_OUTPUT_CHARS]}
                 )

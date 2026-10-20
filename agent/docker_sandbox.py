@@ -22,6 +22,7 @@ from .sandbox_files import (
     validate_snapshot,
 )
 from .sandbox_process import SandboxProcessError, run_bounded
+from .request_metrics import observe_operation
 
 IMAGE = "arcbench-sandbox:1"
 _OPERATIONS = {
@@ -148,6 +149,7 @@ class DockerSandbox:
                 "owned container remains or removal is unverified"
             )
 
+    @observe_operation("docker_invocation")
     def invoke(
         self,
         operation: str,

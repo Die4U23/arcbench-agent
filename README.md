@@ -93,3 +93,7 @@ Python 上传入口为仓库根目录的 `main.py`，依赖声明为 `requiremen
 Generated scripts and browser checks now require a local Docker engine in Linux-container mode and the reviewed `arcbench-sandbox:1` image. Build it with `docker build -f sandbox/Dockerfile -t arcbench-sandbox:1 .` before running the Agent. The application does not install Docker or change host security settings.
 
 Execution is offline, uses the pre-provisioned dependency cache, and never silently falls back to the host. Model review remains outside the container. Cache misses and resource limits are explicit failures, so existing projects may need exact dependency versions from `sandbox/toolchain/package.json`. See [setup, security boundaries and verification limits](docs/dev/docker-execution.md).
+
+## 性能对照准备（#21）
+
+逐请求结构化日志与离线试验台账见 [对照协议、复现命令及未授权预算提案](docs/performance/issue21-offline-protocol.md)。台账不调用模型；合成试点、真实 Docker、真实模型和历史冻结结果分别记录。当前阶段不宣称性能或成本改善，也不能替代新候选正式 30/30。

@@ -1497,6 +1497,7 @@ class ModelClient:
             context_chars = self._message_context_chars(messages)
             request_options: dict[str, Any] = {}
             max_tokens = self._edit_output_cap(model)
+            api_forced_tool = forced_tool
             if getattr(self, "is_deepseek", False):
                 # Keep DeepSeek thinking enabled for implementation by default.
                 # Retained tool-call turns must include their reasoning_content.
@@ -1510,13 +1511,10 @@ class ModelClient:
                     # Low effort preserves thinking while leaving room for tool calls.
                     request_options["reasoning_effort"] = "low"
                     max_tokens = DEEPSEEK_THINKING_IMPLEMENTATION_MAX_TOKENS
-                if forced_tool:
-                    # DeepSeek only supports required tool choice outside thinking mode.
-                    # Keep the focused edit bounded while retaining the inspected source.
-                    thinking = "disabled"
-                    request_options["extra_body"] = {"thinking": {"type": thinking}}
-                    request_options.pop("reasoning_effort", None)
-                    max_tokens = self._edit_output_cap(model)
+                    # Named tool_choice is unsupported in thinking mode. Enforce
+                    # the required action locally instead of disabling reasoning
+                    # for every later turn that retains this tool conversation.
+                    api_forced_tool = None
             if getattr(self, "is_glm", False) and self.implementation_thinking:
                 request_options["extra_body"] = {"thinking": {"type": self.implementation_thinking}}
             try:
@@ -1524,8 +1522,8 @@ class ModelClient:
                     model=model,
                     messages=messages,
                     tools=tool_schemas,
-                    tool_choice={"type": "function", "function": {"name": forced_tool}}
-                        if forced_tool else "auto",
+                    tool_choice={"type": "function", "function": {"name": api_forced_tool}}
+                        if api_forced_tool else "auto",
                     max_tokens=max_tokens,
                     **request_options,
                 )
@@ -1570,6 +1568,7 @@ class ModelClient:
                     "content": (
                         "Your previous response exceeded the output limit and was discarded. "
                         + (f"First complete the required {refresh_tool} of the affected source. " if refresh_tool else
+                           "Run verify_candidate now before making further edits. " if verification_due else
                            "Use the files already inspected. Make one concrete, small tool call now (prefer write_files or replace_text). ")
                         + "Use at most 4,000 characters of new content. Do not repeat the analysis or reread the whole project."
                     ),
@@ -1587,7 +1586,7 @@ class ModelClient:
                     model=model,
                     messages=retry_messages,
                     tools=tool_schemas,
-                    tool_choice={"type": "function", "function": {"name": refresh_tool or edit_tool}},
+                    tool_choice={"type": "function", "function": {"name": forced_tool or edit_tool}},
                     max_tokens=self._edit_output_cap(model),
                     **request_options,
                 )
@@ -1666,6 +1665,11 @@ class ModelClient:
                     if stale_path is not None:
                         result = "Tool error: SourceRefreshRequired: " + source_refresh_notice()
                         note_source_failure((stale_path, required_source_reads[stale_path]), result)
+                    elif refresh_tool and api_forced_tool is None and tool_call.function.name not in (
+                        {"read_file", "read_files"} if refresh_tool == "read_file" else {"list_files"}
+                    ):
+                        result = f"Only {refresh_tool} is available until the required source refresh completes. " + source_refresh_notice()
+                        note_source_failure(refresh_target, result)
                     elif verification_due and tool_call.function.name != "verify_candidate":
                         result = "Run verify_candidate now; two requests remain after verification for source corrections."
                     elif write_only and tool_call.function.name != edit_tool:

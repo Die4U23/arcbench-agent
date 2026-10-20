@@ -508,11 +508,11 @@ class ImplementBudgetTests(unittest.TestCase):
         self.assertTrue({"write_files", "replace_text"}.issubset(
             {tool["function"]["name"] for tool in rescue_request["tools"]}
         ))
-        self.assertEqual(rescue_request["tool_choice"], {"type": "function", "function": {"name": "write_files"}})
-        self.assertEqual(rescue_request["extra_body"], {"thinking": {"type": "disabled"}})
+        self.assertEqual(rescue_request["tool_choice"], "auto")
+        self.assertEqual(rescue_request["extra_body"], {"thinking": {"type": "enabled"}})
         self.assertTrue(any(message.get("role") == "assistant" for message in rescue_request["messages"]))
         next_request = model.client.completions.requests[6]
-        self.assertEqual(next_request["extra_body"], {"thinking": {"type": "disabled"}})
+        self.assertEqual(next_request["extra_body"], {"thinking": {"type": "enabled"}})
         self.assertTrue(any(message.get("role") == "assistant" for message in next_request["messages"]))
         self.assertTrue((self.project_dir / "tests/behavior.test.js").is_file())
 
@@ -526,7 +526,7 @@ class ImplementBudgetTests(unittest.TestCase):
             max_tool_calls=None,
             scripted=[
                 *[_FakeMessage([_read_files_call(["backend.js"])], reasoning_content="analysis") for _ in range(3)],
-                _FakeMessage([replace]),
+                _FakeMessage([replace], reasoning_content="repair inspected source"),
                 _FakeMessage(None, "done"),
             ],
             env_overrides={
@@ -542,9 +542,8 @@ class ImplementBudgetTests(unittest.TestCase):
             project_tools=self.tools, repair_feedback="backend test failed",
         ))
         rescue_request = model.client.completions.requests[3]
-        self.assertEqual(rescue_request["tool_choice"], {
-            "type": "function", "function": {"name": "replace_text"},
-        })
+        self.assertEqual(rescue_request["tool_choice"], "auto")
+        self.assertEqual(rescue_request["extra_body"]["thinking"]["type"], "enabled")
         self.assertIn("function broken()", json.dumps(rescue_request["messages"]))
         self.assertIn("return true;", (self.project_dir / "backend.js").read_text(encoding="utf-8"))
 

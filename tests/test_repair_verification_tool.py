@@ -15,6 +15,35 @@ def verify():
 
 
 class RepairVerificationToolTests(unittest.TestCase):
+    def test_thinking_reserved_check_rejects_edit_and_preserves_reasoning(self):
+        with TemporaryDirectory() as directory:
+            tools = ProjectTools(Path(directory))
+            tools.write_file('a.js', 'old')
+            scripted = [
+                _FakeMessage([write_files(**{'a.js': 'new'})], reasoning_content='edit'),
+                *[_FakeMessage([_read_call('a.js')], reasoning_content='inspect') for _ in range(8)],
+                _FakeMessage([write_files(**{'a.js': 'forbidden'})], reasoning_content='wrong action'),
+                verify(), _FakeMessage(None, 'done')]
+            scripted[10].reasoning_content = 'verify the current candidate'
+            model = _make_client(None, None, scripted, {'MODEL': 'deepseek-flash'})
+            model.client.completions.require_reasoning = True
+            model.max_idle_tool_turns = 100
+            observed = []
+            def diagnostic():
+                observed.append((Path(directory) / 'a.js').read_text())
+                return 'still failed'
+            model.implement(task_type='web', subtree={'id': 'ROOT'}, plan='repair',
+                project_tools=tools, repair_feedback='failed', request_allowance=12,
+                verification_feedback=diagnostic, boundary_feedback=lambda: 'still failed')
+            self.assertEqual(observed, ['new'])
+            self.assertEqual((Path(directory) / 'a.js').read_text(), 'new')
+            requests = model.client.completions.requests
+            for request in requests:
+                self.assertEqual(request['tool_choice'], 'auto')
+                self.assertEqual(request['extra_body']['thinking']['type'], 'enabled')
+            self.assertIn('Run verify_candidate now', str(requests[10]['messages'][-1]))
+            self.assertEqual(requests[10]['messages'][:-2], requests[9]['messages'])
+
     def test_slice_reserves_feedback_before_last_two_corrections(self):
         with TemporaryDirectory() as directory:
             fixture = BoundaryFixture(Path(directory))
@@ -29,9 +58,10 @@ class RepairVerificationToolTests(unittest.TestCase):
             fixture.implement(model, repair_feedback='Repair shared contract', request_allowance=12,
                 verification_feedback=lambda: fixture.feedback(boundary=False))
             requests = model.client.completions.requests
-            self.assertEqual(requests[9]['tool_choice']['function']['name'], 'verify_candidate')
-            self.assertEqual(requests[9]['extra_body']['thinking']['type'], 'disabled')
+            self.assertEqual(requests[9]['tool_choice'], 'auto')
+            self.assertEqual(requests[9]['extra_body']['thinking']['type'], 'enabled')
             self.assertEqual(requests[10]['tool_choice'], 'auto')
+            self.assertEqual(requests[10]['extra_body']['thinking']['type'], 'enabled')
             self.assertEqual(model.model_requests_used, 12)
             self.assertEqual(fixture.observed, [('new', 'old')])
             self.assertEqual(fixture.boundaries, [('new', 'new')])
@@ -61,13 +91,16 @@ class RepairVerificationToolTests(unittest.TestCase):
             model = _make_client(None, None, [
                 _FakeMessage([write_files(**{'frontend/src/provider.js':'new'})]),
                 *[_FakeMessage([_read_call('frontend/src/provider.js')]) for _ in range(8)],
-                truncated])
+                truncated, truncated])
             model.is_deepseek = True
             model.max_idle_tool_turns = 100
             fixture.implement(model, repair_feedback='Repair shared contract', request_allowance=12,
                 verification_feedback=lambda: fixture.feedback(boundary=False))
-            self.assertEqual(model.client.completions.requests[9]['tool_choice']['function']['name'], 'verify_candidate')
-            self.assertEqual(model.model_requests_used, 10)
+            self.assertEqual(model.client.completions.requests[9]['tool_choice'], 'auto')
+            retry = model.client.completions.requests[10]
+            self.assertEqual(retry['tool_choice']['function']['name'], 'verify_candidate')
+            self.assertEqual(retry['extra_body']['thinking']['type'], 'disabled')
+            self.assertEqual(model.model_requests_used, 11)
             self.assertEqual(fixture.observed, [])
             self.assertEqual(fixture.boundaries, [('new', 'old')])
             self.assertEqual(fixture.source(), ('old', 'old'))

@@ -40,7 +40,8 @@ class ProEditOutputTests(unittest.TestCase):
         inspect = _FakeToolCall('list','list_files',json.dumps({'path':'.'}))
         write = _FakeToolCall('write','write_files',json.dumps({'files':[{'path':'small.jsx','content':'// fixture'}]}))
         model = _make_client(None,None,[*[_FakeMessage([inspect]) for _ in range(5)],
-            _FakeMessage([write]),_FakeMessage(None,'done')],dict(ENV,ARCBENCH_MAX_IDLE_TOOL_TURNS='8'))
+            _FakeMessage([write]),_FakeMessage(None,'done')],dict(ENV,ARCBENCH_MAX_IDLE_TOOL_TURNS='8',
+                ARCBENCH_IMPLEMENTATION_THINKING='disabled'))
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory)
             self.implement(model,root)

@@ -16,6 +16,11 @@ def single(path="a.js", **kwargs):
     return _FakeToolCall("read", "read_file", json.dumps({"path": path, **kwargs}))
 
 
+def batch_content(cache, path="a.js", content=SOURCE):
+    result = json.dumps({"files": [{"path": path, "content": content}], "truncated": False})
+    return json.loads(cache.filter("read_files", {}, result))["files"][0]["content"]
+
+
 class ReadEvidenceTests(unittest.TestCase):
     def test_only_actual_source_survives_compaction_not_a_reference_to_dropped_source(self):
         cache = ReadEvidence()
@@ -25,11 +30,11 @@ class ReadEvidenceTests(unittest.TestCase):
         cache.remember("read_file", args, source)
         cache.remember("read_file", args, ref)
         cache.retain([[source], [ref]])
-        self.assertEqual(cache.filter("read_file", args, SOURCE), UNCHANGED)
+        self.assertEqual(batch_content(cache), UNCHANGED)
         cache.retain([[ref]])
-        self.assertEqual(cache.filter("read_file", args, SOURCE), SOURCE)
+        self.assertEqual(batch_content(cache), SOURCE)
 
-    def test_single_and_batch_share_complete_file_evidence_in_both_directions(self):
+    def test_batch_can_reuse_complete_evidence_but_explicit_single_read_refreshes(self):
         for first in ("read_file", "read_files"):
             with self.subTest(first=first):
                 cache = ReadEvidence()
@@ -39,13 +44,15 @@ class ReadEvidenceTests(unittest.TestCase):
                 if first == "read_file":
                     self.assertEqual(json.loads(cache.filter("read_files", {}, batch))["files"][0]["content"], UNCHANGED)
                 else:
-                    self.assertEqual(cache.filter("read_file", args, SOURCE), UNCHANGED)
+                    self.assertEqual(cache.filter("read_file", args, SOURCE), SOURCE)
+                    self.assertEqual(batch_content(cache), UNCHANGED)
 
     def test_ranges_are_distinct_and_never_prove_a_complete_file(self):
         cache = ReadEvidence()
         args = {"path": "a.js", "start_line": 3, "end_line": 5}
         cache.remember("read_file", args, {"content": SOURCE})
-        self.assertEqual(cache.filter("read_file", args, SOURCE), UNCHANGED)
+        self.assertEqual(cache.filter("read_file", args, SOURCE), SOURCE)
+        self.assertEqual(batch_content(cache), SOURCE)
         for other in ({"path": "a.js"}, dict(args, start_line=2), dict(args, end_line=6)):
             self.assertEqual(cache.filter("read_file", other, SOURCE), SOURCE)
 
@@ -70,32 +77,33 @@ class ReadEvidenceTests(unittest.TestCase):
             for start in (1, 3):
                 cache.remember("read_file", {"path": path, "start_line": start}, {"content": SOURCE})
         cache.invalidate(["./a.js"])
-        for start in (1, 3):
-            self.assertEqual(cache.filter("read_file", {"path": "a.js", "start_line": start}, SOURCE), SOURCE)
-            self.assertEqual(cache.filter("read_file", {"path": "b.js", "start_line": start}, SOURCE), UNCHANGED)
+        self.assertEqual(batch_content(cache, "a.js"), SOURCE)
+        self.assertEqual(batch_content(cache, "b.js"), UNCHANGED)
         cache.clear()
-        self.assertEqual(cache.filter("read_file", {"path": "b.js"}, SOURCE), SOURCE)
+        self.assertEqual(batch_content(cache, "b.js"), SOURCE)
 
     def test_successful_write_is_evidence_only_for_exact_bytes_while_message_remains(self):
         cache = ReadEvidence()
         owner = {"role": "assistant", "tool_calls": []}
         cache.remember_write("write_files", {"files": [{"path": "a.js", "content": SOURCE}]}, owner)
-        self.assertEqual(cache.filter("read_file", {"path": "a.js"}, SOURCE), UNCHANGED)
-        self.assertEqual(cache.filter("read_file", {"path": "a.js"}, SOURCE + "normalized"), SOURCE + "normalized")
+        self.assertEqual(batch_content(cache), UNCHANGED)
+        self.assertEqual(batch_content(cache, content=SOURCE + "normalized"), SOURCE + "normalized")
         cache.retain([[owner]])
-        self.assertEqual(cache.filter("read_file", {"path": "a.js"}, SOURCE), UNCHANGED)
+        self.assertEqual(batch_content(cache), UNCHANGED)
         cache.retain([])
-        self.assertEqual(cache.filter("read_file", {"path": "a.js"}, SOURCE), SOURCE)
+        self.assertEqual(batch_content(cache), SOURCE)
 
 
 class SourceReuseIntegrationTests(unittest.TestCase):
-    def test_successful_full_write_avoids_rereading_its_contents_into_context(self):
+    def test_successful_full_write_reuses_batch_but_allows_explicit_refresh(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)
             write = _FakeToolCall("write", "write_files", json.dumps({"files": [{"path": "a.js", "content": SOURCE}]}))
-            model = _make_client(None, None, [_FakeMessage([write]), _FakeMessage([single()]), _FakeMessage(None)])
+            model = _make_client(None, None, [_FakeMessage([write]), _FakeMessage([_read_files_call(["a.js"])]),
+                                             _FakeMessage([single()]), _FakeMessage(None)])
             model.implement(task_type="library", subtree={"id": "X"}, plan="fixed", project_tools=ProjectTools(root))
-            self.assertEqual(model.client.completions.requests[2]["messages"][-1]["content"], UNCHANGED)
+            self.assertEqual(json.loads(model.client.completions.requests[2]["messages"][-1]["content"])["files"][0]["content"], UNCHANGED)
+            self.assertEqual(model.client.completions.requests[3]["messages"][-1]["content"], SOURCE)
             self.assertEqual((root / "a.js").read_text(encoding="utf-8"), SOURCE)
 
     def test_failed_full_write_does_not_register_the_proposed_source(self):
@@ -127,10 +135,10 @@ class SourceReuseIntegrationTests(unittest.TestCase):
                 model.implement(task_type="library", subtree={"id": "X"}, plan="fixed", project_tools=ProjectTools(root))
             requests = model.client.completions.requests
             self.assertEqual(requests[2]["messages"][:len(requests[1]["messages"])], requests[1]["messages"])
-            self.assertEqual(requests[3]["messages"][-1]["content"], UNCHANGED)
+            self.assertEqual(requests[3]["messages"][-1]["content"], SOURCE)
             self.assertEqual(json.loads(requests[2]["messages"][-1]["content"])["files"][0]["content"], UNCHANGED)
             savings = [call.kwargs for call in metric.call_args_list if call.args == ("source_read_reused",)]
-            self.assertEqual(len(savings), 2)
+            self.assertEqual(len(savings), 1)
             self.assertTrue(all(item["removed_chars"] > 0 for item in savings))
 
     def test_single_read_still_checks_external_change_and_deletion(self):
@@ -167,12 +175,12 @@ class SourceReuseIntegrationTests(unittest.TestCase):
                 reasoning = "r" * 80_000 if drop else "inspect current source"
                 model = _make_client(None, None, [
                     _FakeMessage([single()], reasoning_content=reasoning),
-                    _FakeMessage([single()]),
+                    _FakeMessage([_read_files_call(["a.js"])]),
                     _FakeMessage(None)])
                 with patch("agent.llm.MAX_CONVERSATION_CHARS", 100_000):
                     model.implement(task_type="library", subtree={"id": "X"},
                                     plan="large immutable task " * 6000, project_tools=ProjectTools(root))
-                response = model.client.completions.requests[2]["messages"][-1]["content"]
+                response = json.loads(model.client.completions.requests[2]["messages"][-1]["content"])["files"][0]["content"]
                 # Force compaction after the first read without making its
                 # complete exchange too large for the retained suffix.
                 if drop:

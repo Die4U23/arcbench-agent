@@ -69,12 +69,9 @@ class ReadEvidence:
     def filter(self, name: str, arguments: dict[str, Any], result: str) -> str:
         # Always called after the real tool read. Never bypass disk checks,
         # permission validation, file deletion, or an external source edit.
-        if name == "read_file":
-            key = self._single_key(arguments)
-            if (key is not None and not result.endswith("\n...[truncated]")
-                    and len(result) > len(UNCHANGED) and self._matches(key, result)):
-                return UNCHANGED
-        elif name == "read_files":
+        # An explicit single-file reread is a refresh request. Suppressing it
+        # made Flash retry with line ranges instead of repairing the failure.
+        if name == "read_files":
             payload = self._batch(result)
             if payload is not None:
                 reused = False

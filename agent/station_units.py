@@ -43,6 +43,9 @@ def unavailable(message):
 
 
 def verify_station_units(protected: Path):
+    from .sandbox_context import in_worker
+    if not in_worker():
+        return unavailable("Browser probes require an isolated verification session")
     from playwright.sync_api import sync_playwright
     from .visual_acceptance import _block_external_requests, _ensure_chromium
 

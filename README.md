@@ -87,3 +87,9 @@ Python 上传入口为仓库根目录的 `main.py`，依赖声明为 `requiremen
 - 课程：CS3604
 - 项目：ArcBench Agent
 - 仓库：`Die4U23/arcbench-agent`
+
+## Generated-code execution boundary
+
+Generated scripts and browser checks now require a local Docker engine in Linux-container mode and the reviewed `arcbench-sandbox:1` image. Build it with `docker build -f sandbox/Dockerfile -t arcbench-sandbox:1 .` before running the Agent. The application does not install Docker or change host security settings.
+
+Execution is offline, uses the pre-provisioned dependency cache, and never silently falls back to the host. Model review remains outside the container. Cache misses and resource limits are explicit failures, so existing projects may need exact dependency versions from `sandbox/toolchain/package.json`. See [setup, security boundaries and verification limits](docs/dev/docker-execution.md).

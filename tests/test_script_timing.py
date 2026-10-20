@@ -11,6 +11,9 @@ from agent.tools import ProjectTools
 
 class ScriptTimingTests(unittest.TestCase):
     def setUp(self):
+        worker = patch('agent.sandbox_context.in_worker', return_value=True)
+        worker.start()
+        self.addCleanup(worker.stop)
         self.directory = TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name)

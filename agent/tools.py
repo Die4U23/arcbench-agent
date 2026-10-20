@@ -204,13 +204,18 @@ class ProjectTools:
         except ValueError as exc:
             raise ValueError("Path escapes the target project") from exc
         relative = resolved.relative_to(self.project_dir)
-        if any(part in IGNORED_DIRS for part in relative.parts):
+        if any(part.casefold() in IGNORED_DIRS for part in relative.parts):
             raise ValueError("Access to runtime, dependency, or generated directories is not allowed")
         sensitive_names = {"id_rsa", "id_ed25519", "credentials.json", "secrets.json"}
         for part in relative.parts:
             lowered = part.lower()
             if lowered.startswith(".env") or lowered in sensitive_names or lowered.endswith((".pem", ".key", ".p12", ".pfx")):
                 raise ValueError("Access to credential or private-key files is not allowed")
+        if relative.parts:
+            from .sandbox_files import validate_relative_path
+            validate_relative_path(relative.as_posix())
+        if resolved.is_file() and resolved.stat().st_nlink != 1:
+            raise ValueError("Linked files are not allowed")
         if not allow_root and resolved == self.project_dir:
             raise ValueError("A file path is required")
         return resolved
@@ -443,6 +448,11 @@ class ProjectTools:
         }, ensure_ascii=False)
 
     def ensure_dependencies(self) -> None:
+        from .sandbox_context import in_worker
+        if not in_worker():
+            from .docker_sandbox import DockerSandbox
+            DockerSandbox().invoke("dependencies", self.project_dir, timeout=self.timeout_seconds)
+            return
         manifests = []
         for folder in (".", "frontend", "backend"):
             directory = self._resolve(folder, allow_root=True)
@@ -486,6 +496,15 @@ class ProjectTools:
         self._installed_dependencies = fingerprint
 
     def run_project_script(self, directory: str, script: str) -> str:
+        from .sandbox_context import in_worker
+        if not in_worker():
+            if script not in ALLOWED_PROJECT_SCRIPTS:
+                raise ValueError(f"Script is not allowed: {script}")
+            self._resolve(directory, allow_root=True)
+            from .docker_sandbox import DockerSandbox
+            result = DockerSandbox().invoke("project_script", self.project_dir,
+                options={"directory": directory, "script": script}, timeout=self.timeout_seconds)
+            return json.dumps(result, ensure_ascii=False)
         if script not in ALLOWED_PROJECT_SCRIPTS:
             raise ValueError(f"Script is not allowed: {script}")
         package_dir = self._resolve(directory, allow_root=True)

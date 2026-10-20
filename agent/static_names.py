@@ -43,6 +43,12 @@ process.exitCode = failures ? 1 : 0;
 
 @lru_cache(maxsize=1)
 def _tool_directory() -> Path:
+    from .sandbox_context import in_worker
+    if not in_worker():
+        raise RuntimeError("static-name tooling must run in the isolated worker")
+    preinstalled = Path('/opt/toolchain')
+    if (preinstalled / 'check.cjs').is_file():
+        return preinstalled
     npm = shutil.which('npm') or shutil.which('npm.cmd')
     if not npm:
         raise RuntimeError('npm not found; undefined-name check did not run')
@@ -67,6 +73,13 @@ def _tool_directory() -> Path:
 
 
 def verify_frontend_names(project_dir: Path) -> CheckResult | None:
+    from .sandbox_context import in_worker
+    if not in_worker():
+        if not (project_dir / "frontend/src").is_dir():
+            return None
+        from .container_checks import run_checks
+        checks = run_checks("static_names", project_dir)
+        return checks[0] if checks else None
     root = project_dir.resolve()
     source = root/'frontend/src'
     if not source.is_dir():

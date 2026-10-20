@@ -1,6 +1,7 @@
 import json
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 from agent.booking_completion import CASE, completion_result, exercise_completion
 from agent.browser_contract import browser_guard_result
@@ -17,7 +18,10 @@ class BookingCompletionTests(unittest.TestCase):
         from agent.visual_acceptance import _ensure_chromium
         cls.runtime = sync_playwright().start()
         try:
-            cls.browser = _ensure_chromium(cls.runtime)
+            # This test renders only trusted in-memory fixtures. Generated-site
+            # execution is covered separately through the real Docker boundary.
+            with patch('agent.sandbox_context.in_worker', return_value=True):
+                cls.browser = _ensure_chromium(cls.runtime)
         except Exception:
             cls.runtime.stop()
             raise

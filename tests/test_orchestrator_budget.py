@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+# Legacy fixtures exercise worker internals; host isolation is tested separately.
+import unittest.mock as _sandbox_mock
+
 import tempfile
 import unittest
 from pathlib import Path
@@ -12,6 +15,7 @@ from agent.requirements import RequirementModule
 from agent.verify import CheckResult, VerificationResult
 
 
+@_sandbox_mock.patch("agent.sandbox_context._WORKER", True)
 class BudgetExhaustionOrchestratorTests(unittest.TestCase):
     def test_public_failures_are_checked_and_fed_back_while_private_tests_fail(self):
         with tempfile.TemporaryDirectory() as directory:

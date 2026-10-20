@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+# Legacy fixtures exercise worker internals; host isolation is tested separately.
+import unittest.mock as _sandbox_mock
+
 import json
 import subprocess
 import unittest
@@ -10,6 +13,7 @@ from agent.tools import ProjectTools
 from agent.verify import _run_npm_script
 
 
+@_sandbox_mock.patch("agent.sandbox_context._WORKER", True)
 class SubprocessOutputEncodingTests(unittest.TestCase):
     def test_project_tool_decodes_utf8_output_without_locale_failures(self) -> None:
         project = Path(__file__).parent / "fixtures" / "subprocess-project"

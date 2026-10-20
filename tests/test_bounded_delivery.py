@@ -1,3 +1,6 @@
+
+# Legacy fixtures exercise worker internals; host isolation is tested separately.
+import unittest.mock as _sandbox_mock
 from contextlib import ExitStack
 import json
 from pathlib import Path
@@ -21,6 +24,7 @@ def candidate():
     ))
 
 
+@_sandbox_mock.patch("agent.sandbox_context._WORKER", True)
 class BoundedDeliveryTests(unittest.TestCase):
     def test_explicit_stop_keeps_failures_and_usage_without_claiming_acceptance(self):
         with tempfile.TemporaryDirectory() as directory, patch(

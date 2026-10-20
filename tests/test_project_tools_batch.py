@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+# Legacy fixtures exercise worker internals; host isolation is tested separately.
+import unittest.mock as _sandbox_mock
+
 import json
 import tempfile
 import unittest
@@ -9,6 +12,7 @@ from unittest.mock import patch
 from agent.tools import MAX_BATCH_FILES, MAX_BATCH_OUTPUT_CHARS, MAX_FILE_CHARS, ProjectTools, TOOL_SCHEMAS
 
 
+@_sandbox_mock.patch("agent.sandbox_context._WORKER", True)
 class ProjectToolsBatchTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()

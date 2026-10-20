@@ -1,4 +1,7 @@
 """Exercise interrupted requests through delivery without making network calls."""
+
+# Legacy fixtures exercise worker internals; host isolation is tested separately.
+import unittest.mock as _sandbox_mock
 from contextlib import ExitStack
 import json
 from pathlib import Path
@@ -46,6 +49,7 @@ def startup_check(*, passed=True):
                         "Started" if passed else "Generated server failed to start"),)
 
 
+@_sandbox_mock.patch("agent.sandbox_context._WORKER", True)
 class ModelRequestDeliveryTests(unittest.TestCase):
     def _run_manifest_interruption(self, root, *, mutation="invalid_frontend",
                                    saved_checkpoint=True, persistent_failure=False):

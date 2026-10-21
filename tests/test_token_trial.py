@@ -4,10 +4,27 @@ from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 
-from scripts.run_token_trial import TokenBudget, TokenStop, INPUT_BOUND, OUTPUT_BOUND
+from scripts.run_token_trial import TokenBudget, TokenStop, INPUT_BOUND, OUTPUT_BOUND, check_protected_edit
+from agent.tools import ProjectTools
 
 
 class TokenTrialTests(unittest.TestCase):
+    def test_protected_fixture_writes_are_rejected_before_mutation_in_both_forms(self):
+        with TemporaryDirectory() as folder:
+            tools = ProjectTools(Path(folder))
+            original = '{"scripts":{"test":"node acceptance.cjs"}}'
+            tools.write_file('package.json', original)
+            protected = {'package.json': original.encode()}
+            for name, arguments in (
+                ('write_file', {'path':'./package.json','content':'changed'}),
+                ('write_files', {'files':[{'path':'source.cjs','content':'okay'}, {'path':'package.json','content':'changed'}]}),
+                ('replace_text', {'path':'package.json','old_text':'acceptance','new_text':'fake'})):
+                with self.assertRaisesRegex(ValueError, 'read-only'):
+                    check_protected_edit(tools, name, arguments, protected)
+            self.assertEqual((tools.project_dir/'package.json').read_text(), original)
+            self.assertFalse((tools.project_dir/'source.cjs').exists())
+            check_protected_edit(tools, 'write_file', {'path':'package.json','content':original}, protected)
+
     def test_expanded_study_has_fixed_limits_and_cannot_relabel_legacy_budget(self):
         with TemporaryDirectory() as folder:
             path = Path(folder) / "usage.json"

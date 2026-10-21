@@ -28,6 +28,7 @@ from arcbench_agent_runtime import AgentRuntime
 
 from agent.config import parse_config
 from agent.orchestrator import run_agent
+from agent.docker_sandbox import DockerSandbox
 
 
 def main() -> int:
@@ -37,6 +38,8 @@ def main() -> int:
     config = parse_config()
     runtime = AgentRuntime.from_env(project_dir=str(config.output_dir))
     try:
+        if not config.demo_mode:
+            DockerSandbox().check_available()
         return run_agent(runtime, config)
     except Exception as exc:
         logging.exception("Agent run failed")

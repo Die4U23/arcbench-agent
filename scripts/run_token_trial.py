@@ -132,6 +132,21 @@ class TokenBudget:
             raise TokenStop("Missing, invalid, or out-of-bound token usage")
 
 
+def check_protected_edit(tools, name, arguments, protected):
+    if name not in {"write_file", "write_files", "replace_text"}:
+        return
+    edits = arguments.get("files", []) if name == "write_files" else [arguments]
+    for edit in edits:
+        if not isinstance(edit, dict) or not isinstance(edit.get("path"), str):
+            continue
+        target = tools._resolve(edit["path"])
+        for path, original in protected.items():
+            if target == tools.project_dir / path:
+                content = edit.get("content")
+                if name == "replace_text" or not isinstance(content, str) or content.encode("utf-8") != original:
+                    raise ValueError("Protected fixture is read-only; edit implementation source only")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--execute", action="store_true")
@@ -194,8 +209,19 @@ def main():
                 if budget.remaining_seconds() < 180:
                     raise TokenStop("Insufficient cleanup headroom")
                 self.protection()
+                # Enforce the fixture contract before a write can affect tests.
+                # Both arms receive the same rejection and can use the remaining
+                # requests to repair source; the attempted action stays in trace.
                 try:
-                    return super().call(name, arguments)
+                    check_protected_edit(self, name, arguments, protected)
+                    result = super().call(name, arguments)
+                    with (directory / "tool-trace.jsonl").open("a", encoding="utf-8") as stream:
+                        stream.write(json.dumps({"name": name, "arguments": arguments, "result": result}, ensure_ascii=False) + "\n")
+                    return result
+                except Exception as exc:
+                    with (directory / "tool-trace.jsonl").open("a", encoding="utf-8") as stream:
+                        stream.write(json.dumps({"name": name, "arguments": arguments, "error_type": type(exc).__name__}, ensure_ascii=False) + "\n")
+                    raise
                 finally:
                     self.protection()
 

@@ -4,6 +4,10 @@ Generated programs, dependency lifecycle scripts, static JavaScript checks, Vite
 
 ## Setup
 
+### ArcBench runner compatibility
+
+The 2026-10-21 ArcBench runner did not expose a Docker CLI or the common local Docker/Podman sockets. Its `unshare` namespace probe also returned `Operation not permitted`. The current Docker-based agent therefore cannot run in that default environment: startup preflight exits before any model request. The platform's outer runner container does not separate generated processes from the controller credentials inside that same container. Provision a supported isolated execution backend before submitting this agent; do not remove the boundary to reuse the old pre-Docker 30/30 result. See the [platform run and zero-model diagnostic evidence](../performance/issue21-expanded-results.md#新平台验收状态).
+
 Use a local Docker engine in Linux-container mode. On Windows this requires a configured Docker Desktop Linux engine; the application does not install Docker, enable WSL or change system/security settings. Remote SSH/TCP Docker contexts are rejected. From this repository's trusted checkout:
 
 ```sh

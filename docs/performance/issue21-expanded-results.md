@@ -85,3 +85,5 @@ python -m unittest tests.test_token_study_summary
 已核对[平台官方执行契约](https://arc-bench.com/docs/agent)与提交表单：公开配置为 agent 包、模型连接和输出契约，没有发现可设置 Docker 引擎或可信镜像的入口。平台自身的外层 runner 容器不等同于本项目要求的生成代码隔离边界：模型凭据与控制器仍处于该外层环境中。
 
 继续平台验收需要平台侧提供可用的本地 Linux Docker 执行端与预构建 `arcbench-sandbox:1` 镜像，或另行实现并验证等效隔离后端。当前账户公开界面无法配置这些条件；没有安装守护进程、挂载宿主 Docker socket、开放公网执行桥或退回无隔离执行来绕过问题。原始页面日志与截图保留在 `local-runs/issue21-confirmatory-20261021/platform-dbb2695905d8-*`。历史冻结的 30/30 成绩不作为本候选成绩，PR 在新平台验收完成前保持草稿。
+
+为区分“只缺 CLI”和“缺少可用隔离能力”，另运行了[零模型诊断 c44fe10cecec](https://arc-bench.com/playground/task-bank/web/ticketbooking/submissions/c44fe10cecec)。它仅执行可信的标准库检查和 `unshare ... /bin/true` 空操作，没有安装软件、生成网站或调用模型。结果：Docker、Podman、bubblewrap 均不在 PATH；五个常见本地 Docker/Podman socket 不存在；未配置 Docker context 或本地 DOCKER_HOST；`unshare` 存在但创建独立 user/mount/pid/net/ipc/uts 命名空间返回 `Operation not permitted`。这确认当前 runner 没有可直接复用的上述隔离执行端，不能靠安装 CLI 解决。诊断以退出码 2 结束以免被当成应用生成成功，平台标记 FAILED 是预期结果，不计入修复试验分母。诊断 ZIP SHA256 为 `ed4170c30855cc53ec650ea74ca11821d80efdc4408003069f27cc15f10818de`，原始 stdout 保存在 `platform-c44fe10cecec-diagnostic.txt`。

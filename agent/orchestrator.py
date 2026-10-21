@@ -20,6 +20,7 @@ from .command_output import failure_details
 from .native_verification import verify_public_acceptance
 from .llm import BudgetExhaustion, ModelBudgetExceeded, ModelClient, RequirementReviewError
 from .model_transport import ModelRequestInterrupted
+from .request_metrics import observe_operation
 from .requirements import RequirementModule, load_requirement_tree, root_modules, walk_requirement_ids
 from .requirement_progress import mark_subtree_progress, record_local_verification
 from .repair_policy import failed_behavior_ids, focused_subtree, repair_guidance
@@ -381,6 +382,7 @@ def run_offline_demo(runtime: AgentRuntime, config: AgentConfig, tree: dict[str,
     return result
 
 
+@observe_operation("model_agent")
 def run_model_agent(runtime: AgentRuntime, config: AgentConfig, tree: dict[str, Any], modules: list[RequirementModule]) -> VerificationResult:
     if config.task_type != "web":
         raise ValueError(

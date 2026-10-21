@@ -675,7 +675,7 @@ class ImplementBudgetTests(unittest.TestCase):
         self.assertNotIn('same read already returned', reread)
 
     def test_overlapping_read_batches_do_not_repeat_unchanged_file_content(self) -> None:
-        (self.project_dir / "a.js").write_text("old a", encoding="utf-8")
+        (self.project_dir / "a.js").write_text("old a\n" * 100, encoding="utf-8")
         (self.project_dir / "b.js").write_text("b content", encoding="utf-8")
         model = _make_client(
             max_turns=6,

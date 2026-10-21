@@ -22,6 +22,7 @@ from .sandbox_files import (
     validate_snapshot,
 )
 from .sandbox_process import SandboxProcessError, run_bounded
+from .request_metrics import observe_operation
 
 IMAGE = "arcbench-sandbox:1"
 _OPERATIONS = {
@@ -113,6 +114,15 @@ class DockerSandbox:
                 "a running Linux-container Docker engine is required"
             )
 
+    def check_available(self) -> None:
+        """Reject missing execution infrastructure before spending model tokens."""
+        self._preflight()
+        image = self._command(["image", "inspect", "--format", "{{.Id}}", IMAGE])
+        if image.returncode or not image.stdout.strip().startswith(b"sha256:"):
+            raise SandboxProcessError(
+                "Trusted sandbox image is unavailable; build sandbox/Dockerfile before running the agent"
+            )
+
     def _remove_owned(self, owner: str) -> None:
         query = [
             "ps",
@@ -148,6 +158,7 @@ class DockerSandbox:
                 "owned container remains or removal is unverified"
             )
 
+    @observe_operation("docker_invocation")
     def invoke(
         self,
         operation: str,

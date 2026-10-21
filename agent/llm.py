@@ -19,10 +19,13 @@ from openai import APIStatusError
 
 from .tools import MAX_BATCH_OUTPUT_CHARS, ProjectTools, TOOL_SCHEMAS
 from .model_transport import CompletionClient, DEFAULT_MODEL_DEADLINE_SECONDS, ModelRequestInterrupted
+from .request_metrics import RequestObservation, emit as emit_metric, identifier as metric_identifier
 from .ticketbooking_contract import public_acceptance_context
 from .initial_bootstrap import initial_bootstrap_gaps
 from .generation_contract import generation_contract_context
 from .prompt_context import requirement_context
+from .read_evidence import ReadEvidence, source_path as _normalized_source_path
+from .tool_context import initial_file_inventory, failure_source_context
 from .visual_acceptance import REPORT_RELATIVE_PATH, SCREENSHOT_RELATIVE_DIR, collect_visual_references
 
 LOGGER = logging.getLogger(__name__)
@@ -40,11 +43,6 @@ MAX_REPAIR_REQUESTS = 12
 EARLY_CHECKPOINT_TURN = 4
 CHECKPOINT_INTERVAL_TURNS = 6
 PASSING_CHECKPOINT_IDLE_TURNS = 4
-
-
-def _normalized_source_path(path: str) -> str:
-    normalized = os.path.normpath(path.replace("\\", "/")).replace("\\", "/")
-    return normalized.casefold() if os.name == "nt" else normalized
 
 
 def _source_tool_failure(name: str, arguments: dict[str, Any], error: Exception) -> tuple[str, str] | None:
@@ -123,6 +121,7 @@ class ModelClient:
         self.visual_model = os.environ.get("VISUAL_MODEL", "").strip() or self.model
         self.visual_review_model = os.environ.get("VISUAL_REVIEW_MODEL", "").strip() or self.visual_model
         base_url = os.environ.get("OPENAI_BASE_URL", "").strip()
+        self.metrics_provider = urlsplit(base_url).hostname or "api.openai.com"
         self.is_official_deepseek = urlsplit(base_url).hostname == 'api.deepseek.com'
         separate_visual_plan = (urlsplit(base_url).hostname == 'api.deepseek.com'
             and self.model.casefold() == 'deepseek-v4-pro'
@@ -181,8 +180,13 @@ class ModelClient:
         LOGGER.info('Model output policy: stage=%s request=%d max_tokens=%s',
                     stage, self.model_requests_used, kwargs.get('max_tokens'))
         started = time.perf_counter()
+        observation = RequestObservation(stage=stage, requested_model=kwargs.get("model"),
+            provider=getattr(self, "metrics_provider", None), request=self.model_requests_used)
+        response = None
+        error = None
         try:
-            return self.client.chat.completions.create(**kwargs)
+            response = self.client.chat.completions.create(**kwargs)
+            return response
         except ModelRequestInterrupted as exc:
             stopped = ModelRequestInterrupted(reason=exc.reason, deadline_seconds=exc.deadline_seconds,
                 stage=stage, request=self.model_requests_used, cause_types=exc.cause_types)
@@ -190,9 +194,14 @@ class ModelClient:
             LOGGER.warning("%s", stopped)
             LOGGER.info("Model request: stage=%s request=%d context_chars=%d token_counts=unavailable",
                 stage, self.model_requests_used, self._message_context_chars(kwargs.get("messages", [])))
+            error = stopped
             raise stopped from exc
+        except BaseException as exc:
+            error = exc
+            raise
         finally:
             elapsed = time.perf_counter() - started
+            observation.finish(response=response, elapsed=elapsed, error=error)
             self.model_seconds = getattr(self, "model_seconds", 0.0) + elapsed
             LOGGER.info("Model latency: stage=%s model=%s seconds=%.3f", stage, kwargs.get("model"), elapsed)
 
@@ -895,6 +904,13 @@ class ModelClient:
             "whitespace; do not forbid internal spaces. Test the exact required example values. "
             "Write focused tests for observable behavior, and fix the implementation rather "
             "than deleting, skipping, or weakening a failing test. "
+            "Reuse adequate existing test coverage instead of adding redundant test files. "
+            "When the required implementation and its declared build/test scripts pass, stop tools "
+            "and return a concise completion summary for independent controller verification. "
+            "Do not add optional checks after success, invent script names, rerun unchanged passing "
+            "scripts, or reread unchanged files merely to confirm success. Never change a protected "
+            "manifest or assertion, even temporarily to run extra tests. The controller's complete "
+            "acceptance remains mandatory and will return remaining failures for focused repair. "
             "If a generated test contradicts the original requirement, correct its expected behavior "
             "to the requirement while retaining meaningful assertions. Fix stale mocks, relative imports "
             "and setup helpers instead of changing correct product behavior to satisfy a faulty test. "
@@ -1104,9 +1120,12 @@ class ModelClient:
         conversation: list[dict[str, Any]] = [system_msg, task_msg]
         if first_dynamic_content:
             conversation.append({"role": "user", "content": first_dynamic_content})
+        inventory = initial_file_inventory(project_tools)
+        if inventory:
+            conversation.append({"role": "user", "content": inventory})
         epoch_exchanges: list[list[dict[str, Any]]] = []
         epoch_reads: set[tuple[str, str]] = set()
-        epoch_file_reads: dict[str, str] = {}
+        read_evidence = ReadEvidence()
         compacted_summaries: list[str] = []
         checkpoint_note = ""
         budget_warned = False
@@ -1183,7 +1202,7 @@ class ModelClient:
                 required_source_reads[key[0]] = key[1]
                 # Cached reads cannot establish fresh source after failed edits.
                 epoch_reads.clear()
-                epoch_file_reads.clear()
+                read_evidence.clear()
 
         def clear_fresh_source_reads(name: str, arguments: dict[str, Any], result: str) -> None:
             refreshed = set()
@@ -1213,9 +1232,7 @@ class ModelClient:
                     if key[0] == path:
                         source_failures.pop(key)
                         source_failure_details.pop(key, None)
-                for cached_path in tuple(epoch_file_reads):
-                    if _normalized_source_path(cached_path) == path:
-                        epoch_file_reads.pop(cached_path)
+                read_evidence.invalidate([path])
             if name == "list_files" and isinstance(arguments.get("path"), str):
                 parent = _normalized_source_path(arguments["path"])
                 for path, family in tuple(required_source_reads.items()):
@@ -1255,7 +1272,7 @@ class ModelClient:
             del compacted_summaries[:-MAX_COMPACTED_EXCHANGES]
             epoch_exchanges[:] = retained
             epoch_reads.clear()
-            epoch_file_reads.clear()
+            read_evidence.retain(retained)
             if not retained:
                 thinking_disabled_epoch = False
             parts = [compact_user_content] if compact_user_content else []
@@ -1663,6 +1680,7 @@ class ModelClient:
                 self.tool_calls_used += 1
                 tool_started = time.perf_counter()
                 arguments: Any = {}
+                source_read_returned = False
                 try:
                     arguments = json.loads(tool_call.function.arguments or "{}")
                     reset_changed_source_failures()
@@ -1700,42 +1718,43 @@ class ModelClient:
                             verified_feedback = verification_feedback()
                             verified_revision = (len(progress_paths), getattr(project_tools, "source_revision", 0))
                             result = verified_feedback
-                    elif tool_call.function.name in {"list_files", "read_files", "search_text"} and read_key in epoch_reads:
+                    elif tool_call.function.name in {"list_files", "search_text"} and read_key in epoch_reads:
                         result = (
                             "The same read already returned in this conversation and no project file "
                             "has changed. Use its earlier result to make the next concrete edit."
                         )
                     else:
                         result = project_tools.call(tool_call.function.name, arguments)
+                        result = failure_source_context(tool_call.function.name, result, project_tools)
                         reset_changed_source_failures()
                         clear_fresh_source_reads(tool_call.function.name, arguments, result)
-                        if tool_call.function.name == "read_files":
-                            try:
-                                read_payload = json.loads(result)
-                                files = read_payload.get("files", [])
-                                if isinstance(files, list):
-                                    for file in files:
-                                        if not isinstance(file, dict):
-                                            continue
-                                        path, content = file.get("path"), file.get("content")
-                                        if not isinstance(path, str) or not isinstance(content, str):
-                                            continue
-                                        digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
-                                        if epoch_file_reads.get(path) == digest:
-                                            file["content"] = "[unchanged since earlier read in this conversation]"
-                                        else:
-                                            epoch_file_reads[path] = digest
-                                    result = json.dumps(read_payload, ensure_ascii=False)
-                            except (TypeError, ValueError):
-                                pass
+                        if tool_call.function.name in {"read_file", "read_files"}:
+                            source_read_returned = True
+                            original_chars = len(result)
+                            filtered = read_evidence.filter(tool_call.function.name, arguments, result)
+                            if len(filtered) <= MAX_BATCH_OUTPUT_CHARS:
+                                result = filtered
+                            if len(result) < original_chars:
+                                emit_metric("source_read_reused", request=self.model_requests_used,
+                                    tool=tool_call.function.name, original_chars=original_chars,
+                                    sent_chars=len(result), removed_chars=original_chars - len(result))
                         if tool_call.function.name in {"list_files", "read_files", "search_text"}:
                             epoch_reads.add(read_key)
                         elif len(progress_paths) > observed_writes:
                             epoch_reads.clear()
-                            epoch_file_reads.clear()
+                            # A source edit invalidates that file's digest, not every
+                            # unrelated file still present in the conversation.
+                            # read_files always rereads disk before comparing hashes,
+                            # including identical batches and external changes.
+                            changed = {_normalized_source_path(path)
+                                for path in progress_paths[observed_writes:] if isinstance(path, str)}
+                            read_evidence.invalidate(changed)
+                        if tool_call.function.name in {"write_files", "write_file"}:
+                            read_evidence.remember_write(tool_call.function.name, arguments, assistant_payload)
                 except ModelRequestInterrupted:
                     raise
                 except Exception as exc:
+                    source_read_returned = False
                     result = f"Tool error: {type(exc).__name__}: {exc}"
                     if isinstance(arguments, dict):
                         source_failure = _source_tool_failure(tool_call.function.name, arguments, exc)
@@ -1748,9 +1767,14 @@ class ModelClient:
                     "Project tool: name=%s seconds=%.3f result_chars=%d",
                     tool_call.function.name, elapsed, len(result),
                 )
+                emit_metric("tool_returned", request=self.model_requests_used,
+                    tool=metric_identifier(tool_call.function.name), seconds=elapsed,
+                    result_chars=len(result), tool_error=result.startswith("Tool error:"))
                 tool_payloads.append(
                     {"role": "tool", "tool_call_id": tool_call.id, "content": result[:MAX_BATCH_OUTPUT_CHARS]}
                 )
+                if source_read_returned and len(result) <= MAX_BATCH_OUTPUT_CHARS:
+                    read_evidence.remember(tool_call.function.name, arguments, tool_payloads[-1])
             exchange = [assistant_payload, *tool_payloads]
             conversation.extend(exchange)
             epoch_exchanges.append(exchange)

@@ -1,0 +1,40 @@
+{
+  "scope": "Synthetic shared-module repair; not platform acceptance",
+  "requirements": {
+    "id": "ROOT",
+    "name": "inventory-repair",
+    "children": [
+      {
+        "id": "STOCK",
+        "name": "Transactional stock contracts",
+        "description": "Repair the supplied CommonJS modules. Preserve exports. All functions are pure: no input object or array may be mutated. No dependencies or frontend scaffolding. Keep package.json and acceptance.cjs byte-for-byte unchanged.",
+        "children": [
+          {
+            "id": "STOCK.1",
+            "description": "quantity(value) returns value only when it is a positive safe integer; otherwise throws RangeError. available(stock, sku) returns the own-property count for sku, or zero when absent; that count must be a nonnegative safe integer or it throws RangeError. Inherited properties are absent."
+          },
+          {
+            "id": "STOCK.2",
+            "description": "reserve(stock, items) returns a new stock object with requested quantities subtracted. Items have sku and quantity. Aggregate duplicate sku quantities before comparing with available stock. Reject insufficient stock or invalid quantity/count with RangeError. Missing stock is zero. A failure must not change any input, including prior items in the same batch. Empty items return a new equal object."
+          },
+          {
+            "id": "STOCK.3",
+            "description": "release(stock, items) returns a new stock object with each positive safe integer quantity added, aggregating repeated sku entries. A previously absent SKU starts at zero. Validate using the shared helpers; reject invalid counts, quantities or unsafe resulting sums with RangeError. Never change stock or items."
+          }
+        ]
+      }
+    ]
+  },
+  "plan": "Inspect the supplied related modules, repair their shared contracts coherently, and run the protected build and test scripts. Keep package.json and acceptance.cjs immutable. Use Node built-ins only. Finish once the fixed acceptance passes; do not add features or weaken validation.",
+  "protected": [
+    "package.json",
+    "acceptance.cjs"
+  ],
+  "files": {
+    "package.json": "{\"name\": \"inventory-repair\", \"private\": true, \"scripts\": {\"build\": \"node --check src/quantity.cjs && node --check src/reserve.cjs && node --check src/release.cjs\", \"test\": \"node acceptance.cjs\"}}\n",
+    "src/quantity.cjs": "function quantity(v) { return Math.max(1, Math.round(v)); }\nfunction available(stock, sku) { return stock[sku] || 0; }\nmodule.exports = {quantity, available};\n",
+    "src/reserve.cjs": "const {quantity,available}=require('./quantity.cjs');\nfunction reserve(stock,items){ for(const item of items){stock[item.sku]=available(stock,item.sku)-quantity(item.quantity);} return stock;}\nmodule.exports={reserve};\n",
+    "src/release.cjs": "const {quantity,available}=require('./quantity.cjs');\nfunction release(stock,items){for(const item of items){stock[item.sku]=quantity(item.quantity);}return stock;}\nmodule.exports={release};\n",
+    "acceptance.cjs": "const assert=require('node:assert/strict');\nconst {quantity,available}=require('./src/quantity.cjs');\nconst {reserve}=require('./src/reserve.cjs');\nconst {release}=require('./src/release.cjs');\nassert.equal(quantity(2),2);\nfor(const v of [0,-1,1.5,'2',NaN,Infinity,Number.MAX_SAFE_INTEGER+1]) assert.throws(()=>quantity(v),RangeError);\nassert.equal(available(Object.create({a:9}),'a'),0);\nassert.equal(available({a:0},'a'),0);\nfor(const v of [-1,1.5,'2',NaN]) assert.throws(()=>available({a:v},'a'),RangeError);\nconst stock=Object.freeze({a:5,b:2});\nconst items=Object.freeze([Object.freeze({sku:'a',quantity:2}),Object.freeze({sku:'a',quantity:1})]);\nassert.deepEqual(reserve(stock,items),{a:2,b:2});\nassert.deepEqual(stock,{a:5,b:2});\nassert.deepEqual(release(stock,items),{a:8,b:2});\nassert.deepEqual(release(stock,[{sku:'c',quantity:3}]),{a:5,b:2,c:3});\nconst mutable={a:5,b:1};\nassert.throws(()=>reserve(mutable,[{sku:'a',quantity:2},{sku:'b',quantity:2}]),RangeError);\nassert.deepEqual(mutable,{a:5,b:1});\nassert.throws(()=>reserve(stock,[{sku:'a',quantity:3},{sku:'a',quantity:3}]),RangeError);\nassert.throws(()=>reserve(stock,[{sku:'absent',quantity:1}]),RangeError);\nfor(const fn of [reserve,release]){\n assert.throws(()=>fn(stock,[{sku:'a',quantity:0}]),RangeError);\n assert.throws(()=>fn({a:-1},[{sku:'a',quantity:1}]),RangeError);\n assert.deepEqual(fn(stock,[]),stock);\n assert.notEqual(fn(stock,[]),stock);\n}\nassert.throws(()=>release({a:Number.MAX_SAFE_INTEGER},[{sku:'a',quantity:1}]),RangeError);\nconsole.log('protected stock acceptance passed');\n"
+  }
+}

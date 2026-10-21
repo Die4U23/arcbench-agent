@@ -1,0 +1,109 @@
+{
+  "schema_version": 1,
+  "suite": "small-controller-pilot-v1",
+  "scope": "Synthetic library pilot only; not full Web/TicketBooking or formal acceptance",
+  "repeats": 3,
+  "arms": [
+    {
+      "id": "flash_before",
+      "source_commit": "b9be372ff9319dbe6e6887852921a1c64bab3c27",
+      "model": "deepseek-flash",
+      "settings": {
+        "thinking": "disabled",
+        "temperature": 0
+      },
+      "role": "internal baseline"
+    },
+    {
+      "id": "flash_after",
+      "source_commit": "PIN_REVIEWED_CANDIDATE_BEFORE_PAID_RUN",
+      "model": "deepseek-flash",
+      "settings": {
+        "thinking": "disabled",
+        "temperature": 0
+      },
+      "role": "same-model candidate"
+    },
+    {
+      "id": "claude_code",
+      "source_commit": null,
+      "model": "RESOLVE_ACTUAL_MODEL_BEFORE_APPROVAL",
+      "tool_version": "PIN_BEFORE_APPROVAL",
+      "role": "product comparison, not architecture-only"
+    }
+  ],
+  "environment": {
+    "docker_image_id": "UNRESOLVED_DOCKER_ACCESS_BLOCKED",
+    "docker_image_tag": "arcbench-sandbox:1",
+    "node": "24.18.0",
+    "python": "3.12.6",
+    "cpu_limit": 2,
+    "memory_mib": 2048,
+    "pid_limit": 256,
+    "work_tmpfs_mib": 512,
+    "tmp_tmpfs_mib": 1024,
+    "execution_network": "none",
+    "model_transport_network": "host controller only",
+    "parallel_trials": 1,
+    "dependencies": "none beyond Node built-ins; npm install may not fetch",
+    "workspace": "fresh empty container workspace and immutable seed per trial",
+    "cache_policy": "fresh conversation/client; provider cache cannot be reset or assumed cold; rotate arms; record timestamps and actual hit/miss fields"
+  },
+  "rules": {
+    "human_intervention": "none after start; intervention ends the trial as interrupted; never silently resume",
+    "failures": "all started trials including blocked/timeout/interrupted remain denominator",
+    "first_build": "first complete build invocation after initial implementation; missing/timeout remains unknown/failed as observed",
+    "build_repairs": "count rebuilds following failed build with intervening source edit; unchanged reruns are separate build attempts",
+    "first_acceptance": "first complete protected acceptance, not self-authored tests; missing is unknown",
+    "multi_turn": "deliver each next fixed turn only after prior acceptance succeeds; failed turn ends trial; final success requires every turn; log each turn timestamp",
+    "protected_assertions": "copy from this fixed spec; verify SHA256 before and after; model cannot edit them",
+    "limits": "future proposal only; no paid runner is included or authorized"
+  },
+  "cases": [
+    {
+      "id": "fresh",
+      "kind": "from_scratch",
+      "initial_files": {
+        "package.json": "{\"name\": \"arcbench-fixed-pilot\", \"private\": true, \"scripts\": {\"build\": \"node --check index.cjs\", \"test\": \"node acceptance.cjs\"}, \"version\": \"1.0.0\"}\n"
+      },
+      "turns": [
+        "Implement CommonJS index.cjs exporting total(items). Sum integer nonnegative price times integer positive quantity. Empty input returns zero. Do not mutate the input. Use Node built-ins only. Keep the supplied build/test scripts and protected acceptance unchanged."
+      ],
+      "protected_acceptance": {
+        "acceptance.cjs": "const assert = require('node:assert/strict'); const {total} = require('./index.cjs'); assert.equal(total([]),0); assert.equal(total([{price:10,quantity:2},{price:3,quantity:4}]),32); assert.equal(total([{price:0,quantity:7}]),0);\nconst items=[{price:2,quantity:3}]; const before=JSON.stringify(items); total(items); assert.equal(JSON.stringify(items),before);\n"
+      }
+    },
+    {
+      "id": "repair",
+      "kind": "targeted_repair",
+      "initial_files": {
+        "package.json": "{\"name\": \"arcbench-fixed-pilot\", \"private\": true, \"scripts\": {\"build\": \"node --check index.cjs\", \"test\": \"node acceptance.cjs\"}, \"version\": \"1.0.0\"}\n",
+        "index.cjs": "exports.total = items => items.reduce((sum, item) => sum + item.price, 0);\n"
+      },
+      "turns": [
+        "Implement CommonJS index.cjs exporting total(items). Sum integer nonnegative price times integer positive quantity. Empty input returns zero. Do not mutate the input. Use Node built-ins only. Keep the supplied build/test scripts and protected acceptance unchanged. Fix the quantity handling defect in the provided project."
+      ],
+      "protected_acceptance": {
+        "acceptance.cjs": "const assert = require('node:assert/strict'); const {total} = require('./index.cjs'); assert.equal(total([]),0); assert.equal(total([{price:10,quantity:2},{price:3,quantity:4}]),32); assert.equal(total([{price:0,quantity:7}]),0);\n"
+      }
+    },
+    {
+      "id": "changes",
+      "kind": "multi_turn_change",
+      "initial_files": {
+        "package.json": "{\"name\": \"arcbench-fixed-pilot\", \"private\": true, \"scripts\": {\"build\": \"node --check index.cjs\", \"test\": \"node acceptance.cjs\"}, \"version\": \"1.0.0\"}\n",
+        "index.cjs": "exports.total = items => items.reduce((sum, item) => sum + item.price * item.quantity, 0);\n"
+      },
+      "turns": [
+        "Retain total(items). Add discount(amount, percent), returning Math.floor(amount * (100 - percent) / 100) for integer amount >= 0 and percent in [0,100].",
+        "Reject invalid or negative amount and noninteger/out-of-range percent with RangeError. Preserve earlier behavior.",
+        "Add receipt(items, percent) returning {subtotal:total(items), payable:discount(total(items), percent)} without input mutation. Preserve all earlier contracts."
+      ],
+      "protected_acceptance": {
+        "turn-1.cjs": "const assert = require('node:assert/strict'); const {total} = require('./index.cjs'); assert.equal(total([]),0); assert.equal(total([{price:10,quantity:2},{price:3,quantity:4}]),32); assert.equal(total([{price:0,quantity:7}]),0);\nconst {discount}=require('./index.cjs'); assert.equal(discount(101,25),75); assert.equal(discount(20,100),0);\n",
+        "turn-2.cjs": "const assert = require('node:assert/strict'); const {total} = require('./index.cjs'); assert.equal(total([]),0); assert.equal(total([{price:10,quantity:2},{price:3,quantity:4}]),32); assert.equal(total([{price:0,quantity:7}]),0);\nconst {discount}=require('./index.cjs'); assert.equal(discount(101,25),75); for(const args of [[-1,5],[10,101],[10,-1],[10,1.5],['10',10]]) assert.throws(()=>discount(...args),RangeError);\n",
+        "turn-3.cjs": "const assert = require('node:assert/strict'); const {total} = require('./index.cjs'); assert.equal(total([]),0); assert.equal(total([{price:10,quantity:2},{price:3,quantity:4}]),32); assert.equal(total([{price:0,quantity:7}]),0);\nconst {discount,receipt}=require('./index.cjs'); assert.equal(discount(101,25),75); for(const args of [[-1,5],[10,101],[10,-1],[10,1.5],['10',10]]) assert.throws(()=>discount(...args),RangeError); const items=[{price:10,quantity:2}]; assert.deepEqual(receipt(items,25),{subtotal:20,payable:15}); assert.deepEqual(items,[{price:10,quantity:2}]);\n"
+      }
+    }
+  ]
+}

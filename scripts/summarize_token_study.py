@@ -7,6 +7,39 @@ from pathlib import Path
 import statistics
 
 
+def trace_diagnostics(path):
+    if not path.exists():
+        return None
+    events = [json.loads(line) for line in path.read_text(encoding='utf-8').splitlines()]
+    passing = set()
+    first_pass = None
+    failed_scripts = 0
+    unknown_scripts = 0
+    for index, event in enumerate(events):
+        if event['name'] in {'write_file', 'write_files', 'replace_text'}:
+            passing.clear()
+        if event['name'] not in {'run_project_script', 'run_project_scripts'} or 'result' not in event:
+            continue
+        payload = json.loads(event['result'])
+        checks = payload.get('results', []) if event['name'] == 'run_project_scripts' else [payload]
+        for check in checks:
+            failed_scripts += check.get('exit_code') != 0
+            unknown_scripts += 'does not define script' in check.get('error', '')
+            command = check.get('command')
+            if command in {'npm run build', 'npm run test'}:
+                if check.get('exit_code') == 0:
+                    passing.add(command)
+                else:
+                    passing.discard(command)
+        if len(passing) == 2 and first_pass is None:
+            first_pass = index
+    return dict(recorded_tool_calls=len(events), first_passing_build_and_test_tool_call=
+                first_pass + 1 if first_pass is not None else None,
+                tool_calls_after_first_passing_build_and_test=len(events)-first_pass-1 if first_pass is not None else None,
+                failed_script_invocations=failed_scripts, nonexistent_script_invocations=unknown_scripts,
+                rejected_tool_calls=sum('error_type' in event for event in events))
+
+
 def summarize(study):
     usage = json.loads((study / 'token-usage.json').read_text(encoding='utf-8'))
     if any(r['status'] != 'settled' for r in usage['requests']):
@@ -47,6 +80,7 @@ def summarize(study):
         source_trees[commit] = tree
         row.update(fixture=fixture, arm=arm, repetition=int(repetition), tools=dict(tools),
                    reuse_events=reuse, metadata=dict(metadata, source_tree_sha256=tree_digest),
+                   trace_diagnostics=trace_diagnostics(path.with_name('tool-trace.jsonl')),
                    result_sha256=hashlib.sha256(path.read_bytes()).hexdigest())
         rows.append(row)
     groups = {}

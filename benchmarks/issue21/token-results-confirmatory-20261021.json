@@ -1,0 +1,1473 @@
+{
+  "scope": "Fixed synthetic repairs; not platform acceptance",
+  "policy": {
+    "model": "deepseek-flash",
+    "total_tokens": 4000000,
+    "requests": 288,
+    "round_requests": 12,
+    "round_seconds": 600,
+    "input_bound": 1100000,
+    "max_output": 4096
+  },
+  "stopped_reason": null,
+  "planned_trials": 24,
+  "execution_order": [
+    "shared-module-repair-baseline-1",
+    "shared-module-repair-candidate-1",
+    "inventory-repair-baseline-1",
+    "inventory-repair-candidate-1",
+    "pagination-repair-baseline-1",
+    "pagination-repair-candidate-1",
+    "shared-module-repair-candidate-2",
+    "shared-module-repair-baseline-2",
+    "inventory-repair-candidate-2",
+    "inventory-repair-baseline-2",
+    "pagination-repair-candidate-2",
+    "pagination-repair-baseline-2",
+    "shared-module-repair-baseline-3",
+    "shared-module-repair-candidate-3",
+    "inventory-repair-baseline-3",
+    "inventory-repair-candidate-3",
+    "pagination-repair-baseline-3",
+    "pagination-repair-candidate-3",
+    "shared-module-repair-candidate-4",
+    "shared-module-repair-baseline-4",
+    "inventory-repair-candidate-4",
+    "inventory-repair-baseline-4",
+    "pagination-repair-candidate-4",
+    "pagination-repair-baseline-4"
+  ],
+  "groups": {
+    "all": {
+      "baseline": {
+        "trials": 12,
+        "passed": 12,
+        "requests": 130,
+        "usage": {
+          "prompt_tokens": 883434,
+          "completion_tokens": 31223,
+          "prompt_cache_hit_tokens": 845056,
+          "prompt_cache_miss_tokens": 38378
+        },
+        "total_tokens": 914657,
+        "tokens_per_success": 76221.41666666667,
+        "input_hit_rate": 0.9565581582778113,
+        "median_seconds": 37.39100000000326,
+        "tools": {
+          "list_files": 13,
+          "read_files": 14,
+          "write_files": 27,
+          "run_project_scripts": 35,
+          "replace_text": 10,
+          "run_project_script": 20,
+          "read_file": 6
+        }
+      },
+      "candidate": {
+        "trials": 12,
+        "passed": 12,
+        "requests": 56,
+        "usage": {
+          "prompt_tokens": 336026,
+          "completion_tokens": 14830,
+          "prompt_cache_hit_tokens": 313850,
+          "prompt_cache_miss_tokens": 22176
+        },
+        "total_tokens": 350856,
+        "tokens_per_success": 29238.0,
+        "input_hit_rate": 0.9340051067476921,
+        "median_seconds": 17.64900000000489,
+        "tools": {
+          "read_files": 12,
+          "write_files": 12,
+          "run_project_scripts": 16,
+          "replace_text": 4
+        }
+      }
+    },
+    "inventory-repair": {
+      "baseline": {
+        "trials": 4,
+        "passed": 4,
+        "requests": 47,
+        "usage": {
+          "prompt_tokens": 319888,
+          "completion_tokens": 12019,
+          "prompt_cache_hit_tokens": 306432,
+          "prompt_cache_miss_tokens": 13456
+        },
+        "total_tokens": 331907,
+        "tokens_per_success": 82976.75,
+        "input_hit_rate": 0.9579352773470715,
+        "median_seconds": 39.11000000000058,
+        "tools": {
+          "list_files": 5,
+          "read_files": 4,
+          "write_files": 11,
+          "run_project_scripts": 9,
+          "run_project_script": 12,
+          "read_file": 4,
+          "replace_text": 1
+        }
+      },
+      "candidate": {
+        "trials": 4,
+        "passed": 4,
+        "requests": 16,
+        "usage": {
+          "prompt_tokens": 90148,
+          "completion_tokens": 5206,
+          "prompt_cache_hit_tokens": 85376,
+          "prompt_cache_miss_tokens": 4772
+        },
+        "total_tokens": 95354,
+        "tokens_per_success": 23838.5,
+        "input_hit_rate": 0.9470648267293783,
+        "median_seconds": 17.64900000000489,
+        "tools": {
+          "read_files": 4,
+          "write_files": 4,
+          "run_project_scripts": 4
+        }
+      }
+    },
+    "pagination-repair": {
+      "baseline": {
+        "trials": 4,
+        "passed": 4,
+        "requests": 48,
+        "usage": {
+          "prompt_tokens": 339132,
+          "completion_tokens": 11935,
+          "prompt_cache_hit_tokens": 322816,
+          "prompt_cache_miss_tokens": 16316
+        },
+        "total_tokens": 351067,
+        "tokens_per_success": 87766.75,
+        "input_hit_rate": 0.9518889399997641,
+        "median_seconds": 38.49949999999808,
+        "tools": {
+          "list_files": 4,
+          "read_files": 4,
+          "write_files": 11,
+          "run_project_scripts": 17,
+          "run_project_script": 6,
+          "read_file": 2,
+          "replace_text": 4
+        }
+      },
+      "candidate": {
+        "trials": 4,
+        "passed": 4,
+        "requests": 16,
+        "usage": {
+          "prompt_tokens": 89776,
+          "completion_tokens": 4355,
+          "prompt_cache_hit_tokens": 83840,
+          "prompt_cache_miss_tokens": 5936
+        },
+        "total_tokens": 94131,
+        "tokens_per_success": 23532.75,
+        "input_hit_rate": 0.9338798788094814,
+        "median_seconds": 17.008499999996275,
+        "tools": {
+          "read_files": 4,
+          "write_files": 4,
+          "run_project_scripts": 4
+        }
+      }
+    },
+    "shared-module-repair": {
+      "baseline": {
+        "trials": 4,
+        "passed": 4,
+        "requests": 35,
+        "usage": {
+          "prompt_tokens": 224414,
+          "completion_tokens": 7269,
+          "prompt_cache_hit_tokens": 215808,
+          "prompt_cache_miss_tokens": 8606
+        },
+        "total_tokens": 231683,
+        "tokens_per_success": 57920.75,
+        "input_hit_rate": 0.9616512338802392,
+        "median_seconds": 28.343999999997322,
+        "tools": {
+          "list_files": 4,
+          "read_files": 6,
+          "write_files": 5,
+          "run_project_scripts": 9,
+          "replace_text": 5,
+          "run_project_script": 2
+        }
+      },
+      "candidate": {
+        "trials": 4,
+        "passed": 4,
+        "requests": 24,
+        "usage": {
+          "prompt_tokens": 156102,
+          "completion_tokens": 5269,
+          "prompt_cache_hit_tokens": 144634,
+          "prompt_cache_miss_tokens": 11468
+        },
+        "total_tokens": 161371,
+        "tokens_per_success": 40342.75,
+        "input_hit_rate": 0.9265352141548475,
+        "median_seconds": 22.5940000000046,
+        "tools": {
+          "read_files": 4,
+          "write_files": 4,
+          "run_project_scripts": 8,
+          "replace_text": 4
+        }
+      }
+    }
+  },
+  "rows": [
+    {
+      "label": "shared-module-repair-baseline-1",
+      "outcome": "passed",
+      "error_type": null,
+      "requests": 8,
+      "seconds": 27.51600000000326,
+      "usage": {
+        "prompt_tokens": 49595,
+        "completion_tokens": 1642,
+        "prompt_cache_hit_tokens": 47616,
+        "prompt_cache_miss_tokens": 1979
+      },
+      "usage_complete": true,
+      "checks": [
+        {
+          "exit_code": 0
+        },
+        {
+          "exit_code": 0
+        }
+      ],
+      "scope": "Synthetic shared-module repair, not platform 30/30",
+      "fixture": "shared-module-repair",
+      "arm": "baseline",
+      "repetition": 1,
+      "tools": {
+        "list_files": 1,
+        "read_files": 2,
+        "write_files": 1,
+        "run_project_scripts": 2,
+        "replace_text": 1
+      },
+      "reuse_events": 1,
+      "metadata": {
+        "source_commit": "d3d5e6eaf14dc770df709cdf2b031fa162d0e54c",
+        "image": "sha256:3c9ee4121afa393a13ffa0d6d278b30545735781610e430aa2c4a08e7948296c",
+        "spec_sha256": "4018400a6a0a946bbab7932317b2c556526e94a72e456863a02cd40e20824c7a",
+        "source_tree_sha256": "b1a31823f4b21fb7058616c331c1ccdf8feab73b13f99aba5b93cbee0b50b5db"
+      },
+      "trace_diagnostics": {
+        "recorded_tool_calls": 7,
+        "first_passing_build_and_test_tool_call": 6,
+        "tool_calls_after_first_passing_build_and_test": 1,
+        "failed_script_invocations": 1,
+        "nonexistent_script_invocations": 0,
+        "rejected_tool_calls": 0
+      },
+      "result_sha256": "7122a2341ab82df2158c512143743a33ce0838621de8451cb051546995e39b18"
+    },
+    {
+      "label": "shared-module-repair-candidate-1",
+      "outcome": "passed",
+      "error_type": null,
+      "requests": 6,
+      "seconds": 22.187999999994645,
+      "usage": {
+        "prompt_tokens": 39045,
+        "completion_tokens": 1282,
+        "prompt_cache_hit_tokens": 32000,
+        "prompt_cache_miss_tokens": 7045
+      },
+      "usage_complete": true,
+      "checks": [
+        {
+          "exit_code": 0
+        },
+        {
+          "exit_code": 0
+        }
+      ],
+      "scope": "Synthetic shared-module repair, not platform 30/30",
+      "fixture": "shared-module-repair",
+      "arm": "candidate",
+      "repetition": 1,
+      "tools": {
+        "read_files": 1,
+        "write_files": 1,
+        "run_project_scripts": 2,
+        "replace_text": 1
+      },
+      "reuse_events": 0,
+      "metadata": {
+        "source_commit": "0d9e0a93f87a653ec1baa55a60f88ad1207086b1",
+        "image": "sha256:3c9ee4121afa393a13ffa0d6d278b30545735781610e430aa2c4a08e7948296c",
+        "spec_sha256": "4018400a6a0a946bbab7932317b2c556526e94a72e456863a02cd40e20824c7a",
+        "source_tree_sha256": "f364386d274e55a0bb4be4acccaa209026a1991b3eaaa2356cedb60dfc898682"
+      },
+      "trace_diagnostics": {
+        "recorded_tool_calls": 5,
+        "first_passing_build_and_test_tool_call": 5,
+        "tool_calls_after_first_passing_build_and_test": 0,
+        "failed_script_invocations": 1,
+        "nonexistent_script_invocations": 0,
+        "rejected_tool_calls": 0
+      },
+      "result_sha256": "73e027dbc8435887359eccb9b4af7335570ecc38846e3ff30d48c8e2e31de668"
+    },
+    {
+      "label": "inventory-repair-baseline-1",
+      "outcome": "passed",
+      "error_type": null,
+      "requests": 11,
+      "seconds": 36.89100000000326,
+      "usage": {
+        "prompt_tokens": 73193,
+        "completion_tokens": 3132,
+        "prompt_cache_hit_tokens": 70784,
+        "prompt_cache_miss_tokens": 2409
+      },
+      "usage_complete": true,
+      "checks": [
+        {
+          "exit_code": 0
+        },
+        {
+          "exit_code": 0
+        }
+      ],
+      "scope": "Synthetic shared-module repair, not platform 30/30",
+      "fixture": "inventory-repair",
+      "arm": "baseline",
+      "repetition": 1,
+      "tools": {
+        "list_files": 1,
+        "read_files": 1,
+        "write_files": 3,
+        "run_project_scripts": 2,
+        "run_project_script": 2,
+        "read_file": 1
+      },
+      "reuse_events": 0,
+      "metadata": {
+        "source_commit": "d3d5e6eaf14dc770df709cdf2b031fa162d0e54c",
+        "image": "sha256:3c9ee4121afa393a13ffa0d6d278b30545735781610e430aa2c4a08e7948296c",
+        "spec_sha256": "7fd131657d53c37b731eb7490bbaf9fb30a5413f6c69ee442664bc39772eb025",
+        "source_tree_sha256": "b1a31823f4b21fb7058616c331c1ccdf8feab73b13f99aba5b93cbee0b50b5db"
+      },
+      "trace_diagnostics": {
+        "recorded_tool_calls": 10,
+        "first_passing_build_and_test_tool_call": 4,
+        "tool_calls_after_first_passing_build_and_test": 6,
+        "failed_script_invocations": 0,
+        "nonexistent_script_invocations": 0,
+        "rejected_tool_calls": 1
+      },
+      "result_sha256": "94742fd028c40ad21d0e1b8a811efca1c2da99e4cb7ed1fae95f5addef1946e1"
+    },
+    {
+      "label": "inventory-repair-candidate-1",
+      "outcome": "passed",
+      "error_type": null,
+      "requests": 4,
+      "seconds": 17.514999999999418,
+      "usage": {
+        "prompt_tokens": 22528,
+        "completion_tokens": 1279,
+        "prompt_cache_hit_tokens": 20096,
+        "prompt_cache_miss_tokens": 2432
+      },
+      "usage_complete": true,
+      "checks": [
+        {
+          "exit_code": 0
+        },
+        {
+          "exit_code": 0
+        }
+      ],
+      "scope": "Synthetic shared-module repair, not platform 30/30",
+      "fixture": "inventory-repair",
+      "arm": "candidate",
+      "repetition": 1,
+      "tools": {
+        "read_files": 1,
+        "write_files": 1,
+        "run_project_scripts": 1
+      },
+      "reuse_events": 0,
+      "metadata": {
+        "source_commit": "0d9e0a93f87a653ec1baa55a60f88ad1207086b1",
+        "image": "sha256:3c9ee4121afa393a13ffa0d6d278b30545735781610e430aa2c4a08e7948296c",
+        "spec_sha256": "7fd131657d53c37b731eb7490bbaf9fb30a5413f6c69ee442664bc39772eb025",
+        "source_tree_sha256": "f364386d274e55a0bb4be4acccaa209026a1991b3eaaa2356cedb60dfc898682"
+      },
+      "trace_diagnostics": {
+        "recorded_tool_calls": 3,
+        "first_passing_build_and_test_tool_call": 3,
+        "tool_calls_after_first_passing_build_and_test": 0,
+        "failed_script_invocations": 0,
+        "nonexistent_script_invocations": 0,
+        "rejected_tool_calls": 0
+      },
+      "result_sha256": "a7c859d6acbad170057cb1e9feb2e96f6bbe030cac2de507515bb629aff148a0"
+    },
+    {
+      "label": "pagination-repair-baseline-1",
+      "outcome": "passed",
+      "error_type": null,
+      "requests": 12,
+      "seconds": 38.46799999999348,
+      "usage": {
+        "prompt_tokens": 82113,
+        "completion_tokens": 2591,
+        "prompt_cache_hit_tokens": 79616,
+        "prompt_cache_miss_tokens": 2497
+      },
+      "usage_complete": true,
+      "checks": [
+        {
+          "exit_code": 0
+        },
+        {
+          "exit_code": 0
+        }
+      ],
+      "scope": "Synthetic shared-module repair, not platform 30/30",
+      "fixture": "pagination-repair",
+      "arm": "baseline",
+      "repetition": 1,
+      "tools": {
+        "list_files": 1,
+        "read_files": 1,
+        "write_files": 2,
+        "run_project_scripts": 4,
+        "run_project_script": 2,
+        "read_file": 1,
+        "replace_text": 1
+      },
+      "reuse_events": 0,
+      "metadata": {
+        "source_commit": "d3d5e6eaf14dc770df709cdf2b031fa162d0e54c",
+        "image": "sha256:3c9ee4121afa393a13ffa0d6d278b30545735781610e430aa2c4a08e7948296c",
+        "spec_sha256": "3044d0a8537a45437efe060ca84086879c14d035575cc59423a2a377e06a4845",
+        "source_tree_sha256": "b1a31823f4b21fb7058616c331c1ccdf8feab73b13f99aba5b93cbee0b50b5db"
+      },
+      "trace_diagnostics": {
+        "recorded_tool_calls": 12,
+        "first_passing_build_and_test_tool_call": 4,
+        "tool_calls_after_first_passing_build_and_test": 8,
+        "failed_script_invocations": 0,
+        "nonexistent_script_invocations": 0,
+        "rejected_tool_calls": 1
+      },
+      "result_sha256": "dbfb571bc68734a6af0219944b6c5e4da508db7950ec749355cb52f14f8fed9a"
+    },
+    {
+      "label": "pagination-repair-candidate-1",
+      "outcome": "passed",
+      "error_type": null,
+      "requests": 4,
+      "seconds": 16.781999999991967,
+      "usage": {
+        "prompt_tokens": 22244,
+        "completion_tokens": 1006,
+        "prompt_cache_hit_tokens": 19712,
+        "prompt_cache_miss_tokens": 2532
+      },
+      "usage_complete": true,
+      "checks": [
+        {
+          "exit_code": 0
+        },
+        {
+          "exit_code": 0
+        }
+      ],
+      "scope": "Synthetic shared-module repair, not platform 30/30",
+      "fixture": "pagination-repair",
+      "arm": "candidate",
+      "repetition": 1,
+      "tools": {
+        "read_files": 1,
+        "write_files": 1,
+        "run_project_scripts": 1
+      },
+      "reuse_events": 0,
+      "metadata": {
+        "source_commit": "0d9e0a93f87a653ec1baa55a60f88ad1207086b1",
+        "image": "sha256:3c9ee4121afa393a13ffa0d6d278b30545735781610e430aa2c4a08e7948296c",
+        "spec_sha256": "3044d0a8537a45437efe060ca84086879c14d035575cc59423a2a377e06a4845",
+        "source_tree_sha256": "f364386d274e55a0bb4be4acccaa209026a1991b3eaaa2356cedb60dfc898682"
+      },
+      "trace_diagnostics": {
+        "recorded_tool_calls": 3,
+        "first_passing_build_and_test_tool_call": 3,
+        "tool_calls_after_first_passing_build_and_test": 0,
+        "failed_script_invocations": 0,
+        "nonexistent_script_invocations": 0,
+        "rejected_tool_calls": 0
+      },
+      "result_sha256": "2572b642cd7f4a006eadf08ca57359c0ee800b4e5cafd0ff73d2c4af2d927aa6"
+    },
+    {
+      "label": "shared-module-repair-candidate-2",
+      "outcome": "passed",
+      "error_type": null,
+      "requests": 6,
+      "seconds": 22.985000000000582,
+      "usage": {
+        "prompt_tokens": 39019,
+        "completion_tokens": 1339,
+        "prompt_cache_hit_tokens": 37118,
+        "prompt_cache_miss_tokens": 1901
+      },
+      "usage_complete": true,
+      "checks": [
+        {
+          "exit_code": 0
+        },
+        {
+          "exit_code": 0
+        }
+      ],
+      "scope": "Synthetic shared-module repair, not platform 30/30",
+      "fixture": "shared-module-repair",
+      "arm": "candidate",
+      "repetition": 2,
+      "tools": {
+        "read_files": 1,
+        "write_files": 1,
+        "run_project_scripts": 2,
+        "replace_text": 1
+      },
+      "reuse_events": 0,
+      "metadata": {
+        "source_commit": "0d9e0a93f87a653ec1baa55a60f88ad1207086b1",
+        "image": "sha256:3c9ee4121afa393a13ffa0d6d278b30545735781610e430aa2c4a08e7948296c",
+        "spec_sha256": "4018400a6a0a946bbab7932317b2c556526e94a72e456863a02cd40e20824c7a",
+        "source_tree_sha256": "f364386d274e55a0bb4be4acccaa209026a1991b3eaaa2356cedb60dfc898682"
+      },
+      "trace_diagnostics": {
+        "recorded_tool_calls": 5,
+        "first_passing_build_and_test_tool_call": 5,
+        "tool_calls_after_first_passing_build_and_test": 0,
+        "failed_script_invocations": 1,
+        "nonexistent_script_invocations": 0,
+        "rejected_tool_calls": 0
+      },
+      "result_sha256": "935404976415da18dd4da221ba846bc58cd0993cab82f9becae61839a022f686"
+    },
+    {
+      "label": "shared-module-repair-baseline-2",
+      "outcome": "passed",
+      "error_type": null,
+      "requests": 8,
+      "seconds": 29.171999999991385,
+      "usage": {
+        "prompt_tokens": 49740,
+        "completion_tokens": 1739,
+        "prompt_cache_hit_tokens": 47744,
+        "prompt_cache_miss_tokens": 1996
+      },
+      "usage_complete": true,
+      "checks": [
+        {
+          "exit_code": 0
+        },
+        {
+          "exit_code": 0
+        }
+      ],
+      "scope": "Synthetic shared-module repair, not platform 30/30",
+      "fixture": "shared-module-repair",
+      "arm": "baseline",
+      "repetition": 2,
+      "tools": {
+        "list_files": 1,
+        "read_files": 1,
+        "write_files": 1,
+        "run_project_scripts": 2,
+        "replace_text": 1,
+        "run_project_script": 1
+      },
+      "reuse_events": 0,
+      "metadata": {
+        "source_commit": "d3d5e6eaf14dc770df709cdf2b031fa162d0e54c",
+        "image": "sha256:3c9ee4121afa393a13ffa0d6d278b30545735781610e430aa2c4a08e7948296c",
+        "spec_sha256": "4018400a6a0a946bbab7932317b2c556526e94a72e456863a02cd40e20824c7a",
+        "source_tree_sha256": "b1a31823f4b21fb7058616c331c1ccdf8feab73b13f99aba5b93cbee0b50b5db"
+      },
+      "trace_diagnostics": {
+        "recorded_tool_calls": 7,
+        "first_passing_build_and_test_tool_call": 6,
+        "tool_calls_after_first_passing_build_and_test": 1,
+        "failed_script_invocations": 1,
+        "nonexistent_script_invocations": 0,
+        "rejected_tool_calls": 1
+      },
+      "result_sha256": "795bf860089d20aaeb4ecdaddb0ae15f6490b1c50ccdd61ef8485db39eeb553c"
+    },
+    {
+      "label": "inventory-repair-candidate-2",
+      "outcome": "passed",
+      "error_type": null,
+      "requests": 4,
+      "seconds": 17.51600000000326,
+      "usage": {
+        "prompt_tokens": 22540,
+        "completion_tokens": 1309,
+        "prompt_cache_hit_tokens": 21760,
+        "prompt_cache_miss_tokens": 780
+      },
+      "usage_complete": true,
+      "checks": [
+        {
+          "exit_code": 0
+        },
+        {
+          "exit_code": 0
+        }
+      ],
+      "scope": "Synthetic shared-module repair, not platform 30/30",
+      "fixture": "inventory-repair",
+      "arm": "candidate",
+      "repetition": 2,
+      "tools": {
+        "read_files": 1,
+        "write_files": 1,
+        "run_project_scripts": 1
+      },
+      "reuse_events": 0,
+      "metadata": {
+        "source_commit": "0d9e0a93f87a653ec1baa55a60f88ad1207086b1",
+        "image": "sha256:3c9ee4121afa393a13ffa0d6d278b30545735781610e430aa2c4a08e7948296c",
+        "spec_sha256": "7fd131657d53c37b731eb7490bbaf9fb30a5413f6c69ee442664bc39772eb025",
+        "source_tree_sha256": "f364386d274e55a0bb4be4acccaa209026a1991b3eaaa2356cedb60dfc898682"
+      },
+      "trace_diagnostics": {
+        "recorded_tool_calls": 3,
+        "first_passing_build_and_test_tool_call": 3,
+        "tool_calls_after_first_passing_build_and_test": 0,
+        "failed_script_invocations": 0,
+        "nonexistent_script_invocations": 0,
+        "rejected_tool_calls": 0
+      },
+      "result_sha256": "3adbf18814dcc135d224c021fdba3ce86bee622c4e7bd596528f051cd95eac0a"
+    },
+    {
+      "label": "inventory-repair-baseline-2",
+      "outcome": "passed",
+      "error_type": null,
+      "requests": 12,
+      "seconds": 40.328999999997905,
+      "usage": {
+        "prompt_tokens": 82140,
+        "completion_tokens": 2976,
+        "prompt_cache_hit_tokens": 79360,
+        "prompt_cache_miss_tokens": 2780
+      },
+      "usage_complete": true,
+      "checks": [
+        {
+          "exit_code": 0
+        },
+        {
+          "exit_code": 0
+        }
+      ],
+      "scope": "Synthetic shared-module repair, not platform 30/30",
+      "fixture": "inventory-repair",
+      "arm": "baseline",
+      "repetition": 2,
+      "tools": {
+        "list_files": 1,
+        "read_files": 1,
+        "write_files": 2,
+        "run_project_scripts": 3,
+        "run_project_script": 3,
+        "read_file": 2
+      },
+      "reuse_events": 0,
+      "metadata": {
+        "source_commit": "d3d5e6eaf14dc770df709cdf2b031fa162d0e54c",
+        "image": "sha256:3c9ee4121afa393a13ffa0d6d278b30545735781610e430aa2c4a08e7948296c",
+        "spec_sha256": "7fd131657d53c37b731eb7490bbaf9fb30a5413f6c69ee442664bc39772eb025",
+        "source_tree_sha256": "b1a31823f4b21fb7058616c331c1ccdf8feab73b13f99aba5b93cbee0b50b5db"
+      },
+      "trace_diagnostics": {
+        "recorded_tool_calls": 12,
+        "first_passing_build_and_test_tool_call": 4,
+        "tool_calls_after_first_passing_build_and_test": 8,
+        "failed_script_invocations": 0,
+        "nonexistent_script_invocations": 0,
+        "rejected_tool_calls": 1
+      },
+      "result_sha256": "a60ec89e2d0f645a6059c41d5f44da0867bd99ee1e6818abcef1b6f2e8933a83"
+    },
+    {
+      "label": "pagination-repair-candidate-2",
+      "outcome": "passed",
+      "error_type": null,
+      "requests": 4,
+      "seconds": 16.828999999997905,
+      "usage": {
+        "prompt_tokens": 22514,
+        "completion_tokens": 1091,
+        "prompt_cache_hit_tokens": 20864,
+        "prompt_cache_miss_tokens": 1650
+      },
+      "usage_complete": true,
+      "checks": [
+        {
+          "exit_code": 0
+        },
+        {
+          "exit_code": 0
+        }
+      ],
+      "scope": "Synthetic shared-module repair, not platform 30/30",
+      "fixture": "pagination-repair",
+      "arm": "candidate",
+      "repetition": 2,
+      "tools": {
+        "read_files": 1,
+        "write_files": 1,
+        "run_project_scripts": 1
+      },
+      "reuse_events": 0,
+      "metadata": {
+        "source_commit": "0d9e0a93f87a653ec1baa55a60f88ad1207086b1",
+        "image": "sha256:3c9ee4121afa393a13ffa0d6d278b30545735781610e430aa2c4a08e7948296c",
+        "spec_sha256": "3044d0a8537a45437efe060ca84086879c14d035575cc59423a2a377e06a4845",
+        "source_tree_sha256": "f364386d274e55a0bb4be4acccaa209026a1991b3eaaa2356cedb60dfc898682"
+      },
+      "trace_diagnostics": {
+        "recorded_tool_calls": 3,
+        "first_passing_build_and_test_tool_call": 3,
+        "tool_calls_after_first_passing_build_and_test": 0,
+        "failed_script_invocations": 0,
+        "nonexistent_script_invocations": 0,
+        "rejected_tool_calls": 0
+      },
+      "result_sha256": "7cdc6e90ef19533abf7c28a782812702c4ef15d92abdf084606c9d4bac66cfc3"
+    },
+    {
+      "label": "pagination-repair-baseline-2",
+      "outcome": "passed",
+      "error_type": null,
+      "requests": 12,
+      "seconds": 35.375,
+      "usage": {
+        "prompt_tokens": 83071,
+        "completion_tokens": 2694,
+        "prompt_cache_hit_tokens": 80384,
+        "prompt_cache_miss_tokens": 2687
+      },
+      "usage_complete": true,
+      "checks": [
+        {
+          "exit_code": 0
+        },
+        {
+          "exit_code": 0
+        }
+      ],
+      "scope": "Synthetic shared-module repair, not platform 30/30",
+      "fixture": "pagination-repair",
+      "arm": "baseline",
+      "repetition": 2,
+      "tools": {
+        "list_files": 1,
+        "read_files": 1,
+        "write_files": 4,
+        "run_project_scripts": 1,
+        "run_project_script": 4,
+        "replace_text": 1
+      },
+      "reuse_events": 0,
+      "metadata": {
+        "source_commit": "d3d5e6eaf14dc770df709cdf2b031fa162d0e54c",
+        "image": "sha256:3c9ee4121afa393a13ffa0d6d278b30545735781610e430aa2c4a08e7948296c",
+        "spec_sha256": "3044d0a8537a45437efe060ca84086879c14d035575cc59423a2a377e06a4845",
+        "source_tree_sha256": "b1a31823f4b21fb7058616c331c1ccdf8feab73b13f99aba5b93cbee0b50b5db"
+      },
+      "trace_diagnostics": {
+        "recorded_tool_calls": 12,
+        "first_passing_build_and_test_tool_call": 4,
+        "tool_calls_after_first_passing_build_and_test": 8,
+        "failed_script_invocations": 1,
+        "nonexistent_script_invocations": 0,
+        "rejected_tool_calls": 1
+      },
+      "result_sha256": "8e12f331d84f0edd791d09c2c86dd4ae6897a2fa52aa2f5881fd7d374768860b"
+    },
+    {
+      "label": "shared-module-repair-baseline-3",
+      "outcome": "passed",
+      "error_type": null,
+      "requests": 8,
+      "seconds": 26.921000000002095,
+      "usage": {
+        "prompt_tokens": 49625,
+        "completion_tokens": 1603,
+        "prompt_cache_hit_tokens": 48000,
+        "prompt_cache_miss_tokens": 1625
+      },
+      "usage_complete": true,
+      "checks": [
+        {
+          "exit_code": 0
+        },
+        {
+          "exit_code": 0
+        }
+      ],
+      "scope": "Synthetic shared-module repair, not platform 30/30",
+      "fixture": "shared-module-repair",
+      "arm": "baseline",
+      "repetition": 3,
+      "tools": {
+        "list_files": 1,
+        "read_files": 1,
+        "write_files": 1,
+        "run_project_scripts": 2,
+        "replace_text": 1,
+        "run_project_script": 1
+      },
+      "reuse_events": 0,
+      "metadata": {
+        "source_commit": "d3d5e6eaf14dc770df709cdf2b031fa162d0e54c",
+        "image": "sha256:3c9ee4121afa393a13ffa0d6d278b30545735781610e430aa2c4a08e7948296c",
+        "spec_sha256": "4018400a6a0a946bbab7932317b2c556526e94a72e456863a02cd40e20824c7a",
+        "source_tree_sha256": "b1a31823f4b21fb7058616c331c1ccdf8feab73b13f99aba5b93cbee0b50b5db"
+      },
+      "trace_diagnostics": {
+        "recorded_tool_calls": 7,
+        "first_passing_build_and_test_tool_call": 6,
+        "tool_calls_after_first_passing_build_and_test": 1,
+        "failed_script_invocations": 1,
+        "nonexistent_script_invocations": 0,
+        "rejected_tool_calls": 1
+      },
+      "result_sha256": "aef6d1ac4fa457c9b4c75446157543188f160db80dd9b2cd029272ec1a371555"
+    },
+    {
+      "label": "shared-module-repair-candidate-3",
+      "outcome": "passed",
+      "error_type": null,
+      "requests": 6,
+      "seconds": 23.610000000000582,
+      "usage": {
+        "prompt_tokens": 39019,
+        "completion_tokens": 1339,
+        "prompt_cache_hit_tokens": 37758,
+        "prompt_cache_miss_tokens": 1261
+      },
+      "usage_complete": true,
+      "checks": [
+        {
+          "exit_code": 0
+        },
+        {
+          "exit_code": 0
+        }
+      ],
+      "scope": "Synthetic shared-module repair, not platform 30/30",
+      "fixture": "shared-module-repair",
+      "arm": "candidate",
+      "repetition": 3,
+      "tools": {
+        "read_files": 1,
+        "write_files": 1,
+        "run_project_scripts": 2,
+        "replace_text": 1
+      },
+      "reuse_events": 0,
+      "metadata": {
+        "source_commit": "0d9e0a93f87a653ec1baa55a60f88ad1207086b1",
+        "image": "sha256:3c9ee4121afa393a13ffa0d6d278b30545735781610e430aa2c4a08e7948296c",
+        "spec_sha256": "4018400a6a0a946bbab7932317b2c556526e94a72e456863a02cd40e20824c7a",
+        "source_tree_sha256": "f364386d274e55a0bb4be4acccaa209026a1991b3eaaa2356cedb60dfc898682"
+      },
+      "trace_diagnostics": {
+        "recorded_tool_calls": 5,
+        "first_passing_build_and_test_tool_call": 5,
+        "tool_calls_after_first_passing_build_and_test": 0,
+        "failed_script_invocations": 1,
+        "nonexistent_script_invocations": 0,
+        "rejected_tool_calls": 0
+      },
+      "result_sha256": "919c544bb12b7a29de04669963ab407352d5abcc28cfbc5b712d9efe8280d3a6"
+    },
+    {
+      "label": "inventory-repair-baseline-3",
+      "outcome": "passed",
+      "error_type": null,
+      "requests": 12,
+      "seconds": 37.89100000000326,
+      "usage": {
+        "prompt_tokens": 81516,
+        "completion_tokens": 2808,
+        "prompt_cache_hit_tokens": 78976,
+        "prompt_cache_miss_tokens": 2540
+      },
+      "usage_complete": true,
+      "checks": [
+        {
+          "exit_code": 0
+        },
+        {
+          "exit_code": 0
+        }
+      ],
+      "scope": "Synthetic shared-module repair, not platform 30/30",
+      "fixture": "inventory-repair",
+      "arm": "baseline",
+      "repetition": 3,
+      "tools": {
+        "list_files": 2,
+        "read_files": 1,
+        "write_files": 4,
+        "run_project_scripts": 2,
+        "run_project_script": 3
+      },
+      "reuse_events": 0,
+      "metadata": {
+        "source_commit": "d3d5e6eaf14dc770df709cdf2b031fa162d0e54c",
+        "image": "sha256:3c9ee4121afa393a13ffa0d6d278b30545735781610e430aa2c4a08e7948296c",
+        "spec_sha256": "7fd131657d53c37b731eb7490bbaf9fb30a5413f6c69ee442664bc39772eb025",
+        "source_tree_sha256": "b1a31823f4b21fb7058616c331c1ccdf8feab73b13f99aba5b93cbee0b50b5db"
+      },
+      "trace_diagnostics": {
+        "recorded_tool_calls": 12,
+        "first_passing_build_and_test_tool_call": 4,
+        "tool_calls_after_first_passing_build_and_test": 8,
+        "failed_script_invocations": 0,
+        "nonexistent_script_invocations": 0,
+        "rejected_tool_calls": 1
+      },
+      "result_sha256": "05b14cb9ce351b1cfadf75d58ac29f93f3c9207c22f2ea876b5d7f985b1be500"
+    },
+    {
+      "label": "inventory-repair-candidate-3",
+      "outcome": "passed",
+      "error_type": null,
+      "requests": 4,
+      "seconds": 17.906000000002678,
+      "usage": {
+        "prompt_tokens": 22540,
+        "completion_tokens": 1309,
+        "prompt_cache_hit_tokens": 21760,
+        "prompt_cache_miss_tokens": 780
+      },
+      "usage_complete": true,
+      "checks": [
+        {
+          "exit_code": 0
+        },
+        {
+          "exit_code": 0
+        }
+      ],
+      "scope": "Synthetic shared-module repair, not platform 30/30",
+      "fixture": "inventory-repair",
+      "arm": "candidate",
+      "repetition": 3,
+      "tools": {
+        "read_files": 1,
+        "write_files": 1,
+        "run_project_scripts": 1
+      },
+      "reuse_events": 0,
+      "metadata": {
+        "source_commit": "0d9e0a93f87a653ec1baa55a60f88ad1207086b1",
+        "image": "sha256:3c9ee4121afa393a13ffa0d6d278b30545735781610e430aa2c4a08e7948296c",
+        "spec_sha256": "7fd131657d53c37b731eb7490bbaf9fb30a5413f6c69ee442664bc39772eb025",
+        "source_tree_sha256": "f364386d274e55a0bb4be4acccaa209026a1991b3eaaa2356cedb60dfc898682"
+      },
+      "trace_diagnostics": {
+        "recorded_tool_calls": 3,
+        "first_passing_build_and_test_tool_call": 3,
+        "tool_calls_after_first_passing_build_and_test": 0,
+        "failed_script_invocations": 0,
+        "nonexistent_script_invocations": 0,
+        "rejected_tool_calls": 0
+      },
+      "result_sha256": "6f6878e4b426a9d84061329a6d233e5ffb7663b8c7f5e46b65dec737a958a9cc"
+    },
+    {
+      "label": "pagination-repair-baseline-3",
+      "outcome": "passed",
+      "error_type": null,
+      "requests": 12,
+      "seconds": 41.60899999999674,
+      "usage": {
+        "prompt_tokens": 87431,
+        "completion_tokens": 3450,
+        "prompt_cache_hit_tokens": 78848,
+        "prompt_cache_miss_tokens": 8583
+      },
+      "usage_complete": true,
+      "checks": [
+        {
+          "exit_code": 0
+        },
+        {
+          "exit_code": 0
+        }
+      ],
+      "scope": "Synthetic shared-module repair, not platform 30/30",
+      "fixture": "pagination-repair",
+      "arm": "baseline",
+      "repetition": 3,
+      "tools": {
+        "list_files": 1,
+        "read_files": 1,
+        "write_files": 2,
+        "run_project_scripts": 6,
+        "read_file": 1,
+        "replace_text": 1
+      },
+      "reuse_events": 0,
+      "metadata": {
+        "source_commit": "d3d5e6eaf14dc770df709cdf2b031fa162d0e54c",
+        "image": "sha256:3c9ee4121afa393a13ffa0d6d278b30545735781610e430aa2c4a08e7948296c",
+        "spec_sha256": "3044d0a8537a45437efe060ca84086879c14d035575cc59423a2a377e06a4845",
+        "source_tree_sha256": "b1a31823f4b21fb7058616c331c1ccdf8feab73b13f99aba5b93cbee0b50b5db"
+      },
+      "trace_diagnostics": {
+        "recorded_tool_calls": 12,
+        "first_passing_build_and_test_tool_call": 4,
+        "tool_calls_after_first_passing_build_and_test": 8,
+        "failed_script_invocations": 1,
+        "nonexistent_script_invocations": 1,
+        "rejected_tool_calls": 0
+      },
+      "result_sha256": "f3fa8fb2886578a4923c62b74ca0cd68a7e4d69c56d6ac1bf15a8c08a2f1edc3"
+    },
+    {
+      "label": "pagination-repair-candidate-3",
+      "outcome": "passed",
+      "error_type": null,
+      "requests": 4,
+      "seconds": 17.406000000002678,
+      "usage": {
+        "prompt_tokens": 22514,
+        "completion_tokens": 1112,
+        "prompt_cache_hit_tokens": 21632,
+        "prompt_cache_miss_tokens": 882
+      },
+      "usage_complete": true,
+      "checks": [
+        {
+          "exit_code": 0
+        },
+        {
+          "exit_code": 0
+        }
+      ],
+      "scope": "Synthetic shared-module repair, not platform 30/30",
+      "fixture": "pagination-repair",
+      "arm": "candidate",
+      "repetition": 3,
+      "tools": {
+        "read_files": 1,
+        "write_files": 1,
+        "run_project_scripts": 1
+      },
+      "reuse_events": 0,
+      "metadata": {
+        "source_commit": "0d9e0a93f87a653ec1baa55a60f88ad1207086b1",
+        "image": "sha256:3c9ee4121afa393a13ffa0d6d278b30545735781610e430aa2c4a08e7948296c",
+        "spec_sha256": "3044d0a8537a45437efe060ca84086879c14d035575cc59423a2a377e06a4845",
+        "source_tree_sha256": "f364386d274e55a0bb4be4acccaa209026a1991b3eaaa2356cedb60dfc898682"
+      },
+      "trace_diagnostics": {
+        "recorded_tool_calls": 3,
+        "first_passing_build_and_test_tool_call": 3,
+        "tool_calls_after_first_passing_build_and_test": 0,
+        "failed_script_invocations": 0,
+        "nonexistent_script_invocations": 0,
+        "rejected_tool_calls": 0
+      },
+      "result_sha256": "a1f3afcbce304a97f4ba8a34c7229e9648cdcaeff0764945f3ec5d37b74f0bf7"
+    },
+    {
+      "label": "shared-module-repair-candidate-4",
+      "outcome": "passed",
+      "error_type": null,
+      "requests": 6,
+      "seconds": 22.203000000008615,
+      "usage": {
+        "prompt_tokens": 39019,
+        "completion_tokens": 1309,
+        "prompt_cache_hit_tokens": 37758,
+        "prompt_cache_miss_tokens": 1261
+      },
+      "usage_complete": true,
+      "checks": [
+        {
+          "exit_code": 0
+        },
+        {
+          "exit_code": 0
+        }
+      ],
+      "scope": "Synthetic shared-module repair, not platform 30/30",
+      "fixture": "shared-module-repair",
+      "arm": "candidate",
+      "repetition": 4,
+      "tools": {
+        "read_files": 1,
+        "write_files": 1,
+        "run_project_scripts": 2,
+        "replace_text": 1
+      },
+      "reuse_events": 0,
+      "metadata": {
+        "source_commit": "0d9e0a93f87a653ec1baa55a60f88ad1207086b1",
+        "image": "sha256:3c9ee4121afa393a13ffa0d6d278b30545735781610e430aa2c4a08e7948296c",
+        "spec_sha256": "4018400a6a0a946bbab7932317b2c556526e94a72e456863a02cd40e20824c7a",
+        "source_tree_sha256": "f364386d274e55a0bb4be4acccaa209026a1991b3eaaa2356cedb60dfc898682"
+      },
+      "trace_diagnostics": {
+        "recorded_tool_calls": 5,
+        "first_passing_build_and_test_tool_call": 5,
+        "tool_calls_after_first_passing_build_and_test": 0,
+        "failed_script_invocations": 1,
+        "nonexistent_script_invocations": 0,
+        "rejected_tool_calls": 0
+      },
+      "result_sha256": "448887b731af3d20370bb533ba39f1944dd3352a2be4b53946e4ec935acbb326"
+    },
+    {
+      "label": "shared-module-repair-baseline-4",
+      "outcome": "passed",
+      "error_type": null,
+      "requests": 11,
+      "seconds": 33.828000000008615,
+      "usage": {
+        "prompt_tokens": 75454,
+        "completion_tokens": 2285,
+        "prompt_cache_hit_tokens": 72448,
+        "prompt_cache_miss_tokens": 3006
+      },
+      "usage_complete": true,
+      "checks": [
+        {
+          "exit_code": 0
+        },
+        {
+          "exit_code": 0
+        }
+      ],
+      "scope": "Synthetic shared-module repair, not platform 30/30",
+      "fixture": "shared-module-repair",
+      "arm": "baseline",
+      "repetition": 4,
+      "tools": {
+        "list_files": 1,
+        "read_files": 2,
+        "write_files": 2,
+        "run_project_scripts": 3,
+        "replace_text": 2
+      },
+      "reuse_events": 1,
+      "metadata": {
+        "source_commit": "d3d5e6eaf14dc770df709cdf2b031fa162d0e54c",
+        "image": "sha256:3c9ee4121afa393a13ffa0d6d278b30545735781610e430aa2c4a08e7948296c",
+        "spec_sha256": "4018400a6a0a946bbab7932317b2c556526e94a72e456863a02cd40e20824c7a",
+        "source_tree_sha256": "b1a31823f4b21fb7058616c331c1ccdf8feab73b13f99aba5b93cbee0b50b5db"
+      },
+      "trace_diagnostics": {
+        "recorded_tool_calls": 10,
+        "first_passing_build_and_test_tool_call": 9,
+        "tool_calls_after_first_passing_build_and_test": 1,
+        "failed_script_invocations": 2,
+        "nonexistent_script_invocations": 0,
+        "rejected_tool_calls": 0
+      },
+      "result_sha256": "f77eaad6e1d766ba8d5d888da2cad34f6ff6027a64675736a231191ca810c786"
+    },
+    {
+      "label": "inventory-repair-candidate-4",
+      "outcome": "passed",
+      "error_type": null,
+      "requests": 4,
+      "seconds": 17.78200000000652,
+      "usage": {
+        "prompt_tokens": 22540,
+        "completion_tokens": 1309,
+        "prompt_cache_hit_tokens": 21760,
+        "prompt_cache_miss_tokens": 780
+      },
+      "usage_complete": true,
+      "checks": [
+        {
+          "exit_code": 0
+        },
+        {
+          "exit_code": 0
+        }
+      ],
+      "scope": "Synthetic shared-module repair, not platform 30/30",
+      "fixture": "inventory-repair",
+      "arm": "candidate",
+      "repetition": 4,
+      "tools": {
+        "read_files": 1,
+        "write_files": 1,
+        "run_project_scripts": 1
+      },
+      "reuse_events": 0,
+      "metadata": {
+        "source_commit": "0d9e0a93f87a653ec1baa55a60f88ad1207086b1",
+        "image": "sha256:3c9ee4121afa393a13ffa0d6d278b30545735781610e430aa2c4a08e7948296c",
+        "spec_sha256": "7fd131657d53c37b731eb7490bbaf9fb30a5413f6c69ee442664bc39772eb025",
+        "source_tree_sha256": "f364386d274e55a0bb4be4acccaa209026a1991b3eaaa2356cedb60dfc898682"
+      },
+      "trace_diagnostics": {
+        "recorded_tool_calls": 3,
+        "first_passing_build_and_test_tool_call": 3,
+        "tool_calls_after_first_passing_build_and_test": 0,
+        "failed_script_invocations": 0,
+        "nonexistent_script_invocations": 0,
+        "rejected_tool_calls": 0
+      },
+      "result_sha256": "e7adf51e3f63f951b28756195c4765c82b40aa909fb80b763f56eb1ea1836ca9"
+    },
+    {
+      "label": "inventory-repair-baseline-4",
+      "outcome": "passed",
+      "error_type": null,
+      "requests": 12,
+      "seconds": 40.78200000000652,
+      "usage": {
+        "prompt_tokens": 83039,
+        "completion_tokens": 3103,
+        "prompt_cache_hit_tokens": 77312,
+        "prompt_cache_miss_tokens": 5727
+      },
+      "usage_complete": true,
+      "checks": [
+        {
+          "exit_code": 0
+        },
+        {
+          "exit_code": 0
+        }
+      ],
+      "scope": "Synthetic shared-module repair, not platform 30/30",
+      "fixture": "inventory-repair",
+      "arm": "baseline",
+      "repetition": 4,
+      "tools": {
+        "list_files": 1,
+        "read_files": 1,
+        "write_files": 2,
+        "run_project_scripts": 2,
+        "run_project_script": 4,
+        "read_file": 1,
+        "replace_text": 1
+      },
+      "reuse_events": 0,
+      "metadata": {
+        "source_commit": "d3d5e6eaf14dc770df709cdf2b031fa162d0e54c",
+        "image": "sha256:3c9ee4121afa393a13ffa0d6d278b30545735781610e430aa2c4a08e7948296c",
+        "spec_sha256": "7fd131657d53c37b731eb7490bbaf9fb30a5413f6c69ee442664bc39772eb025",
+        "source_tree_sha256": "b1a31823f4b21fb7058616c331c1ccdf8feab73b13f99aba5b93cbee0b50b5db"
+      },
+      "trace_diagnostics": {
+        "recorded_tool_calls": 12,
+        "first_passing_build_and_test_tool_call": 4,
+        "tool_calls_after_first_passing_build_and_test": 8,
+        "failed_script_invocations": 0,
+        "nonexistent_script_invocations": 0,
+        "rejected_tool_calls": 1
+      },
+      "result_sha256": "9cec6f05ff19d3b12bf92cc19bb292ae18f815cca344a67a810a4d1464c6aca1"
+    },
+    {
+      "label": "pagination-repair-candidate-4",
+      "outcome": "passed",
+      "error_type": null,
+      "requests": 4,
+      "seconds": 17.187999999994645,
+      "usage": {
+        "prompt_tokens": 22504,
+        "completion_tokens": 1146,
+        "prompt_cache_hit_tokens": 21632,
+        "prompt_cache_miss_tokens": 872
+      },
+      "usage_complete": true,
+      "checks": [
+        {
+          "exit_code": 0
+        },
+        {
+          "exit_code": 0
+        }
+      ],
+      "scope": "Synthetic shared-module repair, not platform 30/30",
+      "fixture": "pagination-repair",
+      "arm": "candidate",
+      "repetition": 4,
+      "tools": {
+        "read_files": 1,
+        "write_files": 1,
+        "run_project_scripts": 1
+      },
+      "reuse_events": 0,
+      "metadata": {
+        "source_commit": "0d9e0a93f87a653ec1baa55a60f88ad1207086b1",
+        "image": "sha256:3c9ee4121afa393a13ffa0d6d278b30545735781610e430aa2c4a08e7948296c",
+        "spec_sha256": "3044d0a8537a45437efe060ca84086879c14d035575cc59423a2a377e06a4845",
+        "source_tree_sha256": "f364386d274e55a0bb4be4acccaa209026a1991b3eaaa2356cedb60dfc898682"
+      },
+      "trace_diagnostics": {
+        "recorded_tool_calls": 3,
+        "first_passing_build_and_test_tool_call": 3,
+        "tool_calls_after_first_passing_build_and_test": 0,
+        "failed_script_invocations": 0,
+        "nonexistent_script_invocations": 0,
+        "rejected_tool_calls": 0
+      },
+      "result_sha256": "bd60e6986cc1f74e394c0be6faf1b01e2f873f415c1bd25e7d7f1fa0de2da527"
+    },
+    {
+      "label": "pagination-repair-baseline-4",
+      "outcome": "passed",
+      "error_type": null,
+      "requests": 12,
+      "seconds": 38.53100000000268,
+      "usage": {
+        "prompt_tokens": 86517,
+        "completion_tokens": 3200,
+        "prompt_cache_hit_tokens": 83968,
+        "prompt_cache_miss_tokens": 2549
+      },
+      "usage_complete": true,
+      "checks": [
+        {
+          "exit_code": 0
+        },
+        {
+          "exit_code": 0
+        }
+      ],
+      "scope": "Synthetic shared-module repair, not platform 30/30",
+      "fixture": "pagination-repair",
+      "arm": "baseline",
+      "repetition": 4,
+      "tools": {
+        "list_files": 1,
+        "read_files": 1,
+        "write_files": 3,
+        "run_project_scripts": 6,
+        "replace_text": 1
+      },
+      "reuse_events": 0,
+      "metadata": {
+        "source_commit": "d3d5e6eaf14dc770df709cdf2b031fa162d0e54c",
+        "image": "sha256:3c9ee4121afa393a13ffa0d6d278b30545735781610e430aa2c4a08e7948296c",
+        "spec_sha256": "3044d0a8537a45437efe060ca84086879c14d035575cc59423a2a377e06a4845",
+        "source_tree_sha256": "b1a31823f4b21fb7058616c331c1ccdf8feab73b13f99aba5b93cbee0b50b5db"
+      },
+      "trace_diagnostics": {
+        "recorded_tool_calls": 12,
+        "first_passing_build_and_test_tool_call": 4,
+        "tool_calls_after_first_passing_build_and_test": 8,
+        "failed_script_invocations": 1,
+        "nonexistent_script_invocations": 1,
+        "rejected_tool_calls": 0
+      },
+      "result_sha256": "da13d1103637bebae8ad677ccfe0c1f4a3b9e65b58ae9f1deab3ddd2ef4b65c6"
+    }
+  ],
+  "source_trees": {
+    "d3d5e6eaf14dc770df709cdf2b031fa162d0e54c": {
+      "agent\\__init__.py": "e8ad470aa7495346ede1d0694e1275a0e74140f25d5707f47a77d4f2131f9a09",
+      "agent\\booking_completion.py": "d2209714491d865b0ebebe1cfc5bccaf4c79f69e28adbe37f72382f99448489a",
+      "agent\\browser_contract.py": "7bbff0ac2d7559b6c6fedd5e8f104629f86d9396e38ff4af0f498dca7cf19cb0",
+      "agent\\candidate_checkpoint.py": "57e83863edaf1d05e7aeb8ccc4d3f878186dfe279e951aeb4a2c2d66dfe162b2",
+      "agent\\command_output.py": "6ac0b4683e040ad48fec24c824a5a315132cfc73d0af56b6bbf557f0ece01880",
+      "agent\\config.py": "395096bd61c2c51c60d7de755aa492302f476bde86731b1d35b41734c4e9b544",
+      "agent\\container_checks.py": "2b3eab39abc5fa156872fc515e67ff941eaff9e8ab3876e471b007f508e4d613",
+      "agent\\container_visual.py": "6411eefc08081bb315443a41c47001f150485cf4c5dafc0d9fce3d029a67cd6e",
+      "agent\\contract_checks.py": "6b3587f7491e77e9624233ad41429dbf00643fae6df6ad88c87daf06ec2453b8",
+      "agent\\docker_sandbox.py": "eeec8744f8338e070b92dccbbb64a5de1e94974943877375dbfe5e69e092493d",
+      "agent\\experiment_budget.py": "24bb62f2b270c9d7b3739b55a4e4bd9610b0947f0b8586919fe86788a25a92ba",
+      "agent\\generation_contract.py": "b74ddaa8f73895199524d17a0adcb54849a152fbd590d5db02a68e5b0e60f9cf",
+      "agent\\initial_bootstrap.py": "a58cdee772105d46ec3767647e2e10503256ebdd70ad6bdda49fe8ac6b546d20",
+      "agent\\llm.py": "efe5fff0008aab662f6e52a6dcb4bc29cd51dac33e3d4ce3531804b93bd253fd",
+      "agent\\model_transport.py": "d1f4ba3a960205d7f9a3bef6d9c1ae5cd2a09a9cb4a13fd342dd4f008ff96564",
+      "agent\\native_verification.py": "961cc35a0cbb31f6c03e08394d0844dee40129c5ea716760fc7033929eecf206",
+      "agent\\orchestrator.py": "8749374beae91e582bf43ac63b2d68aa3cd18cdb3a2fd2e7ccad288f7c8fc08b",
+      "agent\\prompt_context.py": "71b1b095fcb0d99553c51e55303e81d979a1445d749b3cf6227d0977de575e64",
+      "agent\\read_evidence.py": "300cc173af0303f8b285fd7599dc0a69f4bd706423502855dc8c1f61747c940e",
+      "agent\\regression_entry.py": "8a1eaaedf20dc11ccfcc079129cad3b348cd70282ff5b4e4b3d34a93d6829c3b",
+      "agent\\repair_policy.py": "1467c1698ab2393a132afb0e0d0d19d6419f1c586fd1d5912ff7b9297901f081",
+      "agent\\request_metrics.py": "54640a82d0269592011edbd291a182027fa416e125ad7a64297d6a54ef4a9009",
+      "agent\\requirement_progress.py": "48245aa1805b5880cd2f14ae790f6a332c078cc332fa2b39789aef9e232301e3",
+      "agent\\requirements.py": "337f3f8ea6320cde4bd75d7f336c21261f91b6711acd9818bfc27d6caec95cbc",
+      "agent\\sandbox_context.py": "3e032426702e1ff5dbf0586ea1faf312af4552837aac9e94e55d1bd1d28f86f3",
+      "agent\\sandbox_files.py": "96ee07da72eb27a7021be3f7aaadfb00e70e49fd51d58bff8233eb2f975f0df5",
+      "agent\\sandbox_process.py": "2054c65bf61535eabeeb506a5126d8a37da014212d9fb6b1bb18db56197f599e",
+      "agent\\sandbox_worker.py": "45b44d0fea2a50db6347aabc3283d299950b6a55fdd7979798af7b3d5c86c43c",
+      "agent\\static_names.py": "ea3a16e4537b5981977d30bf5f3a1a373a1d309af2dc5f0d8a4255240c072c17",
+      "agent\\station_units.py": "8b50824a47045a3caa8cc0019398edfb501911d6f8606f4db1021bfdb0dd8987",
+      "agent\\ticketbooking_contract.py": "4c20403bfa62fbec64072a75e846d68e769d09a12f510c32cbeb88fa5e818ad2",
+      "agent\\ticketbooking_probes.py": "aedcfcc882a97520afe33fea7c33811f6592ed01040e1228f8edf79e6b951176",
+      "agent\\tools.py": "dac94dd9ef4c15255eeb6bae8bcd583a723337a49cb4a284f19af871509d3688",
+      "agent\\verify.py": "1b2c1ebab610ce9b8b4566864c93cc13587c660af572dae69d00d40a2e3b78cd",
+      "agent\\visual_acceptance.py": "e81e86457ee7f2e852d41946b59e6d9d3fbc7bb06867f2180006157ba029d7d4"
+    },
+    "0d9e0a93f87a653ec1baa55a60f88ad1207086b1": {
+      "agent\\__init__.py": "e8ad470aa7495346ede1d0694e1275a0e74140f25d5707f47a77d4f2131f9a09",
+      "agent\\booking_completion.py": "d2209714491d865b0ebebe1cfc5bccaf4c79f69e28adbe37f72382f99448489a",
+      "agent\\browser_contract.py": "7bbff0ac2d7559b6c6fedd5e8f104629f86d9396e38ff4af0f498dca7cf19cb0",
+      "agent\\candidate_checkpoint.py": "57e83863edaf1d05e7aeb8ccc4d3f878186dfe279e951aeb4a2c2d66dfe162b2",
+      "agent\\command_output.py": "6ac0b4683e040ad48fec24c824a5a315132cfc73d0af56b6bbf557f0ece01880",
+      "agent\\config.py": "b5255e29142e506bc4970555e309f674e26dfdfb36c5cb340173c6cd25b81fe6",
+      "agent\\container_checks.py": "2b3eab39abc5fa156872fc515e67ff941eaff9e8ab3876e471b007f508e4d613",
+      "agent\\container_visual.py": "6411eefc08081bb315443a41c47001f150485cf4c5dafc0d9fce3d029a67cd6e",
+      "agent\\contract_checks.py": "6b3587f7491e77e9624233ad41429dbf00643fae6df6ad88c87daf06ec2453b8",
+      "agent\\docker_sandbox.py": "8fd37833e28885c410e75b84389065ccd193bc6770fe53328ea122ae7c7e6f14",
+      "agent\\experiment_budget.py": "3780ddb3d6bc3aff2c4925c202c1ced708ea748173d99e9cfb8092242c6bd7c9",
+      "agent\\generation_contract.py": "b74ddaa8f73895199524d17a0adcb54849a152fbd590d5db02a68e5b0e60f9cf",
+      "agent\\initial_bootstrap.py": "a58cdee772105d46ec3767647e2e10503256ebdd70ad6bdda49fe8ac6b546d20",
+      "agent\\llm.py": "1b1108f93986cc155b824fe9720ffd46523361e01d4b03cdfb27b7f29cf7dc33",
+      "agent\\model_transport.py": "d1f4ba3a960205d7f9a3bef6d9c1ae5cd2a09a9cb4a13fd342dd4f008ff96564",
+      "agent\\native_verification.py": "961cc35a0cbb31f6c03e08394d0844dee40129c5ea716760fc7033929eecf206",
+      "agent\\orchestrator.py": "8749374beae91e582bf43ac63b2d68aa3cd18cdb3a2fd2e7ccad288f7c8fc08b",
+      "agent\\prompt_context.py": "71b1b095fcb0d99553c51e55303e81d979a1445d749b3cf6227d0977de575e64",
+      "agent\\read_evidence.py": "a1ac166d2351541f5f9d46199b3319d1c2415404f7145610568e5f50f56084cd",
+      "agent\\regression_entry.py": "8a1eaaedf20dc11ccfcc079129cad3b348cd70282ff5b4e4b3d34a93d6829c3b",
+      "agent\\repair_policy.py": "1467c1698ab2393a132afb0e0d0d19d6419f1c586fd1d5912ff7b9297901f081",
+      "agent\\request_metrics.py": "a299cfea6ab839e86ccdce3a83effc801e8bc23e69529581cfb36b375adbe5e6",
+      "agent\\requirement_progress.py": "48245aa1805b5880cd2f14ae790f6a332c078cc332fa2b39789aef9e232301e3",
+      "agent\\requirements.py": "aa02dc584f7a29974bd083221c657181a9c7b4cb7f6283ee1c50d0bb4630375e",
+      "agent\\sandbox_context.py": "3e032426702e1ff5dbf0586ea1faf312af4552837aac9e94e55d1bd1d28f86f3",
+      "agent\\sandbox_files.py": "96ee07da72eb27a7021be3f7aaadfb00e70e49fd51d58bff8233eb2f975f0df5",
+      "agent\\sandbox_process.py": "2054c65bf61535eabeeb506a5126d8a37da014212d9fb6b1bb18db56197f599e",
+      "agent\\sandbox_worker.py": "45b44d0fea2a50db6347aabc3283d299950b6a55fdd7979798af7b3d5c86c43c",
+      "agent\\static_names.py": "ea3a16e4537b5981977d30bf5f3a1a373a1d309af2dc5f0d8a4255240c072c17",
+      "agent\\station_units.py": "8b50824a47045a3caa8cc0019398edfb501911d6f8606f4db1021bfdb0dd8987",
+      "agent\\ticketbooking_contract.py": "4c20403bfa62fbec64072a75e846d68e769d09a12f510c32cbeb88fa5e818ad2",
+      "agent\\ticketbooking_probes.py": "aedcfcc882a97520afe33fea7c33811f6592ed01040e1228f8edf79e6b951176",
+      "agent\\tool_context.py": "8d0bda9584bc0de413f1ae18f859b3da920e426647cc729457c6b8bd18a11aab",
+      "agent\\tools.py": "dac94dd9ef4c15255eeb6bae8bcd583a723337a49cb4a284f19af871509d3688",
+      "agent\\verify.py": "1b2c1ebab610ce9b8b4566864c93cc13587c660af572dae69d00d40a2e3b78cd",
+      "agent\\visual_acceptance.py": "e81e86457ee7f2e852d41946b59e6d9d3fbc7bb06867f2180006157ba029d7d4"
+    }
+  },
+  "total_tokens": 1265513
+}

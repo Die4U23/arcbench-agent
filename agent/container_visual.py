@@ -9,6 +9,7 @@ from .container_checks import check_from_document
 from .docker_sandbox import DockerSandbox
 from .model_transport import ModelRequestInterrupted
 from .sandbox_files import _safe_target
+from .sandbox_process import SandboxInfrastructureError
 from .verify import CheckResult, VerificationResult
 
 
@@ -93,6 +94,8 @@ def verify_isolated_visual(project, task, references, model):
                 0 if passed else 1,
                 json.dumps(record, ensure_ascii=False),
             )
+    except SandboxInfrastructureError:
+        raise
     except ModelRequestInterrupted as exc:
         interruption = exc
         report["model_request_interruption"] = exc.report()

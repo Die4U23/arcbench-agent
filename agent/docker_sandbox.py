@@ -21,7 +21,7 @@ from .sandbox_files import (
     validate_relative_path,
     validate_snapshot,
 )
-from .sandbox_process import SandboxProcessError, run_bounded
+from .sandbox_process import SandboxInfrastructureError, SandboxProcessError, run_bounded
 from .request_metrics import observe_operation
 
 IMAGE = "arcbench-sandbox:1"
@@ -89,7 +89,7 @@ class DockerSandbox:
             return
         self.docker = shutil.which("docker")
         if not self.docker:
-            raise SandboxProcessError(
+            raise SandboxInfrastructureError(
                 "Docker is required; host execution fallback is disabled"
             )
         self.env = {key: value for key, value in os.environ.items() if key in _CLI_ENV}
@@ -104,17 +104,17 @@ class DockerSandbox:
             ["context", "inspect", "--format", "{{.Endpoints.docker.Host}}"]
         )
         if endpoint.returncode:
-            raise SandboxProcessError("cannot inspect the Docker context")
+            raise SandboxInfrastructureError("cannot inspect the Docker context")
         hosts = [endpoint.stdout.decode("utf-8").strip()]
         if self.env.get("DOCKER_HOST"):
             hosts.append(self.env["DOCKER_HOST"])
         if any(not host.startswith(("unix://", "npipe://")) for host in hosts):
-            raise SandboxProcessError(
+            raise SandboxInfrastructureError(
                 "sandbox requires a local Docker socket or named pipe"
             )
         info = self._command(["info", "--format", "{{.OSType}}"])
         if info.returncode or info.stdout.strip() != b"linux":
-            raise SandboxProcessError(
+            raise SandboxInfrastructureError(
                 "a running Linux-container Docker engine is required"
             )
 
@@ -125,7 +125,7 @@ class DockerSandbox:
         self._preflight()
         image = self._command(["image", "inspect", "--format", "{{.Id}}", IMAGE])
         if image.returncode or not image.stdout.strip().startswith(b"sha256:"):
-            raise SandboxProcessError(
+            raise SandboxInfrastructureError(
                 "Trusted sandbox image is unavailable; build sandbox/Dockerfile before running the agent"
             )
 
@@ -227,8 +227,11 @@ class DockerSandbox:
                 "none",
                 "--shm-size",
                 "128m",
+                # Docker tmpfs defaults to noexec. Build dependencies include
+                # native esbuild/Rollup code; execute them only inside this
+                # offline, non-root, capability-free disposable container.
                 "--tmpfs",
-                "/work:rw,nosuid,nodev,size=512m,mode=0700,uid=1000,gid=1000",
+                "/work:rw,nosuid,nodev,exec,size=512m,mode=0700,uid=1000,gid=1000",
                 "--tmpfs",
                 "/tmp:rw,nosuid,nodev,size=1024m,mode=1777",
                 "--mount",
@@ -264,6 +267,22 @@ class DockerSandbox:
                     args, timeout=timeout + 15, limit=_MAX_RESPONSE
                 )
                 if completed.returncode:
+                    if completed.returncode == 78:
+                        reason = "dependency_prerequisite_failed"
+                        for line in completed.stderr.decode("utf-8", errors="replace").splitlines():
+                            if line.startswith("ARCBENCH_INFRA_FAILURE "):
+                                try:
+                                    code = json.loads(line.split(" ", 1)[1]).get("reason")
+                                    if code in {"dependency_cache_missing", "dependency_execution_denied"}:
+                                        reason = code
+                                except (ValueError, AttributeError):
+                                    pass
+                        raise SandboxInfrastructureError(
+                            "sandbox dependency prerequisites failed; no files imported: "
+                            + completed.stderr[-4000:].decode("utf-8", errors="replace"),
+                            reason=reason)
+                    if completed.returncode == 125:
+                        raise SandboxInfrastructureError("Docker could not start the isolated worker")
                     raise SandboxProcessError(
                         "sandbox worker failed; no files imported: "
                         + completed.stderr[-4000:].decode("utf-8", errors="replace")

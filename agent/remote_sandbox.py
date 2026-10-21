@@ -10,14 +10,14 @@ import urllib.request
 import uuid
 
 from .sandbox_files import apply_snapshot, snapshot_project
-from .sandbox_process import SandboxProcessError
+from .sandbox_process import SandboxInfrastructureError, SandboxProcessError
 
 MAX_MESSAGE = 96 * 1024 * 1024
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        raise SandboxProcessError("sandbox redirects are forbidden")
+        raise SandboxInfrastructureError("sandbox redirects are forbidden")
 
 
 class RemoteSandbox:
@@ -33,32 +33,35 @@ class RemoteSandbox:
                 or not isinstance(self.token, str) or len(self.token) < 40
                 or not isinstance(self.image, str) or not self.image.startswith("sha256:")
                 or type(self.expires) not in (int, float) or self.expires <= time.time()):
-            raise SandboxProcessError("invalid or expired remote sandbox configuration")
+            raise SandboxInfrastructureError("invalid or expired remote sandbox configuration")
         # Do not inherit proxy credentials; HTTPS certificates remain verified.
         self.http = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
 
     def _request(self, method, path, payload=None):
         if time.time() >= self.expires:
-            raise SandboxProcessError("remote sandbox authorization expired")
+            raise SandboxInfrastructureError("remote sandbox authorization expired")
         body = None if payload is None else json.dumps(payload, allow_nan=False).encode()
         if body is not None and len(body) > MAX_MESSAGE:
-            raise SandboxProcessError("remote sandbox request limit exceeded")
+            raise SandboxInfrastructureError("remote sandbox request limit exceeded")
         request = urllib.request.Request(self.endpoint + path, data=body, method=method,
             headers={"Authorization": "Bearer " + self.token, "Content-Type": "application/json"})
         try:
             with self.http.open(request, timeout=60) as response:
                 raw = response.read(MAX_MESSAGE + 1)
             if len(raw) > MAX_MESSAGE:
-                raise SandboxProcessError("remote sandbox response limit exceeded")
-            return json.loads(raw)
+                raise SandboxInfrastructureError("remote sandbox response limit exceeded")
+            result = json.loads(raw)
+            if not isinstance(result, dict):
+                raise SandboxInfrastructureError("invalid remote sandbox response")
+            return result
         except (OSError, ValueError) as exc:
             # URLs, response bodies and bearer credentials must not enter model logs.
-            raise SandboxProcessError("remote sandbox transport failed: " + type(exc).__name__) from None
+            raise SandboxInfrastructureError("remote sandbox transport failed: " + type(exc).__name__, reason="sandbox_transport_failed") from None
 
     def check_available(self):
         result = self._request("GET", "/health")
         if result.get("image") != self.image or result.get("mode") != "offline-docker":
-            raise SandboxProcessError("remote sandbox image or boundary mismatch")
+            raise SandboxInfrastructureError("remote sandbox image or boundary mismatch")
 
     def invoke(self, operation, project, *, options=None, task=None, timeout=180):
         from .docker_sandbox import _OPERATIONS, _decode, _encode
@@ -70,22 +73,28 @@ class RemoteSandbox:
                    "files": _encode(before), "task": _encode(snapshot_project(task)) if task else {}}
         accepted = self._request("POST", "/jobs/" + job, payload)
         if accepted.get("job") != job:
-            raise SandboxProcessError("remote sandbox job identity mismatch")
+            raise SandboxInfrastructureError("remote sandbox job identity mismatch")
         deadline = time.monotonic() + timeout + 90
         while time.monotonic() < deadline:
             result = self._request("GET", "/jobs/" + job)
             if result.get("state") == "done":
                 if result.get("image") != self.image or not isinstance(result.get("result"), dict):
-                    raise SandboxProcessError("invalid remote sandbox result")
+                    raise SandboxInfrastructureError("invalid remote sandbox result")
                 exported = _decode(result.get("files"))
                 apply_snapshot(project, exported, before=before)
                 return result["result"]
             if result.get("state") == "failed":
-                raise SandboxProcessError("remote Docker worker failed: " + str(result.get("error", ""))[:4500])
+                message = "remote Docker worker failed: " + str(result.get("error", ""))[:4500]
+                if result.get("failure_kind") == "infrastructure":
+                    reason = result.get("reason")
+                    if reason not in {"dependency_cache_missing", "dependency_execution_denied", "dependency_prerequisite_failed"}:
+                        reason = "sandbox_unavailable"
+                    raise SandboxInfrastructureError(message, reason=reason)
+                raise SandboxProcessError(message)
             if result.get("state") != "running":
-                raise SandboxProcessError("invalid remote sandbox job state")
+                raise SandboxInfrastructureError("invalid remote sandbox job state")
             time.sleep(1)
-        raise SandboxProcessError("remote sandbox deadline exceeded; no files imported")
+        raise SandboxInfrastructureError("remote sandbox deadline exceeded; no files imported")
 
 
 def configured_remote():
@@ -94,5 +103,5 @@ def configured_remote():
     if not path.exists():
         return None
     if path.stat().st_size > 4096:
-        raise SandboxProcessError("remote sandbox configuration limit exceeded")
+        raise SandboxInfrastructureError("remote sandbox configuration limit exceeded")
     return RemoteSandbox(json.loads(path.read_text(encoding="utf-8")))

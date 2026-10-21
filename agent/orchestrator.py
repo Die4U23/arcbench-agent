@@ -8,10 +8,13 @@ from dataclasses import asdict
 import os
 import re
 import time
+import traceback
 from pathlib import Path
 from typing import Any
 
 from arcbench_agent_runtime import AgentRuntime
+
+from .sandbox_process import SandboxInfrastructureError
 
 from .config import AgentConfig
 from .candidate_checkpoint import CandidateCheckpoint, PUBLIC_CHECK, public_checks_ready
@@ -20,7 +23,7 @@ from .command_output import failure_details
 from .native_verification import verify_public_acceptance
 from .llm import BudgetExhaustion, ModelBudgetExceeded, ModelClient, RequirementReviewError
 from .model_transport import ModelRequestInterrupted
-from .request_metrics import observe_operation
+from .request_metrics import observe_operation, emit as emit_metric
 from .requirements import RequirementModule, load_requirement_tree, root_modules, walk_requirement_ids
 from .requirement_progress import mark_subtree_progress, record_local_verification
 from .repair_policy import failed_behavior_ids, focused_subtree, repair_guidance
@@ -179,6 +182,8 @@ def _verify_local_candidate(config: AgentConfig, tree: dict[str, Any], candidate
         project_tools.source_revision = getattr(project_tools, "source_revision", 0) + 1
         try:
             project_tools.ensure_dependencies()
+        except SandboxInfrastructureError:
+            raise
         except Exception as exc:
             return VerificationResult(False, (
                 CheckResult("project dependencies", False, 1, str(exc)),
@@ -194,6 +199,8 @@ def _prepare_local_candidate(config: AgentConfig, tree: dict[str, Any], candidat
     for attempt in range(2):
         try:
             project_tools.ensure_dependencies()
+        except SandboxInfrastructureError:
+            raise
         except Exception as exc:
             local = VerificationResult(False, (CheckResult("project dependencies", False, 1, str(exc)),))
             if attempt == 0 and allow_restore:
@@ -395,6 +402,25 @@ def run_model_agent(runtime: AgentRuntime, config: AgentConfig, tree: dict[str, 
         result = _run_model_agent(runtime, config, tree, modules, model, candidate=candidate)
         _raise_if_model_interrupted(model)
         return result
+    except SandboxInfrastructureError as exc:
+        # This failure is global, not a requirement-specific repair allocation.
+        # Do not run another checkpoint, restore, review or model call here.
+        origin = traceback.extract_tb(exc.__traceback__)[-1]
+        record = {"failure_kind": "infrastructure", "reason": exc.reason, "scope": "run",
+                  "first_location": {"file": Path(origin.filename).name,
+                                     "function": origin.name, "line": origin.lineno},
+                  "occurrences": 1, "retry_count": 0, "action": "stop_run",
+                  "model_requests": getattr(model, "model_requests_used", None),
+                  "prompt_tokens": getattr(model, "prompt_tokens_used", None),
+                  "completion_tokens": getattr(model, "completion_tokens_used", None)}
+        emit_metric("repair_circuit_opened", **record)
+        report = config.output_dir / ".arc" / "infrastructure-failure.json"
+        report.parent.mkdir(parents=True, exist_ok=True)
+        report.write_text(json.dumps(record, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        LOGGER.error("Infrastructure failure stops all repair slices: %s", exc.reason)
+        result = VerificationResult(False, (CheckResult("execution infrastructure", False, 1, str(exc)),))
+        _record_verification(runtime, tree, result)
+        return result
     except ModelRequestInterrupted as exc:
         LOGGER.warning("%s; running final local verification without further model calls", exc)
         project_tools = ProjectTools(config.output_dir, timeout_seconds=120)
@@ -441,6 +467,8 @@ def _run_model_agent(runtime: AgentRuntime, config: AgentConfig, tree: dict[str,
     if existing_project:
         try:
             project_tools.ensure_dependencies()
+        except SandboxInfrastructureError:
+            raise
         except Exception as exc:
             initial_feedback = f"Dependency preparation failed; inspect package manifests before source repair:\n{exc}"
         else:
@@ -609,6 +637,8 @@ def _run_model_agent(runtime: AgentRuntime, config: AgentConfig, tree: dict[str,
     def verify_current_project(*, include_visual: bool = True) -> VerificationResult:
         try:
             project_tools.ensure_dependencies()
+        except SandboxInfrastructureError:
+            raise
         except Exception as exc:
             boundary_verification.clear()
             return VerificationResult(False, (CheckResult("project dependencies", False, 1, str(exc)),))

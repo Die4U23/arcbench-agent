@@ -13,7 +13,7 @@ from unittest.mock import patch
 import uuid
 
 from agent.docker_sandbox import DockerSandbox, IMAGE
-from agent.sandbox_process import SandboxProcessError
+from agent.sandbox_process import SandboxInfrastructureError, SandboxProcessError
 from agent.visual_acceptance import verify_visual_acceptance
 
 
@@ -152,6 +152,25 @@ fs.writeFileSync('audit.json', JSON.stringify({isolated: true, uid: process.getu
         self.assertFalse((self.root / "escape").exists())
         self.assertEqual((self.root / "fixture.cjs").read_bytes(), original)
 
+    def test_vite_vitest_and_native_dependencies_in_real_worker_mounts(self):
+        # The former React-only smoke missed esbuild execution and Rollup dlopen.
+        for version in ("0.25.9", "0.25.12"):
+            with self.subTest(esbuild=version):
+                manifest = {"name": "native-cache-regression", "private": True,
+                    "type": "module", "scripts": {"build": "vite build", "test": "vitest run"},
+                    "dependencies": {"react": "19.1.1", "react-dom": "19.1.1"},
+                    "devDependencies": {"vite": "7.1.3", "vitest": "3.2.4", "esbuild": version}}
+                (self.root / "package.json").write_text(json.dumps(manifest))
+                # Each version must resolve afresh, rather than inheriting another lock.
+                (self.root / "package-lock.json").unlink(missing_ok=True)
+                (self.root / "index.html").write_text('<div id="root"></div><script type="module" src="/app.jsx"></script>')
+                (self.root / "app.jsx").write_text("import React from 'react';import{createRoot}from'react-dom/client';createRoot(document.getElementById('root')).render(<h1>Native dependency check</h1>);")
+                (self.root / "native.test.js").write_text("import{it,expect}from'vitest';import{transformSync,version}from'esbuild';it('executes native transform',()=>{expect(version).toBe('" + version + "');expect(transformSync('const x = <h1/>',{loader:'jsx'}).code).toContain('createElement')});")
+                result = self.sandbox.invoke("verify_project", self.root, timeout=180)
+                checks = result["checks"]
+                self.assertTrue(checks and all(item["passed"] for item in checks), checks)
+                self.assertFalse((self.root / "node_modules").exists())
+
     def test_offline_missing_dependency_fails_instead_of_host_fallback(self):
         (self.root / "package.json").write_text(
             json.dumps(
@@ -163,8 +182,9 @@ fs.writeFileSync('audit.json', JSON.stringify({isolated: true, uid: process.getu
                 }
             )
         )
-        with self.assertRaises(SandboxProcessError):
+        with self.assertRaises(SandboxInfrastructureError) as failure:
             self.sandbox.invoke("dependencies", self.root, timeout=60)
+        self.assertEqual(failure.exception.reason, "dependency_cache_missing")
         self.assertFalse((self.root / "node_modules").exists())
 
     def test_timeout_leaves_unrelated_container_untouched(self):

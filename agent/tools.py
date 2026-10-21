@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .sandbox_process import SandboxInfrastructureError
+
 import json
 import hashlib
 import fnmatch
@@ -492,6 +494,14 @@ class ProjectTools:
                 encoding="utf-8", errors="replace", timeout=self.timeout_seconds, check=False, shell=use_shell)
             if result.returncode:
                 output = compact_command_output((result.stdout or "") + (result.stderr or ""), MAX_OUTPUT_CHARS)
+                if "ENOTCACHED" in output:
+                    raise SandboxInfrastructureError(
+                        f"Offline dependency cache is incomplete under {directory.name}:\n{output}",
+                        reason="dependency_cache_missing")
+                if "EACCES" in output or "Permission denied" in output:
+                    raise SandboxInfrastructureError(
+                        f"Dependency execution is denied under {directory.name}:\n{output}",
+                        reason="dependency_execution_denied")
                 raise RuntimeError(f"Dependency installation failed under {directory.name}:\n{output}")
         self._installed_dependencies = fingerprint
 
@@ -608,6 +618,8 @@ class ProjectTools:
                 raise ValueError("Each script must contain string directory and script fields")
             try:
                 results.append(json.loads(self.run_project_script(item["directory"], item["script"])))
+            except SandboxInfrastructureError:
+                raise
             except Exception as exc:
                 results.append({
                     "directory": item["directory"],

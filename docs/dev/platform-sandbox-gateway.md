@@ -16,7 +16,7 @@ ArcBench 当前 runner 没有 Docker 命令或本地 socket，且 `unshare` 被�
 
 ## 外部连接需要单独授权
 
-当前只完成本机回环测试，**尚未建立公网隧道**。拟使用 Cloudflare Quick Tunnel 将该回环网关临时映射为 HTTPS 地址，仍由网关 Bearer 令牌认证。Cloudflare 会中转本次生成项目源码、任务资料、检查日志和截图；DeepSeek Key 不经过这个网关。短期能力令牌需要随私有 agent 上传包交给 ArcBench，并在运行后撤销。
+2026-10-21 经用户明确授权，使用 Cloudflare Quick Tunnel 临时映射回环网关，仍由网关 Bearer 令牌认证。零模型平台探针通过，正式运行暴露离线依赖与原生执行问题，未生成正式测试成绩。通道已关闭，后续开通需要重新确认范围。Cloudflare 中转生成源码、任务资料、检查日志和截图；DeepSeek Key 不经过网关。短期能力令牌只随私有 agent 上传包传递。
 
 这会临时扩大本机服务的外部可达性，所以在实际开通前请求用户明确授权。确认仅覆盖本轮平台验证，最长四小时，不安装系统服务、不修改防火墙、不开放 Docker daemon、不建立通用远程 shell。Cloudflare Quick Tunnel 不承诺生产可用性；断连视为执行失败，不能伪造通过。
 
@@ -37,6 +37,8 @@ ArcBench 当前 runner 没有 Docker 命令或本地 socket，且 `unshare` 被�
 
 本机回环真实集成已覆盖：HTTP 文件往返、UID 1000、凭据哨兵不可见、仅 loopback 网络、Docker socket 不可见、真实 Chromium 与后端交互、截图返回后由控制器评审。单元测试覆盖未认证拒绝、过期、镜像不匹配、越界路径、非白名单操作、重复作业不重跑、外部文件修改不覆盖、远程错误不回退。
 
-这证明了本地传输与隔离路径，不代表公网连接或 ArcBench 正式验收已完成。CI 新增真实网关集成测试。只有候选通过自测、平台正式 30/30 和最终提交的 CI，才按授权合并 PR。
+零模型平台探针已证明公网往返与隔离路径，不能代替 ArcBench 正式验收。运行容器的 `/work` 显式允许原生依赖执行，保留 `nosuid,nodev`；`/tmp` 仍为 `noexec`，断网、UID 1000、只读根目录、能力清空与资源限制保持。真实集成增加 Vite、Vitest、esbuild 两个版本的检查。只有候选通过自测、平台正式 30/30 和最终提交的 CI，才按授权合并 PR。
+
+运行期间的离线缓存缺失、依赖执行权限错误、远端传输失败、授权过期或镜像异常以 `SandboxInfrastructureError` 贯穿工具与检查边界，直接停止整轮。结构化 `repair_circuit_opened` 事件及 `.arc/infrastructure-failure.json` 记录原因代码、发生次数、重试次数和累计 token；不记录令牌或远端地址。完整事件复盘见[修复风暴日志](../performance/issue21-repair-storm-20261021.md)。
 
 官方资料：[Cloudflare Quick Tunnels](https://developers.cloudflare.com/tunnel/get-started/quick-tunnels/)。

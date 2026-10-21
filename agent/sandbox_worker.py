@@ -16,6 +16,7 @@ import time
 from .docker_sandbox import _decode, _encode
 from .sandbox_context import enter_worker
 from .sandbox_files import apply_snapshot, snapshot_project
+from .sandbox_process import SandboxInfrastructureError
 
 
 def _stop_other_processes() -> None:
@@ -179,6 +180,8 @@ if __name__ == "__main__":
             f"Isolated execution failed (no host fallback): {type(error).__name__}: {error}",
             file=sys.stderr,
         )
+        if isinstance(error, SandboxInfrastructureError):
+            print("ARCBENCH_INFRA_FAILURE " + json.dumps({"reason": error.reason}), file=sys.stderr)
         catalog = Path("/opt/toolchain/package.json")
         if catalog.is_file():
             try:
@@ -190,4 +193,4 @@ if __name__ == "__main__":
                 )
             except (OSError, ValueError):
                 pass
-        raise SystemExit(1)
+        raise SystemExit(78 if isinstance(error, SandboxInfrastructureError) else 1)

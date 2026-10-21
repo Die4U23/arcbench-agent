@@ -42,7 +42,8 @@ class Gateway:
         sandbox.check_available()
         actual = sandbox._command(["image", "inspect", "--format", "{{.Id}}", IMAGE])
         if actual.stdout.decode().strip() != self.image:
-            raise RuntimeError("trusted image changed")
+            from agent.sandbox_process import SandboxInfrastructureError
+            raise SandboxInfrastructureError("trusted image changed")
         with tempfile.TemporaryDirectory(prefix="arcbench-gateway-") as folder:
             project, task = Path(folder) / "project", Path(folder) / "task"
             project.mkdir(); task.mkdir()
@@ -90,7 +91,10 @@ class Gateway:
             return future.result()
         except Exception as exc:
             # Worker failures include bounded diagnostic output, never HTTP headers/config.
-            return {"state": "failed", "error": str(exc)[-4500:]}
+            from agent.sandbox_process import SandboxInfrastructureError
+            return {"state": "failed", "error": str(exc)[-4500:],
+                    "failure_kind": "infrastructure" if isinstance(exc, SandboxInfrastructureError) else "project",
+                    "reason": exc.reason if isinstance(exc, SandboxInfrastructureError) else None}
 
 
 def handler(gateway):

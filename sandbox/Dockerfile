@@ -12,6 +12,10 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 RUN python -m playwright install --with-deps chromium
 COPY sandbox/toolchain/package.json sandbox/toolchain/package-lock.json /opt/toolchain/
 RUN cd /opt/toolchain && npm ci --ignore-scripts --no-audit --no-fund --cache=/opt/npm-cache
+# Older task lockfiles pin this supported Vite transitive version. Cache both
+# its JS package and the current Linux architecture binary before going offline.
+RUN npm cache add esbuild@0.25.9 --cache=/opt/npm-cache \
+    && npm cache add "@esbuild/linux-$(node -p process.arch)@0.25.9" --cache=/opt/npm-cache
 # npm ci caches locked tarballs but fresh generated projects also need registry
 # registry metadata for offline resolution. npm CLI adds /_cacache to its cache
 # root, whereas pacote expects the content-cache directory directly. Use the same

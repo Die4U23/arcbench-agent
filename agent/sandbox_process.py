@@ -14,6 +14,14 @@ class SandboxProcessError(RuntimeError):
     pass
 
 
+class SandboxInfrastructureError(SandboxProcessError):
+    """An execution prerequisite failed; model edits must not retry this run."""
+
+    def __init__(self, message: str, *, reason: str = "sandbox_unavailable"):
+        super().__init__(message)
+        self.reason = reason
+
+
 @dataclass(frozen=True)
 class BoundedResult:
     returncode: int

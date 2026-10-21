@@ -1,5 +1,7 @@
 """Convert container results at the trusted controller boundary."""
 
+from .sandbox_process import SandboxInfrastructureError
+
 from .docker_sandbox import DockerSandbox
 
 
@@ -49,5 +51,7 @@ def run_checks(operation, project, *, options=None, task=None, timeout=600):
         if not isinstance(checks, list):
             raise ValueError("sandbox did not return check results")
         return tuple(check_from_document(document) for document in checks)
+    except SandboxInfrastructureError:
+        raise
     except (OSError, RuntimeError, ValueError) as exc:
         return (CheckResult("isolated " + operation, False, None, str(exc)),)

@@ -17,6 +17,8 @@ from urllib.parse import unquote, urlsplit
 
 from openai import APIStatusError
 
+from .sandbox_process import SandboxInfrastructureError
+
 from .tools import MAX_BATCH_OUTPUT_CHARS, ProjectTools, TOOL_SCHEMAS
 from .model_transport import CompletionClient, DEFAULT_MODEL_DEADLINE_SECONDS, ModelRequestInterrupted
 from .request_metrics import RequestObservation, emit as emit_metric, identifier as metric_identifier
@@ -831,6 +833,8 @@ class ModelClient:
             )
         except ModelRequestInterrupted:
             raise
+        except SandboxInfrastructureError:
+            raise
         except Exception as exc:
             if visual_inputs:
                 raise RuntimeError(
@@ -1337,6 +1341,8 @@ class ModelClient:
                         checkpoint_note = checker()
                     except ModelRequestInterrupted:
                         raise
+                    except SandboxInfrastructureError:
+                        raise
                     except Exception as exc:
                         checkpoint_note = f"Checkpoint verification failed: {type(exc).__name__}: {exc}"
                 rebase_restored_source()
@@ -1381,6 +1387,8 @@ class ModelClient:
                     feedback = checker() if checker is not None else "No checkpoint available"
                 except ModelRequestInterrupted:
                     raise
+                except SandboxInfrastructureError:
+                    raise
                 except Exception as exc:
                     feedback = f"Checkpoint verification failed: {type(exc).__name__}: {exc}"
                 if feedback.startswith("Current build and test scripts pass."):
@@ -1419,6 +1427,8 @@ class ModelClient:
                     and (not initial_bootstrap or current_checkpoint_revision != checkpoint_revision)):
                 try:
                     gaps = initial_bootstrap_gaps(project_dir) if initial_bootstrap else ()
+                except SandboxInfrastructureError:
+                    raise
                 except Exception as exc:
                     # A scheduling optimization must never suppress the real verifier
                     # when the cheap source inspection is unavailable.
@@ -1434,6 +1444,8 @@ class ModelClient:
                         feedback = checkpoint_feedback()
                     checkpoint_revision = current_checkpoint_revision
                 except ModelRequestInterrupted:
+                    raise
+                except SandboxInfrastructureError:
                     raise
                 except Exception as exc:
                     feedback = f"Checkpoint verification could not run: {type(exc).__name__}: {exc}"
@@ -1561,6 +1573,8 @@ class ModelClient:
                 # A provider status (balance/auth/rate limit/invalid request)
                 # is actionable evidence, not a diagnosis of vision support.
                 # Preserve it and stop; do not retry or switch models here.
+                raise
+            except SandboxInfrastructureError:
                 raise
             except Exception as exc:
                 if visual_inputs:
@@ -1753,6 +1767,8 @@ class ModelClient:
                             read_evidence.remember_write(tool_call.function.name, arguments, assistant_payload)
                 except ModelRequestInterrupted:
                     raise
+                except SandboxInfrastructureError:
+                    raise
                 except Exception as exc:
                     source_read_returned = False
                     result = f"Tool error: {type(exc).__name__}: {exc}"
@@ -1831,6 +1847,8 @@ class ModelClient:
                     checker = boundary_feedback if boundary_feedback is not None else checkpoint_feedback
                     feedback = checker() if checker is not None else "No checkpoint available"
                 except ModelRequestInterrupted:
+                    raise
+                except SandboxInfrastructureError:
                     raise
                 except Exception as exc:
                     feedback = f"Checkpoint verification failed: {type(exc).__name__}: {exc}"

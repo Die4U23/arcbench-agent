@@ -7,11 +7,11 @@ import time
 import unittest
 import urllib.error
 import urllib.request
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from agent.docker_sandbox import DockerSandbox, _encode
 from agent.remote_sandbox import RemoteSandbox
-from agent.sandbox_process import SandboxProcessError
+from agent.sandbox_process import SandboxInfrastructureError, SandboxProcessError
 from scripts.sandbox_gateway import Gateway, BoundedServer, handler
 
 
@@ -97,6 +97,20 @@ class RemoteSandboxTests(unittest.TestCase):
             self.gateway.expires=time.time()-1
             with self.assertRaises(SandboxProcessError): DockerSandbox().check_available()
             which.assert_not_called()
+
+    def test_transport_and_worker_infrastructure_failures_are_fatal_without_retries(self):
+        with tempfile.TemporaryDirectory() as folder:
+            client = RemoteSandbox(self.config)
+            with patch.object(client.http, "open", side_effect=OSError("private URL and token")) as request:
+                with self.assertRaises(SandboxInfrastructureError) as failure:
+                    client.invoke("dependencies", Path(folder))
+                self.assertEqual(request.call_count, 1)
+                self.assertNotIn("private URL", str(failure.exception))
+            self.gateway.executor = MagicMock(side_effect=SandboxInfrastructureError("missing cached package", reason="dependency_cache_missing"))
+            with self.assertRaises(SandboxInfrastructureError) as failure:
+                client.invoke("dependencies", Path(folder))
+            self.assertEqual(failure.exception.reason, "dependency_cache_missing")
+            self.assertEqual(self.gateway.executor.call_count, 1)
 
 
 @unittest.skipUnless(os.environ.get('ARCBENCH_RUN_DOCKER_TESTS')=='1','real Docker integration')

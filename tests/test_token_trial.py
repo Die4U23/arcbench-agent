@@ -8,6 +8,21 @@ from scripts.run_token_trial import TokenBudget, TokenStop, INPUT_BOUND, OUTPUT_
 
 
 class TokenTrialTests(unittest.TestCase):
+    def test_expanded_study_has_fixed_limits_and_cannot_relabel_legacy_budget(self):
+        with TemporaryDirectory() as folder:
+            path = Path(folder) / "usage.json"
+            with TokenBudget(path, expanded=True).trial("task-baseline-1", {}) as budget:
+                self.assertEqual(budget.data["policy"]["total_tokens"], 4_000_000)
+                for _ in range(12):
+                    record = budget.reserve()
+                    budget.settle(record, {"prompt_tokens": 100, "completion_tokens": 10}, "deepseek-flash")
+                with self.assertRaisesRegex(TokenStop, "Request limit"):
+                    budget.reserve()
+                budget.current["outcome"] = "passed"
+            with self.assertRaisesRegex(TokenStop, "Policy mismatch"):
+                with TokenBudget(path).trial("candidate", {}):
+                    self.fail("Cannot change the study policy")
+
     def test_unknown_usage_blocks_restart_without_erasing_reservation(self):
         with TemporaryDirectory() as folder:
             path = Path(folder) / "usage.json"

@@ -22,6 +22,7 @@ MODEL = "deepseek-flash"
 POLICY = {"model": MODEL, "total_tokens": TOKEN_LIMIT, "requests": REQUEST_LIMIT,
           "round_requests": ROUND_REQUEST_LIMIT, "round_seconds": ROUND_SECONDS,
           "input_bound": INPUT_BOUND, "max_output": OUTPUT_BOUND}
+EXPANDED_POLICY = dict(POLICY, total_tokens=4_000_000, requests=288, round_requests=12)
 
 
 class TokenStop(RuntimeError):
@@ -29,9 +30,10 @@ class TokenStop(RuntimeError):
 
 
 class TokenBudget:
-    def __init__(self, path, *, extend_requests=False):
+    def __init__(self, path, *, extend_requests=False, expanded=False):
         self.path = Path(path)
         self.extend_requests = extend_requests
+        self.expected_policy = EXPANDED_POLICY if expanded else POLICY
 
     def save(self):
         temporary = self.path.with_suffix(".next")
@@ -49,10 +51,11 @@ class TokenBudget:
             stream.write(str(os.getpid()))
         try:
             self.data = json.loads(self.path.read_text(encoding="utf-8")) if self.path.exists() else {
-                "policy": dict(POLICY), "requests": [], "trials": [], "stopped": None}
+                "policy": dict(self.expected_policy), "requests": [], "trials": [], "stopped": None}
             policy = self.data["policy"]
-            if (policy.get("requests") not in (48, 96)
-                    or dict(policy, requests=REQUEST_LIMIT) != POLICY or self.data["stopped"]):
+            valid_policy = (policy == self.expected_policy or
+                (self.expected_policy == POLICY and policy == dict(POLICY, requests=96)))
+            if not valid_policy or self.data["stopped"]:
                 raise TokenStop("Policy mismatch or stopped token study")
             if any(r["status"] != "settled" for r in self.data["requests"]):
                 raise TokenStop("Unknown usage remains reserved; no automatic retry")
@@ -69,7 +72,7 @@ class TokenBudget:
                     "total_tokens_unchanged": TOKEN_LIMIT,
                     "reason": "Second reviewed candidate; preserve every earlier outcome and token"})
                 policy["requests"] = 96
-            if len(self.data["trials"]) >= policy["requests"] // ROUND_REQUEST_LIMIT:
+            if len(self.data["trials"]) >= policy["requests"] // policy["round_requests"]:
                 raise TokenStop("Planned trials exhausted")
             self.label, self.started = label, time.monotonic()
             self.current = dict(label=label, outcome="running", metadata=metadata)
@@ -98,9 +101,9 @@ class TokenBudget:
         if self.data["stopped"] or any(r["status"] != "settled" for r in requests):
             raise TokenStop("Study stopped or unknown usage remains reserved")
         spent = sum(r["usage"]["prompt_tokens"] + r["usage"]["completion_tokens"] for r in requests)
-        if spent + INPUT_BOUND + OUTPUT_BOUND > TOKEN_LIMIT:
+        if spent + INPUT_BOUND + OUTPUT_BOUND > self.data["policy"]["total_tokens"]:
             raise TokenStop("Insufficient token headroom for maximum possible request")
-        if len(requests) >= self.data["policy"]["requests"] or sum(r["label"] == self.label for r in requests) >= ROUND_REQUEST_LIMIT:
+        if len(requests) >= self.data["policy"]["requests"] or sum(r["label"] == self.label for r in requests) >= self.data["policy"]["round_requests"]:
             raise TokenStop("Request limit reached")
         if self.remaining_seconds() < 240:
             raise TokenStop("Insufficient time for request and cleanup")
@@ -140,9 +143,12 @@ def main():
     parser.add_argument("--image", required=True)
     parser.add_argument("--extend-requests", action="store_true",
                         help="One recorded second phase, at most 96 attempts; same 2M total token limit")
+    parser.add_argument("--expanded", action="store_true",
+                        help="Separate fixed 24-trial study: 4M tokens, 288 requests, 12 requests per trial")
     args = parser.parse_args()
+    policy = EXPANDED_POLICY if args.expanded else POLICY
     if not args.execute:
-        print(json.dumps({"status": "UNRUN", "policy": POLICY}))
+        print(json.dumps({"status": "UNRUN", "policy": policy}))
         return
     key = os.environ.get("OPENAI_API_KEY")
     if not key:
@@ -158,7 +164,7 @@ def main():
     docker_module.IMAGE = args.image
     spec_bytes = args.spec.read_bytes()
     spec = json.loads(spec_bytes)
-    with TokenBudget(args.study / "token-usage.json", extend_requests=args.extend_requests).trial(args.label, {
+    with TokenBudget(args.study / "token-usage.json", extend_requests=args.extend_requests, expanded=args.expanded).trial(args.label, {
             "source_commit": args.source_commit, "image": args.image,
             "spec_sha256": hashlib.sha256(spec_bytes).hexdigest(),
             "source_sha256": {str(p.relative_to(args.source)): hashlib.sha256(p.read_bytes()).hexdigest()
@@ -222,14 +228,14 @@ def main():
         os.environ.update(MODEL=MODEL, OPENAI_BASE_URL="https://api.deepseek.com",
                           ARCBENCH_IMPLEMENTATION_THINKING="disabled",
                           ARCBENCH_VISUAL_IMPLEMENTATION="disabled",
-                          ARCBENCH_MAX_MODEL_REQUESTS=str(ROUND_REQUEST_LIMIT + 3),
-                          ARCBENCH_MAX_TOTAL_TOKENS=str(TOKEN_LIMIT))
+                          ARCBENCH_MAX_MODEL_REQUESTS=str(policy["round_requests"] + 3),
+                          ARCBENCH_MAX_TOTAL_TOKENS=str(policy["total_tokens"]))
         outcome, error_type, checks = "failed", None, []
         try:
             initial = [json.loads(tools.run_project_script(".", name)) for name in ("build", "test")]
             if initial[0]["exit_code"] or initial[1]["exit_code"] == 0:
                 budget.stop("Seed must build and fail the fixed acceptance")
-            model = ModelClient(max_turns=ROUND_REQUEST_LIMIT, max_tool_calls=30)
+            model = ModelClient(max_turns=policy["round_requests"], max_tool_calls=40)
             # Reserve no hidden model calls: final acceptance is local Docker.
             model.client = Transport()
             subtree = dict(spec["requirements"]["children"][0], project_requirements=spec["requirements"])

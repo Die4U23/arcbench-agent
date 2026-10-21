@@ -25,6 +25,7 @@ from .initial_bootstrap import initial_bootstrap_gaps
 from .generation_contract import generation_contract_context
 from .prompt_context import requirement_context
 from .read_evidence import ReadEvidence, source_path as _normalized_source_path
+from .tool_context import initial_file_inventory, failure_source_context
 from .visual_acceptance import REPORT_RELATIVE_PATH, SCREENSHOT_RELATIVE_DIR, collect_visual_references
 
 LOGGER = logging.getLogger(__name__)
@@ -1112,6 +1113,9 @@ class ModelClient:
         conversation: list[dict[str, Any]] = [system_msg, task_msg]
         if first_dynamic_content:
             conversation.append({"role": "user", "content": first_dynamic_content})
+        inventory = initial_file_inventory(project_tools)
+        if inventory:
+            conversation.append({"role": "user", "content": inventory})
         epoch_exchanges: list[list[dict[str, Any]]] = []
         epoch_reads: set[tuple[str, str]] = set()
         read_evidence = ReadEvidence()
@@ -1714,6 +1718,7 @@ class ModelClient:
                         )
                     else:
                         result = project_tools.call(tool_call.function.name, arguments)
+                        result = failure_source_context(tool_call.function.name, result, project_tools)
                         reset_changed_source_failures()
                         clear_fresh_source_reads(tool_call.function.name, arguments, result)
                         if tool_call.function.name in {"read_file", "read_files"}:

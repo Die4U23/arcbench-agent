@@ -1,0 +1,40 @@
+{
+  "scope": "Synthetic shared-module repair; not platform acceptance",
+  "requirements": {
+    "id": "ROOT",
+    "name": "pagination-repair",
+    "children": [
+      {
+        "id": "SEARCH",
+        "name": "Filtering and pagination agreement",
+        "description": "Repair the supplied CommonJS modules. Preserve exports and integer page contracts. Do not mutate records, arrays or options. No dependencies or frontend scaffolding. Keep package.json and acceptance.cjs byte-for-byte unchanged.",
+        "children": [
+          {
+            "id": "SEARCH.1",
+            "description": "normalize(options) returns exactly {query,page,limit}. Defaults for missing fields are empty query, page 1, limit 10. Query must be a string, trimmed and lowercased. Page must be a positive safe integer; limit must be a positive safe integer at most 100. Invalid values including null, fractions and numeric strings throw RangeError."
+          },
+          {
+            "id": "SEARCH.2",
+            "description": "matching(records,query) filters records by case-insensitive name substring, with empty query matching every record. Return a new array sorted by createdAt ascending then numeric id ascending for ties. Records are supplied with valid string names and integer createdAt/id. Never sort or mutate the input array or record objects."
+          },
+          {
+            "id": "SEARCH.3",
+            "description": "search(records, options={}) uses the shared normalize and matching functions and returns exactly {items,total,page,pageCount,hasNext}. Apply filtering and stable ordering BEFORE pagination. Pages are 1-based. total counts all matching records; pageCount is ceil(total/limit), zero for no matches; hasNext is true iff page < pageCount. Out-of-range pages return empty items while preserving the requested page. Validation failures propagate. Empty records must still validate options."
+          }
+        ]
+      }
+    ]
+  },
+  "plan": "Inspect the supplied related modules, repair their shared contracts coherently, and run the protected build and test scripts. Keep package.json and acceptance.cjs immutable. Use Node built-ins only. Finish once the fixed acceptance passes; do not add features or weaken validation.",
+  "protected": [
+    "package.json",
+    "acceptance.cjs"
+  ],
+  "files": {
+    "package.json": "{\"name\": \"pagination-repair\", \"private\": true, \"scripts\": {\"build\": \"node --check src/options.cjs && node --check src/matching.cjs && node --check src/search.cjs\", \"test\": \"node acceptance.cjs\"}}\n",
+    "src/options.cjs": "function normalize(o={}){return {query:o.query||'',page:o.page||0,limit:o.limit||10};}\nmodule.exports={normalize};\n",
+    "src/matching.cjs": "function matching(records,query){return records.sort((a,b)=>b.createdAt-a.createdAt).filter(r=>r.name.includes(query));}\nmodule.exports={matching};\n",
+    "src/search.cjs": "const {normalize}=require('./options.cjs');\nconst {matching}=require('./matching.cjs');\nfunction search(records,options={}){const o=normalize(options);const items=matching(records.slice(o.page*o.limit,(o.page+1)*o.limit),o.query);return {items,total:items.length,page:o.page,pageCount:Math.ceil(records.length/o.limit),hasNext:items.length===o.limit};}\nmodule.exports={search};\n",
+    "acceptance.cjs": "const assert=require('node:assert/strict');\nconst {normalize}=require('./src/options.cjs');\nconst {matching}=require('./src/matching.cjs');\nconst {search}=require('./src/search.cjs');\nassert.deepEqual(normalize({}),{query:'',page:1,limit:10});\nassert.deepEqual(normalize({query:'  ALP  ',page:2,limit:1}),{query:'alp',page:2,limit:1});\nfor(const options of [{page:0},{page:-1},{page:1.5},{page:'1'},{page:null},{page:Infinity},{limit:0},{limit:101},{limit:1.5},{limit:'2'},{query:null},{query:2}]){\n assert.throws(()=>normalize(options),RangeError);\n assert.throws(()=>search([],options),RangeError);\n}\nconst rows=Object.freeze([{id:3,name:'Alpine',createdAt:2},{id:4,name:'Beta',createdAt:0},{id:2,name:'ALPHA',createdAt:1},{id:1,name:'alphabet',createdAt:1}].map(Object.freeze));\nassert.deepEqual(matching(rows,'alp').map(r=>r.id),[1,2,3]);\nassert.deepEqual(rows.map(r=>r.id),[3,4,2,1]);\nassert.deepEqual(search(rows,{query:' ALP ',page:1,limit:2}),{items:[rows[3],rows[2]],total:3,page:1,pageCount:2,hasNext:true});\nassert.deepEqual(search(rows,{query:'alp',page:2,limit:2}),{items:[rows[0]],total:3,page:2,pageCount:2,hasNext:false});\nassert.deepEqual(search(rows,{query:'alp',page:3,limit:2}),{items:[],total:3,page:3,pageCount:2,hasNext:false});\nassert.deepEqual(search(rows,{query:'absent'}),{items:[],total:0,page:1,pageCount:0,hasNext:false});\nassert.deepEqual(search([],{}),{items:[],total:0,page:1,pageCount:0,hasNext:false});\nassert.equal(search(rows,{page:1,limit:4}).hasNext,false);\nconst options=Object.freeze({query:' ALP ',page:1,limit:2});search(rows,options);assert.equal(options.query,' ALP ');\nconsole.log('protected pagination acceptance passed');\n"
+  }
+}

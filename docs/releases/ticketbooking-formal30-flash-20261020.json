@@ -1,0 +1,75 @@
+{
+  "schema_version": 1,
+  "frozen_on": "2026-10-20",
+  "submission_id": "3e5f0811cfe4",
+  "url": "https://arc-bench.com/playground/task-bank/web/ticketbooking/submissions/3e5f0811cfe4",
+  "source_commit": "f75792c4a7b4377b4628163abd2c3445550a21e8",
+  "tag": "ticketbooking-flash-30of30-20261020",
+  "annotated_tag_object": "46af3eaf550e0177f70cb5c77e51bda772597128",
+  "formal_results": {
+    "passed": 30,
+    "failed": 0,
+    "total": 30,
+    "score": 100
+  },
+  "formal_stage3_executed": true,
+  "model": "deepseek-flash",
+  "request_attempts": 113,
+  "complete_responses": 113,
+  "prompt_tokens": 4492045,
+  "completion_tokens": 176392,
+  "total_tokens": 4668437,
+  "cache_hit_tokens": 4097280,
+  "cache_miss_tokens": 394765,
+  "input_cache_hit_rate": 0.9121190905255847,
+  "usage_complete": true,
+  "usage_reconciled_with_final_summary": true,
+  "provider_bill_verified": false,
+  "platform_displayed_duration": "28m21s",
+  "local_final_checks": {
+    "frontend": {
+      "passed": 18,
+      "total": 18
+    },
+    "backend": {
+      "passed": 10,
+      "total": 10
+    },
+    "public_regression": {
+      "passed": 32,
+      "total": 32
+    },
+    "chromium_probes": {
+      "passed": 4,
+      "total": 4
+    }
+  },
+  "local_package_bytes": 125604,
+  "local_package_sha256": "8a2ec0f1c5d680426d5d6b514af852a745c66a369e144121dfd9dd6f3931f066",
+  "server_zip_sha_verified": false,
+  "package_source_comparison": {
+    "files": 36,
+    "byte_identical": 24,
+    "line_ending_only_differences": 12,
+    "source_content_differences": 0
+  },
+  "build_count": null,
+  "repair_count": null,
+  "cost": null,
+  "current_main_retested": false,
+  "current_docker_sandbox_included": false,
+  "provenance": {
+    "public_summary": "https://github.com/Die4U23/arcbench-agent/issues/21#issuecomment-6288513883",
+    "local_archive": "local-runs/accepted-ticketbooking-flash-20261020/",
+    "reviewed_on": "2026-10-21",
+    "evidence_basis": "Local manifest, usage, package report, final delivery report and platform terminal evidence cross-checked; raw local archive not published by this documentation change."
+  },
+  "known_limitations": [
+    "Single task and frozen run, not a controlled A/B comparison or general completion rate.",
+    "The earlier unconfirmed candidate log reported 27/32; final delivery evidence supports local 32/32.",
+    "Delivery-stage formal_acceptance pending is not the later platform terminal result.",
+    "The frozen source predates the current Docker sandbox.",
+    "Server package hash and provider bill were not verified.",
+    "No reliable cumulative build/repair counts or monetary cost are established."
+  ]
+}

@@ -40,7 +40,31 @@ The host coordinates the run and calls the model service. Generated programs exe
 
 ## Recorded results
 
-### Formal platform acceptance: frozen 2026-10-14 package
+### Latest frozen acceptance: 2026-10-20
+
+The Railway Ticket Booking Demo passed **30/30** Stage 3 cases in [submission 3e5f0811cfe4](https://arc-bench.com/playground/task-bank/web/ticketbooking/submissions/3e5f0811cfe4). The preserved source is [`f75792c`](https://github.com/Die4U23/arcbench-agent/commit/f75792c4a7b4377b4628163abd2c3445550a21e8), tagged [`ticketbooking-flash-30of30-20261020`](https://github.com/Die4U23/arcbench-agent/tree/ticketbooking-flash-30of30-20261020).
+
+| Metric | Frozen-run value |
+| --- | ---: |
+| Formal cases passed | 30 / 30 |
+| Model | deepseek-flash |
+| Complete responses / request attempts | 113 / 113 |
+| Input / output tokens | 4,492,045 / 176,392 |
+| Total tokens | 4,668,437 |
+| Cache-hit / cache-miss input tokens | 4,097,280 / 394,765 |
+| Whole-run input cache hit rate | **91.21%** |
+| Platform-displayed duration | **28m21s** |
+| Final frontend / backend self-tests | 18 / 18; 10 / 10 |
+| Final local public-case regression / Chromium probes | 32 / 32; 4 / 4 |
+
+[Release evidence](docs/releases/ticketbooking-formal30-flash-20261020.json) records the package identity, usage reconciliation, and provenance. All 113 attempts have complete responses; usage matches the final summary, but the provider bill was not verified. Local checks and formal acceptance are distinct evidence layers. The final delivery report, rather than an earlier unconfirmed 27/32 candidate log, supports the local 32/32 result.
+
+The local Agent ZIP is 125,604 bytes, SHA-256 `8a2ec0f1c5d680426d5d6b514af852a745c66a369e144121dfd9dd6f3931f066`. Its contents match the frozen source allowing line-ending differences; the server-uploaded package hash is unavailable. The archive does not establish a reliable total build/repair count or monetary cost.
+
+This is one task and one frozen run, **not a current-main rerun or a controlled A/B improvement claim**. In particular, this frozen source predates the current Docker sandbox, so its formal result does not validate the later isolation implementation. The 2026-10-14 record below remains historical evidence; differences between the two runs are not a controlled performance comparison.
+
+
+### Earlier frozen acceptance: 2026-10-14
 
 The Railway Ticket Booking Demo passed **30/30** Stage 3 cases in [submission 35128ac54f45](https://arc-bench.com/playground/task-bank/web/ticketbooking/submissions/35128ac54f45).
 
@@ -139,7 +163,7 @@ CI installs Chromium for trusted fixtures. Its separate Docker job sets `ARCBENC
 
 ## Current limits
 
-- The formal result covers one task and one frozen package; there is no established multi-task completion rate or controlled Claude Code comparison here.
+- The archived formal results cover one task and specific frozen packages; there is no established multi-task completion rate or controlled Claude Code comparison here.
 - Offline character curves do not establish real token, cache, time, or cost improvements.
 - The offline npm cache supports reviewed exact versions, not arbitrary online dependency installation.
 - Docker is a practical boundary, not perfect isolation. The daemon and image are trusted; arbitrary host/controller crashes can leave containers requiring operator cleanup.

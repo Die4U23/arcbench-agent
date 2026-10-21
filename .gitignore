@@ -24,3 +24,6 @@ Desktop.ini
 # Downloaded/extracted upstream starter archives kept locally for reference.
 /template/
 local-runs/
+
+# Per-run remote sandbox capability; never commit or add to the Docker image.
+/sandbox-remote.json

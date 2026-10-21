@@ -83,6 +83,10 @@ def _decode(value: Any) -> dict[str, bytes]:
 
 class DockerSandbox:
     def __init__(self) -> None:
+        from .remote_sandbox import configured_remote
+        self.remote = configured_remote()
+        if self.remote is not None:
+            return
         self.docker = shutil.which("docker")
         if not self.docker:
             raise SandboxProcessError(
@@ -116,6 +120,8 @@ class DockerSandbox:
 
     def check_available(self) -> None:
         """Reject missing execution infrastructure before spending model tokens."""
+        if self.remote is not None:
+            return self.remote.check_available()
         self._preflight()
         image = self._command(["image", "inspect", "--format", "{{.Id}}", IMAGE])
         if image.returncode or not image.stdout.strip().startswith(b"sha256:"):
@@ -168,6 +174,8 @@ class DockerSandbox:
         task: Path | None = None,
         timeout: float = 180,
     ) -> dict[str, Any]:
+        if self.remote is not None:
+            return self.remote.invoke(operation, project, options=options, task=task, timeout=timeout)
         if operation not in _OPERATIONS or not 0 < timeout <= 1800:
             raise ValueError("invalid sandbox operation or deadline")
         self._preflight()

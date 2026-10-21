@@ -78,6 +78,10 @@ python -m unittest tests.test_token_study_summary
 
 ## 新平台验收状态
 
-已打包候选 `0d9e0a9` 并上传 ArcBench，包 SHA256 为 `ad1b9cbd8a14a0cb58ed36f6c1ce9498881857684d5d5548c334ffe66aab55d8`。用户恢复登录后已创建[新提交 dbb2695905d8](https://arc-bench.com/playground/task-bank/web/ticketbooking/submissions/dbb2695905d8)，实现和视觉模型均配置为 `deepseek-flash`。当前运行中，尚无新的 30/30 成绩。
+已打包候选 `0d9e0a9` 并上传 ArcBench，包 SHA256 为 `ad1b9cbd8a14a0cb58ed36f6c1ce9498881857684d5d5548c334ffe66aab55d8`。用户恢复登录后已创建[新提交 dbb2695905d8](https://arc-bench.com/playground/task-bank/web/ticketbooking/submissions/dbb2695905d8)，实现和视觉模型均配置为 `deepseek-flash`。
 
-平台入口新增 Docker 引擎与可信镜像预检，若平台运行环境不满足条件，会在任何模型请求前明确失败；不能用宿主机执行回退来掩盖该问题。历史冻结的 30/30 成绩不作为本候选成绩，PR 在新平台验收完成前保持草稿。
+新提交在 2026-10-21 10:40:46（平台日志时区）启动失败，根因是 `shutil.which("docker")` 未找到 Docker CLI：`Docker is required; host execution fallback is disabled`。这发生在 `main.py` 的启动预检、`run_agent` 之前，因此本次没有模型请求，也没有完成任何正式用例；不能称为新的 30/30。当前证据只证明 CLI 不可用，不能进一步断言平台宿主机未安装 Docker。
+
+已核对[平台官方执行契约](https://arc-bench.com/docs/agent)与提交表单：公开配置为 agent 包、模型连接和输出契约，没有发现可设置 Docker 引擎或可信镜像的入口。平台自身的外层 runner 容器不等同于本项目要求的生成代码隔离边界：模型凭据与控制器仍处于该外层环境中。
+
+继续平台验收需要平台侧提供可用的本地 Linux Docker 执行端与预构建 `arcbench-sandbox:1` 镜像，或另行实现并验证等效隔离后端。当前账户公开界面无法配置这些条件；没有安装守护进程、挂载宿主 Docker socket、开放公网执行桥或退回无隔离执行来绕过问题。原始页面日志与截图保留在 `local-runs/issue21-confirmatory-20261021/platform-dbb2695905d8-*`。历史冻结的 30/30 成绩不作为本候选成绩，PR 在新平台验收完成前保持草稿。

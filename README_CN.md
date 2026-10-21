@@ -40,7 +40,31 @@ YAML / Markdown requirements
 
 ## 已记录的结果
 
-### 平台正式验收：2026-10-14 冻结包
+### 最新冻结验收：2026-10-20
+
+Railway Ticket Booking Demo 在 [提交 3e5f0811cfe4](https://arc-bench.com/playground/task-bank/web/ticketbooking/submissions/3e5f0811cfe4) 的 Stage 3 中通过 **30/30**。保留源码为 [`f75792c`](https://github.com/Die4U23/arcbench-agent/commit/f75792c4a7b4377b4628163abd2c3445550a21e8)，冻结标签为 [`ticketbooking-flash-30of30-20261020`](https://github.com/Die4U23/arcbench-agent/tree/ticketbooking-flash-30of30-20261020)。
+
+| 指标 | 冻结运行值 |
+| --- | ---: |
+| 正式案例通过数 | 30 / 30 |
+| 模型 | deepseek-flash |
+| 完整响应／请求尝试 | 113 / 113 |
+| 输入／输出 token | 4,492,045 / 176,392 |
+| 总 token | 4,668,437 |
+| 缓存命中／未命中输入 token | 4,097,280 / 394,765 |
+| 整轮输入缓存命中率 | **91.21%** |
+| 平台显示耗时 | **28m21s** |
+| 最终前端／后端自测 | 18 / 18；10 / 10 |
+| 最终本地公开回归／Chromium 探针 | 32 / 32；4 / 4 |
+
+[版本证据](docs/releases/ticketbooking-formal30-flash-20261020.json) 记录包身份、用量核对和来源。113 次尝试均有完整响应，用量与最终汇总一致，但未核验服务商账单。本地检查与正式验收属于不同证据层次。本地 32/32 依据最终交付报告，而非更早的未确认候选 27/32 日志。
+
+本地 Agent ZIP 为 125,604 字节，SHA-256 为 `8a2ec0f1c5d680426d5d6b514af852a745c66a369e144121dfd9dd6f3931f066`。忽略换行差异后，包内容与冻结源码相符；服务端上传包哈希不可得。归档没有提供可靠的全程构建／修复累计次数或实际金额。
+
+这是一个任务的一次冻结运行，**不是当前 main 重跑成绩，也不是受控 A/B 改善结论**。特别是该冻结源码早于当前 Docker 沙箱，不能用这次正式结果验证后续隔离实现。下方 2026-10-14 记录保留为历史证据，两轮数字差异不构成受控性能对照。
+
+
+### 较早冻结验收：2026-10-14
 
 Railway Ticket Booking Demo 在 [提交 35128ac54f45](https://arc-bench.com/playground/task-bank/web/ticketbooking/submissions/35128ac54f45) 的 Stage 3 中通过 **30/30**。
 
@@ -139,7 +163,7 @@ CI 为可信测试样例安装 Chromium；独立 Docker 任务设置 `ARCBENCH_R
 
 ## 当前边界
 
-- 正式成绩只覆盖一个任务与一个冻结包，尚无已建立的多任务完成率或受控 Claude Code 对照。
+- 正式归档成绩覆盖一个任务的特定冻结包，尚无已建立的多任务完成率或受控 Claude Code 对照。
 - 离线字符曲线不能证明真实 token、缓存、耗时或成本提升。
 - 离线 npm 缓存只支持经审查的精确版本，不支持任意联网安装依赖。
 - Docker 是实用隔离边界，不是绝对安全证明。引擎与镜像必须可信；任意宿主机或控制器崩溃后可能仍需人工清理遗留容器。

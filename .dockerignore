@@ -6,6 +6,7 @@
 !requirements.txt
 !sandbox
 !sandbox/Dockerfile
+!sandbox/prune-cache.cjs
 !sandbox/toolchain
 !sandbox/toolchain/package.json
 !sandbox/toolchain/package-lock.json

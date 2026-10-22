@@ -24,6 +24,8 @@ RUN npm cache add esbuild@0.25.9 --cache=/opt/npm-cache \
 RUN cd /opt/toolchain && node -e "const p=require('/usr/local/lib/node_modules/npm/node_modules/pacote'); const lock=require('./package-lock.json'); (async()=>{ for (const [path,item] of Object.entries(lock.packages)) { if (!path || !item.version || !item.resolved) continue; const name=path.split('node_modules/').at(-1); await p.manifest(name+'@'+item.version,{cache:'/opt/npm-cache/_cacache',registry:'https://registry.npmjs.org/',fullMetadata:true,ignoreScripts:true}); } })().catch(e=>{console.error(e);process.exit(1)});"
 # A no-lock install validates that current cached metadata resolves to cached
 # tarballs. Cache drift fails the image build instead of becoming a runtime trap.
+COPY sandbox/prune-cache.cjs /opt/toolchain/prune-cache.cjs
+RUN node /opt/toolchain/prune-cache.cjs
 RUN mkdir /tmp/cache-smoke && cp /opt/toolchain/package.json /tmp/cache-smoke/ \
     && cd /tmp/cache-smoke && npm install --offline --ignore-scripts --no-audit --no-fund --cache=/opt/npm-cache \
     && rm -rf /tmp/cache-smoke && du -sh /opt/npm-cache

@@ -185,6 +185,23 @@ it('executes real browser input and an HTTP assertion offline',async()=>{
         self.assertEqual(result["exit_code"], 0, result)
         self.assertFalse((self.root / "node_modules").exists())
 
+    def test_vitest_subset_resolves_only_cached_transitive_versions(self):
+        # Full-toolchain smoke pins Vite directly and hid this backend-only case.
+        (self.root / "package.json").write_text(json.dumps({
+            "name": "backend-subset", "private": True, "type": "module",
+            "scripts": {"test": "vitest run"},
+            "devDependencies": {"vitest": "3.2.4", "supertest": "7.1.4"},
+            "dependencies": {"express": "5.1.0"}}))
+        (self.root / "backend.test.js").write_text(
+            "import{it,expect}from'vitest';import{createRequire}from'node:module';"
+            "const require=createRequire(import.meta.url);"
+            "it('uses cached transitive toolchain',()=>{"
+            "expect(require('vite/package.json').version).toBe('7.1.3');"
+            "expect(require('esbuild').version).toBe('0.25.12')});")
+        result = self.sandbox.invoke("project_script", self.root,
+            options={"directory": ".", "script": "test"}, timeout=180)
+        self.assertEqual(result["exit_code"], 0, result)
+
     def test_vite_vitest_and_native_dependencies_in_real_worker_mounts(self):
         # The former React-only smoke missed esbuild execution and Rollup dlopen.
         for version in ("0.25.9", "0.25.12"):

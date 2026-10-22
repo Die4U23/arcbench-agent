@@ -25,7 +25,7 @@ from .request_metrics import RequestObservation, emit as emit_metric, identifier
 from .ticketbooking_contract import public_acceptance_context
 from .initial_bootstrap import initial_bootstrap_gaps
 from .generation_contract import generation_contract_context
-from .prompt_context import requirement_context
+from .prompt_context import requirement_context, offline_dependency_context
 from .read_evidence import ReadEvidence, source_path as _normalized_source_path
 from .tool_context import initial_file_inventory, failure_source_context
 from .visual_acceptance import REPORT_RELATIVE_PATH, SCREENSHOT_RELATIVE_DIR, collect_visual_references
@@ -817,6 +817,7 @@ class ModelClient:
                     "out visible controls that need real behavior. Keep this checklist separate "
                     "from functional acceptance criteria. Group related scenarios and keep the "
                     "whole plan below 1,500 words; avoid restating the full requirement text."
+                    + offline_dependency_context(task_type)
                 ),
             },
             {
@@ -1064,6 +1065,7 @@ class ModelClient:
                 "cannot establish that the active requirement is repaired. Reserve requests to "
                 "read this result and correct remaining failures in the active scope."
             )
+        system_message += offline_dependency_context(task_type)
         text_message = (
             requirement_context(task_type, subtree)
             + f"\n\nImplementation plan:\n{plan}"

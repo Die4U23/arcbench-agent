@@ -152,6 +152,39 @@ fs.writeFileSync('audit.json', JSON.stringify({isolated: true, uid: process.getu
         self.assertFalse((self.root / "escape").exists())
         self.assertEqual((self.root / "fixture.cjs").read_bytes(), original)
 
+    def test_advertised_test_stack_runs_offline_without_lockfile(self):
+        catalog = Path(__file__).resolve().parents[1] / "sandbox/toolchain/package.json"
+        versions = json.loads(catalog.read_text())["dependencies"]
+        names = ("@testing-library/dom", "@testing-library/user-event", "@vitejs/plugin-react",
+                 "jsdom", "vite", "vitest", "express", "supertest")
+        manifest = {"name": "offline-interaction-regression", "private": True,
+                    "type": "module", "scripts": {"test": "vitest run"},
+                    "devDependencies": {name: versions[name] for name in names}}
+        (self.root / "package.json").write_text(json.dumps(manifest))
+        (self.root / "vite.config.js").write_text(
+            "import{defineConfig}from'vite';import react from'@vitejs/plugin-react';"
+            "export default defineConfig({plugins:[react()],test:{environment:'jsdom'}});")
+        (self.root / "interaction.test.js").write_text("""
+import {it,expect} from 'vitest';
+import userEvent from '@testing-library/user-event';
+import express from 'express';
+import request from 'supertest';
+it('executes real browser input and an HTTP assertion offline',async()=>{
+  document.body.innerHTML='<input aria-label="name"><button>Confirm</button>';
+  const user=userEvent.setup();
+  await user.type(document.querySelector('input'),'Traveler');
+  let clicked=false; document.querySelector('button').onclick=()=>{clicked=true};
+  await user.click(document.querySelector('button'));
+  expect(document.querySelector('input').value).toBe('Traveler'); expect(clicked).toBe(true);
+  const app=express(); app.get('/health',(req,res)=>res.json({ok:true}));
+  await request(app).get('/health').expect(200,{ok:true});
+});
+""")
+        result = self.sandbox.invoke("project_script", self.root,
+            options={"directory": ".", "script": "test"}, timeout=180)
+        self.assertEqual(result["exit_code"], 0, result)
+        self.assertFalse((self.root / "node_modules").exists())
+
     def test_vite_vitest_and_native_dependencies_in_real_worker_mounts(self):
         # The former React-only smoke missed esbuild execution and Rollup dlopen.
         for version in ("0.25.9", "0.25.12"):

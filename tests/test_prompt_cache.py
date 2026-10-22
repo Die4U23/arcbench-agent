@@ -80,6 +80,13 @@ class PromptCacheTests(unittest.TestCase):
         expected = requirement_context("web", scope)
         self.assertTrue(planning["messages"][1]["content"].startswith(expected))
         self.assertTrue(implementation["messages"][1]["content"].startswith(expected))
+        # The first request in both stages knows the actual image's package versions.
+        catalog = json.loads((Path(__file__).resolve().parents[1] /
+            "sandbox/toolchain/package.json").read_text())["dependencies"]
+        for request in (planning, implementation):
+            guidance = request["messages"][0]["content"]
+            for name, version in catalog.items():
+                self.assertIn(json.dumps(name) + ": " + json.dumps(version), guidance)
 
     def test_retry_retains_prefix_and_schema_while_explicitly_changing_mode(self):
         model = _make_client(None, None, [

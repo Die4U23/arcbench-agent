@@ -87,7 +87,7 @@ class RemoteSandbox:
                 message = "remote Docker worker failed: " + str(result.get("error", ""))[:4500]
                 if result.get("failure_kind") == "infrastructure":
                     reason = result.get("reason")
-                    if reason not in {"dependency_cache_missing", "dependency_execution_denied", "dependency_prerequisite_failed"}:
+                    if reason not in {"dependency_cache_missing", "dependency_execution_denied", "dependency_prerequisite_failed", "owned_server_cleanup_failed"}:
                         reason = "sandbox_unavailable"
                     raise SandboxInfrastructureError(message, reason=reason)
                 raise SandboxProcessError(message)

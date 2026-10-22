@@ -9,10 +9,12 @@ import subprocess
 
 from .browser_contract import BROWSER_CHECK, browser_guard_result, verify_browser_contract
 from .contract_checks import verify_public_acceptance as original_public_acceptance
+from .contract_checks import wait_for_owned_port_release
 from .visual_acceptance import _wait_for_server
 from .station_units import verify_station_units, unavailable
 from .booking_completion import verify_booking_completion, completion_result
 from .verify import CheckResult
+from .sandbox_process import SandboxInfrastructureError
 
 
 def _stop_owned_server(server):
@@ -33,6 +35,7 @@ def _stop_owned_server(server):
             raise
         os.killpg(server.pid, signal.SIGKILL)
         server.wait(timeout=5)
+    wait_for_owned_port_release(server.pid)
 
 
 def _combine(original, *additional):
@@ -84,6 +87,8 @@ def _run_owned_browser(project: Path, original=None):
         if server is not None:
             try:
                 _stop_owned_server(server)
+            except SandboxInfrastructureError:
+                raise
             except Exception as exc:
                 message = f'Owned native server cleanup failed: {exc}'
                 result = _combine(browser_guard_result(False, message), unavailable(message))

@@ -273,12 +273,12 @@ class DockerSandbox:
                             if line.startswith("ARCBENCH_INFRA_FAILURE "):
                                 try:
                                     code = json.loads(line.split(" ", 1)[1]).get("reason")
-                                    if code in {"dependency_cache_missing", "dependency_execution_denied"}:
+                                    if code in {"dependency_cache_missing", "dependency_execution_denied", "owned_server_cleanup_failed"}:
                                         reason = code
                                 except (ValueError, AttributeError):
                                     pass
                         raise SandboxInfrastructureError(
-                            "sandbox dependency prerequisites failed; no files imported: "
+                            "sandbox infrastructure failed; no files imported: "
                             + completed.stderr[-4000:].decode("utf-8", errors="replace"),
                             reason=reason)
                     if completed.returncode == 125:

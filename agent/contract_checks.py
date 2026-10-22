@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import errno
 from html.parser import HTMLParser
 import os
 from pathlib import Path
@@ -18,6 +19,39 @@ from .ticketbooking_probes import JOURNEY_PROBES, JOURNEY_PROBE_COUNT
 from .verify import CheckResult
 from .regression_entry import entry_adapter
 from .browser_contract import browser_guard_result, verify_browser_contract
+from .sandbox_process import SandboxInfrastructureError
+
+
+def wait_for_owned_port_release(pid: int, port: int = 3000) -> None:
+    """The npm leader can exit before its owned listener finishes SIGTERM.
+
+    Called only after stopping a server we started, never for an occupied port
+    discovered before startup. Escalation targets that exact process group.
+    """
+    deadline = time.monotonic() + 5
+    escalated = False
+    while True:
+        try:
+            with socket.socket() as probe:
+                if os.name != "nt":
+                    probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                probe.bind(("127.0.0.1", port))
+            return
+        except OSError as exc:
+            if exc.errno != errno.EADDRINUSE:
+                raise
+            if time.monotonic() >= deadline:
+                if escalated or os.name == "nt":
+                    raise SandboxInfrastructureError(
+                        f"Owned server port {port} was not released; stop model repairs",
+                        reason="owned_server_cleanup_failed") from exc
+                try:
+                    os.killpg(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                escalated = True
+                deadline = time.monotonic() + 1
+            time.sleep(0.02)
 
 
 class _FailureDOM(HTMLParser):
@@ -298,7 +332,10 @@ def verify_public_acceptance(output_dir: Path, tree: dict, *, startup_only: bool
                         server.wait(timeout=5)
                     else:
                         raise
-            except (OSError, subprocess.TimeoutExpired) as exc:
+                wait_for_owned_port_release(server.pid)
+            except SandboxInfrastructureError:
+                raise
+            except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
                 return (CheckResult(name, False, None,
                     f"Regression environment cleanup failed for owned PID {server.pid}: {exc}. "
                     "Inspect .arc/public-regression-server.log and public-regression.json; "

@@ -106,11 +106,13 @@ class RemoteSandboxTests(unittest.TestCase):
                     client.invoke("dependencies", Path(folder))
                 self.assertEqual(request.call_count, 1)
                 self.assertNotIn("private URL", str(failure.exception))
-            self.gateway.executor = MagicMock(side_effect=SandboxInfrastructureError("missing cached package", reason="dependency_cache_missing"))
-            with self.assertRaises(SandboxInfrastructureError) as failure:
-                client.invoke("dependencies", Path(folder))
-            self.assertEqual(failure.exception.reason, "dependency_cache_missing")
-            self.assertEqual(self.gateway.executor.call_count, 1)
+            for reason in ("dependency_cache_missing", "owned_server_cleanup_failed"):
+                with self.subTest(reason=reason):
+                    self.gateway.executor = MagicMock(side_effect=SandboxInfrastructureError("worker prerequisite failed", reason=reason))
+                    with self.assertRaises(SandboxInfrastructureError) as failure:
+                        client.invoke("dependencies", Path(folder))
+                    self.assertEqual(failure.exception.reason, reason)
+                    self.assertEqual(self.gateway.executor.call_count, 1)
 
 
 @unittest.skipUnless(os.environ.get('ARCBENCH_RUN_DOCKER_TESTS')=='1','real Docker integration')

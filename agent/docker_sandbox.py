@@ -208,8 +208,10 @@ class DockerSandbox:
                 "none",
                 "--shm-size",
                 "128m",
+                # Native build dependencies run only inside this disposable,
+                # offline, non-root container; Docker tmpfs defaults to noexec.
                 "--tmpfs",
-                "/work:rw,nosuid,nodev,size=512m,mode=0700,uid=1000,gid=1000",
+                "/work:rw,nosuid,nodev,exec,size=512m,mode=0700,uid=1000,gid=1000",
                 "--tmpfs",
                 "/tmp:rw,nosuid,nodev,size=1024m,mode=1777",
                 "--mount",

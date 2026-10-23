@@ -212,7 +212,7 @@ class CheckpointBoundaryTests(unittest.TestCase):
                 self.assertIn("latest behavioral result was unavailable", model.last_implementation_stop_detail)
                 self.assertFalse(model.last_implementation_handoff)
 
-    def test_boundary_restore_rebases_protocol_and_discards_reverted_write_summary(self):
+    def test_green_local_pass_does_not_allow_optional_regression_when_boundary_fails(self):
         with TemporaryDirectory() as directory:
             fixture = BoundaryFixture(Path(directory), root_failure=True)
             model = _make_client(None, None, [
@@ -226,16 +226,11 @@ class CheckpointBoundaryTests(unittest.TestCase):
             with patch("agent.llm.MAX_CONVERSATION_CHARS", 1):
                 self.assertFalse(fixture.implement(model))
             self.assertEqual(fixture.source(), ("new", "new"))
-            self.assertEqual(fixture.tools.source_revision, 1)
+            self.assertEqual(fixture.tools.source_revision, 0)
             self.assertFalse((fixture.root / "frontend/src/rollback-new.js").exists())
-            request = model.client.completions.requests[6]["messages"]
-            context = json.dumps(request)
-            self.assertIn("controller restored an earlier candidate", context)
-            self.assertIn("new", context)
-            for stale in ("ROLLBACK_ONLY_SOURCE", "REMOVED_SOURCE", "rollback-new.js"):
-                self.assertNotIn(stale, context)
-            self.assertFalse(any(message["role"] in {"assistant", "tool"} for message in request))
+            self.assertEqual(model.model_requests_used, 4)
             self.assertFalse(model.last_implementation_handoff)
+            self.assertTrue(model.last_implementation_deferred)
 
     def test_initial_module_allocation_checks_full_boundary_once(self):
         with TemporaryDirectory() as directory:

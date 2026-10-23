@@ -51,6 +51,28 @@ class RequirementReviewerRecoveryTests(unittest.TestCase):
                 self.assertEqual(model.client.completions.calls, 2)
                 self.assertIsNone(model._requirement_review_cache)
 
+    def test_misattributed_or_translated_quote_is_identified_and_corrected_once(self):
+        tree = {'id': 'ROOT', 'description': '登录后显示用户名。',
+                'children': [{'id': 'REQ-1', 'description': '点击退出后清除会话。'}]}
+        for bad_quote in ('登录后显示用户名。', 'Clear the session after sign out.'):
+            with self.subTest(quote=bad_quote), tempfile.TemporaryDirectory() as directory:
+                tools = ProjectTools(Path(directory))
+                tools.write_file('frontend/src/App.jsx', 'return null;')
+                issue = dict(requirement_id='REQ-1', requirement_quote=bad_quote,
+                             path='frontend/src/App.jsx', evidence='return null;',
+                             missing_behavior='没有实现退出操作')
+                invalid = json.dumps({'verdict': 'repair', 'issues': [issue]})
+                issue['requirement_quote'] = '点击退出后清除会话。'
+                valid = json.dumps({'verdict': 'repair', 'issues': [issue]})
+                model = _make_client(None, None, [_FakeMessage(None, invalid), _FakeMessage(None, valid)])
+                feedback = model.review_requirements(tree, tools)
+                self.assertIn('点击退出后清除会话。', feedback)
+                self.assertEqual(model.model_requests_used, 2)
+                correction = model.client.completions.requests[1]['messages'][-1]['content']
+                self.assertIn("requirement_id='REQ-1'", correction)
+                self.assertIn(bad_quote, correction)
+                self.assertIn('original language', correction)
+
     def test_retry_stops_at_request_budget_before_second_provider_call(self):
         with tempfile.TemporaryDirectory() as directory:
             tools = ProjectTools(Path(directory))
@@ -59,6 +81,24 @@ class RequirementReviewerRecoveryTests(unittest.TestCase):
             with self.assertRaises(ModelBudgetExceeded):
                 model.review_requirements({'id': 'ROOT'}, tools)
             self.assertEqual(model.client.completions.calls, 1)
+
+    def test_withdrawn_defect_never_reaches_production_repair_or_cached_approval(self):
+        for text in (
+            'The link exists. This is not a concrete required-behavior gap.',
+            'The behavior is implemented; it is not a defect.',
+            '该行为已实现。这不是具体的需求缺口。',
+        ):
+            with self.subTest(text=text), tempfile.TemporaryDirectory() as directory:
+                tools = ProjectTools(Path(directory))
+                tools.write_file('frontend/src/App.jsx', 'return null;')
+                invalid = _repair_review(text)
+                model = _make_client(None, None, [_FakeMessage(None, invalid)] * 2)
+                with self.assertRaisesRegex(RequirementReviewError, 'contradictory issue'):
+                    model.review_requirements({'id': 'ROOT', 'description': 'test task'}, tools)
+                self.assertEqual(model.model_requests_used, 2)
+                self.assertIsNone(model._requirement_review_cache)
+                self.assertIn('remove withdrawn observations',
+                    model.client.completions.requests[1]['messages'][-1]['content'])
 
     def test_source_paths_normalize_harmless_syntax_but_cannot_escape_supplied_files(self):
         tree = {'id': 'ROOT', 'description': 'test task'}

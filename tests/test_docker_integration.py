@@ -139,6 +139,28 @@ fs.writeFileSync('audit.json', JSON.stringify({isolated: true, uid: process.getu
         self.assertEqual((self.root / "dependency-ok.txt").read_text(), "19.1.1")
         self.assertFalse((self.root / "node_modules").exists())
 
+    def test_offline_transitive_resolution_stays_within_reviewed_versions(self):
+        lock = json.loads(
+            (Path(__file__).resolve().parents[1] / "sandbox/toolchain/package-lock.json")
+            .read_text()
+        )
+        expected = lock["packages"]["node_modules/rollup"]["version"]
+        self.project(
+            "import('vite').then(() => require('node:fs').writeFileSync("
+            "'rollup-version.txt', require('rollup/package.json').version));"
+        )
+        package = json.loads((self.root / "package.json").read_text())
+        package["dependencies"] = {"vite": "7.1.3"}
+        (self.root / "package.json").write_text(json.dumps(package))
+        result = self.sandbox.invoke(
+            "project_script",
+            self.root,
+            options={"directory": ".", "script": "test"},
+            timeout=120,
+        )
+        self.assertEqual(result["exit_code"], 0)
+        self.assertEqual((self.root / "rollup-version.txt").read_text(), expected)
+
     def test_symlink_export_is_rejected_without_host_mutation(self):
         self.project("require('node:fs').symlinkSync('/etc/passwd','escape');")
         original = (self.root / "fixture.cjs").read_bytes()

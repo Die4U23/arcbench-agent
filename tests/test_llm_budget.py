@@ -675,7 +675,7 @@ class ImplementBudgetTests(unittest.TestCase):
         self.assertNotIn('same read already returned', reread)
 
     def test_overlapping_read_batches_do_not_repeat_unchanged_file_content(self) -> None:
-        (self.project_dir / "a.js").write_text("old a", encoding="utf-8")
+        (self.project_dir / "a.js").write_text("old a" * 30, encoding="utf-8")
         (self.project_dir / "b.js").write_text("b content", encoding="utf-8")
         model = _make_client(
             max_turns=6,
@@ -767,7 +767,7 @@ class ImplementBudgetTests(unittest.TestCase):
             task_type="web", subtree=self.subtree, plan="test plan",
             project_tools=self.tools, checkpoint_feedback=checkpoint, boundary_feedback=boundary,
         ))
-        self.assertEqual(model.model_requests_used, 5)
+        self.assertEqual(model.model_requests_used, 4)
         self.assertTrue(model.last_implementation_handoff)
         self.assertIsNone(model.last_budget_report)
         checkpoint.assert_called_once_with()
@@ -845,7 +845,7 @@ class ImplementBudgetTests(unittest.TestCase):
             task_type="web", subtree=self.subtree, plan="test plan",
             project_tools=self.tools, checkpoint_feedback=checkpoint,
         ))
-        self.assertEqual(model.model_requests_used, 5)
+        self.assertEqual(model.model_requests_used, 4)
         self.assertEqual(self.tools.changed_paths, ["a.js"])
         self.assertTrue(model.last_implementation_handoff)
 
@@ -874,8 +874,8 @@ class ImplementBudgetTests(unittest.TestCase):
         checkpoint = MagicMock(return_value="Current build and test scripts pass.")
         self.assertFalse(model.implement(task_type="web", subtree=self.subtree,
             plan="test plan", project_tools=self.tools, checkpoint_feedback=checkpoint))
-        self.assertEqual(model.model_requests_used, 6)
-        self.assertEqual(checkpoint.call_count, 2)
+        self.assertEqual(model.model_requests_used, 4)
+        self.assertEqual(checkpoint.call_count, 1)
         self.assertTrue(model.last_implementation_handoff)
 
     def test_module_allocation_defers_work_without_claiming_success_or_global_exhaustion(self) -> None:
@@ -923,17 +923,20 @@ class ImplementBudgetTests(unittest.TestCase):
         self.assertEqual(model.last_implementation_stop_reason, "model_finished")
         self.assertFalse((self.project_dir / "unnecessary.js").exists())
 
-    def test_final_checkpoint_failure_requires_repair_before_handoff(self) -> None:
-        model = _make_client(max_turns=None, max_tool_calls=None,
-            scripted=[_FakeMessage([_write_call(f"file-{i}.js")]) for i in range(20)])
-        checkpoint = MagicMock(side_effect=["Current build and test scripts pass.",
-            "backend tests: FAILED", "Current build and test scripts pass.",
-            "Current build and test scripts pass."])
+    def test_full_boundary_failure_prevents_green_handoff(self) -> None:
+        model = _make_client(None, None,
+            [_FakeMessage([_write_call(f"file-{i}.js")]) for i in range(20)])
+        checkpoint = MagicMock(return_value="Current build and test scripts pass.")
+        boundary = MagicMock(return_value="backend tests: FAILED")
         self.assertFalse(model.implement(task_type="web", subtree=self.subtree,
-            plan="test plan", project_tools=self.tools, checkpoint_feedback=checkpoint))
-        self.assertEqual(model.model_requests_used, 12)
-        self.assertEqual(checkpoint.call_count, 4)
-        self.assertTrue(model.last_implementation_handoff)
+            plan="test plan", project_tools=self.tools, checkpoint_feedback=checkpoint,
+            boundary_feedback=boundary))
+        self.assertEqual(model.model_requests_used, 4)
+        boundary.assert_called_once_with()
+        self.assertFalse(model.last_implementation_handoff)
+        self.assertTrue(model.last_implementation_deferred)
+        self.assertEqual(model.last_implementation_stop_reason, "checkpoint_failed")
+        self.assertFalse((self.project_dir / "file-4.js").exists())
 
     def test_idle_tool_turns_do_not_handoff_if_checkpoint_raises(self) -> None:
         model = _make_client(

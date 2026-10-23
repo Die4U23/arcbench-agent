@@ -45,4 +45,6 @@ Docker client proxy defaults are explicitly overridden with empty upper/lowercas
 
 Exports reject Unicode control/format characters and non-NFC names to avoid ignored-character and normalization aliases. Case-only file or directory renames across input/output snapshots are rejected before writes, preventing an add-then-delete operation from deleting its own replacement on case-insensitive hosts.
 
-The build seeds full registry metadata for the locked dependency graph without lifecycle scripts, then checks a fresh no-lock offline install of the reviewed toolchain. Direct pacote calls use `/opt/npm-cache/_cacache`, matching the content-cache directory that npm CLI derives from `--cache=/opt/npm-cache`; seeding the parent directory produces an unrelated cache that offline npm install cannot read. The metadata format also matches npm's full-metadata resolution request. This catches metadata/tarball drift at image-build time; it does not make arbitrary versions available. The container memory limit is 2 GiB and its temporary tmpfs limit is 1 GiB to accommodate the offline cache and browser.
+镜像构建先按锁文件补齐注册表完整元数据，再把可解析版本和分发标签限定为锁文件允许的版本，最后执行无 lockfile 的离线安装检查。直接调用 pacote 时使用 `/opt/npm-cache/_cacache`，与 npm 根据 `--cache=/opt/npm-cache` 推导出的内容缓存目录一致；写入父目录会生成 npm 离线安装无法读取的另一份缓存。元数据格式与 npm 的完整元数据请求一致。版本裁剪防止注册表新发布版本将离线安装引向尚未缓存的 tarball，冒烟检查仍必须执行；不因此支持任意版本。容器内存上限为 2 GiB，临时目录 tmpfs 上限为 1 GiB。
+
+临时容器内的 `/work` tmpfs 显式允许执行 esbuild 等原生构建程序，继续保留 `nosuid/nodev`、网络隔离、非 root、移除全部 capabilities、只读根文件系统及宿主凭据隔离。`/tmp` 继续使用 Docker 默认的执行限制。

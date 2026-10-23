@@ -758,6 +758,20 @@ class ModelClient:
                 not isinstance(issue.get(key), str) or not issue[key].strip() for key in fields
             ):
                 raise RequirementReviewError("Requirement reviewer returned an unevidenced issue")
+            if re.search(
+                r"\b(?:this|it)\s+(?:is|was)\s+not\s+(?:a\s+)?"
+                r"(?:concrete\s+)?(?:required[- ]behavior\s+)?(?:gap|defect|issue)\b"
+                r"|(?:这|此)(?:并)?不是(?:一个)?(?:具体的)?(?:需求)?(?:缺口|缺陷|问题)",
+                issue["missing_behavior"], re.IGNORECASE,
+            ):
+                # An audit explicitly withdrawing its own defect cannot justify
+                # editing passed production code. It also cannot count as pass:
+                # use the existing single re-audit, then fail closed if repeated.
+                raise RequirementReviewError(
+                    "Requirement reviewer returned a contradictory issue: "
+                    f"{issue['requirement_id']!r} explicitly says this is not a defect. "
+                    "Re-audit required behavior; remove withdrawn observations"
+                )
             node = requirement_nodes.get(issue["requirement_id"])
             quote = " ".join(issue["requirement_quote"].split())
             if node is None or not any(quote in " ".join(text.split()) for text in text_values(node)):
@@ -1664,6 +1678,7 @@ class ModelClient:
                 self.tool_calls_used += 1
                 tool_started = time.perf_counter()
                 arguments: Any = {}
+                verified_success = False
                 try:
                     arguments = json.loads(tool_call.function.arguments or "{}")
                     reset_changed_source_failures()
@@ -1701,6 +1716,8 @@ class ModelClient:
                             verified_feedback = verification_feedback()
                             verified_revision = (len(progress_paths), getattr(project_tools, "source_revision", 0))
                             result = verified_feedback
+                        verified_success = (revision == verified_revision and
+                            verified_feedback.startswith("Current build and test scripts pass."))
                     elif tool_call.function.name in {"list_files", "search_text"} and read_key in epoch_reads:
                         result = (
                             "The same read already returned in this conversation and no project file "
@@ -1742,6 +1759,10 @@ class ModelClient:
                 if not result.startswith("Tool error:"):
                     read_evidence.remember(tool_call.function.name, arguments, tool_payloads[-1])
                     read_evidence.remember_write(tool_call.function.name, arguments, assistant_payload)
+                if verified_success:
+                    LOGGER.info("On-demand checks passed; handing off without optional edit turns")
+                    return finish_implementation("checkpoint_passed", handoff=True,
+                        checked_feedback=verified_feedback if boundary_feedback is None else None)
             exchange = [assistant_payload, *tool_payloads]
             conversation.extend(exchange)
             epoch_exchanges.append(exchange)

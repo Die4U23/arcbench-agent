@@ -124,7 +124,8 @@ class RepairVerificationToolTests(unittest.TestCase):
             contents = [m['content'] for m in model.client.completions.requests[-1]['messages']
                         if m.get('role') == 'tool' and m.get('tool_call_id') == 'verify']
             self.assertIn('frontend: npm run build: FAILED', contents[0])
-            self.assertIn('Current build and test scripts pass.', contents[1])
+            self.assertEqual(len(contents), 1)
+            self.assertEqual(model.model_requests_used, 4)
 
     def test_unchanged_source_reuses_result_and_changed_source_has_two_run_limit(self):
         with TemporaryDirectory() as directory:
@@ -159,7 +160,26 @@ class RepairVerificationToolTests(unittest.TestCase):
             self.assertEqual(model.model_requests_used, 1)
             boundary.assert_called_once_with()
             self.assertFalse(model.last_implementation_handoff)
-            self.assertEqual(model.last_implementation_stop_reason, 'allocation')
+            self.assertEqual(model.last_implementation_stop_reason, 'checkpoint_failed')
+
+    def test_pass_hands_off_before_same_batch_or_later_optional_edits(self):
+        with TemporaryDirectory() as directory:
+            tools = ProjectTools(Path(directory))
+            tools.write_file('a.js', 'passing')
+            model = _make_client(None, None, [
+                _FakeMessage([_FakeToolCall('verify', 'verify_candidate', '{}'),
+                              write_files(**{'a.js': 'unnecessary regression'})]),
+                _FakeMessage([write_files(**{'a.js': 'later regression'})]),
+            ])
+            boundary = MagicMock(return_value='Current build and test scripts pass.')
+            model.implement(task_type='web', subtree={'id': 'ROOT'}, plan='repair',
+                project_tools=tools, repair_feedback='repair',
+                verification_feedback=lambda: 'Current build and test scripts pass.',
+                boundary_feedback=boundary)
+            self.assertEqual(model.model_requests_used, 1)
+            self.assertEqual((Path(directory) / 'a.js').read_text(), 'passing')
+            boundary.assert_called_once_with()
+            self.assertTrue(model.last_implementation_handoff)
 
     def test_interrupted_verification_is_not_downgraded_to_a_tool_error(self):
         with TemporaryDirectory() as directory:

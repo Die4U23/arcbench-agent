@@ -82,6 +82,24 @@ class RequirementReviewerRecoveryTests(unittest.TestCase):
                 model.review_requirements({'id': 'ROOT'}, tools)
             self.assertEqual(model.client.completions.calls, 1)
 
+    def test_withdrawn_defect_never_reaches_production_repair_or_cached_approval(self):
+        for text in (
+            'The link exists. This is not a concrete required-behavior gap.',
+            'The behavior is implemented; it is not a defect.',
+            '该行为已实现。这不是具体的需求缺口。',
+        ):
+            with self.subTest(text=text), tempfile.TemporaryDirectory() as directory:
+                tools = ProjectTools(Path(directory))
+                tools.write_file('frontend/src/App.jsx', 'return null;')
+                invalid = _repair_review(text)
+                model = _make_client(None, None, [_FakeMessage(None, invalid)] * 2)
+                with self.assertRaisesRegex(RequirementReviewError, 'contradictory issue'):
+                    model.review_requirements({'id': 'ROOT', 'description': 'test task'}, tools)
+                self.assertEqual(model.model_requests_used, 2)
+                self.assertIsNone(model._requirement_review_cache)
+                self.assertIn('remove withdrawn observations',
+                    model.client.completions.requests[1]['messages'][-1]['content'])
+
     def test_source_paths_normalize_harmless_syntax_but_cannot_escape_supplied_files(self):
         tree = {'id': 'ROOT', 'description': 'test task'}
         source = {'frontend/src/App.jsx': 'return null;'}

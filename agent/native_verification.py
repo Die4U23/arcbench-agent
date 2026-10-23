@@ -45,6 +45,10 @@ def _combine(original, *additional):
 
 
 def _run_owned_browser(project: Path, original=None):
+    from .sandbox_context import in_worker
+    if not in_worker():
+        return _combine(browser_guard_result(False, "Native server requires an isolated session"),
+                        unavailable("Native server requires an isolated session"))
     protected = project/'frontend/.arc'
     protected.mkdir(parents=True, exist_ok=True)
     log_path = protected/'independent-native-server.log'
@@ -87,6 +91,13 @@ def _run_owned_browser(project: Path, original=None):
 
 
 def verify_public_acceptance(output_dir: Path, tree: dict, *, startup_only=False):
+    from .sandbox_context import in_worker
+    if not in_worker():
+        from .ticketbooking_contract import public_acceptance_context
+        if not startup_only and not public_acceptance_context(tree):
+            return ()
+        from .container_checks import run_checks
+        return run_checks("native", output_dir, options={"tree": tree, "startup_only": startup_only})
     try:
         checks = original_public_acceptance(output_dir, tree, startup_only=startup_only)
     finally:

@@ -9,6 +9,11 @@ from agent.verify import CheckResult
 
 
 class RegressionFixtureLifecycleTests(unittest.TestCase):
+    def setUp(self):
+        worker = patch('agent.sandbox_context.in_worker', return_value=True)
+        worker.start()
+        self.addCleanup(worker.stop)
+
     def test_every_run_executes_fresh_fixture_and_preserves_complete_results(self):
         with TemporaryDirectory() as directory:
             root = Path(directory)

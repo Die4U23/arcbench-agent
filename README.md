@@ -1,89 +1,200 @@
+English | [简体中文](README_CN.md)
+
 # ArcBench Agent
 
-本仓库用于完成 **CS3604** 课程项目：设计并实现一个能够在 ArcBench 上运行、评测和参与排行榜竞争的 Agent。
+[![CI](https://github.com/Die4U23/arcbench-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/Die4U23/arcbench-agent/actions/workflows/ci.yml)
 
-## 项目目标
+A Python software-engineering agent for ARC-Bench, developed for CS3604. It turns a requirement tree into a web application through explicit planning, tool-driven implementation, local verification, and bounded repair. The upload entry point uses **deepseek-flash only**.
 
-- 实现课程要求的 Agent；
-- 接入 ArcBench 的任务与评测流程；
-- 持续改进 Agent 的推理与任务解决能力；
-- 记录实验结果，并以 ArcBench 排行榜成绩验证改进效果。
+## What it does
 
-## 当前状态
+- **Requirement-driven orchestration**: normalize YAML or Markdown into a requirement tree, then track design, implementation, and local verification separately.
+- **Tool-driven implementation**: inspect and edit project files, apply unique-match text replacements, and feed concrete build/test failures back into repair.
+- **Layered verification**: build and test checks, source-evidence review, public-case regression, and browser/visual checks where applicable. Local success is not formal platform acceptance.
+- **Bounded progress**: request, token, tool-call, and implementation-turn controls; repeated-failure and no-progress guards; candidate checkpoints for delivery.
+- **Observable context reuse**: stable message prefixes, contiguous tool rounds, bounded history compression, and provider-reported cache hit/miss counters. Cache hits are not guaranteed.
+- **Isolated generated execution**: generated scripts and browsers run in short-lived offline Linux containers, with a reviewed dependency cache and no silent host fallback.
 
-已实现 Python 入口、需求树解析、显式编排、模型工具调用、构建与测试验证和 ARC-Bench Runtime SDK 适配。当前冻结版本在 Railway Ticket Booking Demo 的正式 Stage 3 中通过 **30/30**（2026-10-14，提交 [35128ac54f45](https://arc-bench.com/playground/task-bank/web/ticketbooking/submissions/35128ac54f45)）。这是单次正式验收结果，不代表任意项目都能首轮构建成功。
+Design background: [requirements](docs/PRD.md) · [technical choices](docs/TECH_SELECTION.md) · [performance methodology](docs/PERFORMANCE_REPORT.md).
 
-本轮全部使用 **deepseek-flash**，共 209 次完整响应、8,505,443 token，整轮输入缓存命中率 **86.46%**。逐请求与最终用量一致；服务端上传 ZIP 哈希未公开。本地冻结包哈希及结果见 [版本证据](docs/releases/ticketbooking-formal30-flash-20261014.json)。本地自测仍有失败，最终回退到可交付候选再通过正式评测；模块图的追踪状态未完整回填。后续离线诊断、缓存模式保持和模块着色修复不包含在本冻结版本中。
+## Architecture
 
-详细需求见 [docs/PRD.md](docs/PRD.md)，技术边界与选型见 [docs/TECH_SELECTION.md](docs/TECH_SELECTION.md)。
+```text
+YAML / Markdown requirements
+            |
+            v
+    Requirement tree ---> Orchestrator ---> Runtime events / delivery report
+                               |
+                  Plan -> Implement -> Verify -> Bounded repair
+                               |          |
+                 Flash + file tools       v
+                               |    Offline Docker sandbox
+                               |    build / tests / browser
+                               |          |
+                               +---- evidence and failures
+                                          |
+                              Host-side model review
+```
 
-冻结版本之后的模块追踪修复：设计和实现进度覆盖当前子树的全部节点；实现被延后时不发送完成事件。完整的受保护本地案例报告按准确需求身份汇总，父目录仅在所有子节点证据通过时标记通过，显式失败优先，缺失或未执行保持未验证。测试阶段的旧通过/失败状态会在新证据未知时清除，不覆盖设计或实现阶段的失败。ROOT 单独显示整套本地验证结果，节点事件明确标注“本地证据，正式 Stage 3 待评测”。因此完整案例通过但 runner 非零退出时，相关需求可显示本地案例通过，ROOT 仍保留整体验证失败。已有平台历史提交不会被这项代码修改追溯更新；本修复的离线验证不属于上面的正式 30/30 成绩。
+The host coordinates the run and calls the model service. Generated programs execute inside the sandbox; screenshots return to the host for model review. “Offline” describes generated-code execution, not model API traffic. [Execution boundary and residual risks](docs/dev/docker-execution.md).
 
-## 本地环境
+## Recorded results
 
-Python 版本以 `.python-version` 为准（当前为 3.12.6，需 64 位）；`scripts/setup.ps1` 会读取并校验该版本，已有 `.venv` 版本不匹配时会提示重建。项目直接依赖包括固定版本的 OpenAI Python SDK、PyYAML 和 Playwright；ARC-Bench Runtime SDK 作为源码随仓库提供。传递依赖仍由 pip 根据 SDK 元数据解析。
+### Latest frozen acceptance: 2026-10-20
 
-`.nvmrc` 记录用于本地 Web 项目构建与测试的 Node.js 版本；它不是 Agent Python 依赖，也不会由 `setup.ps1` 自动安装。使用 nvm 的开发环境可通过该文件切换版本；其他环境请安装相同版本的 Node.js。
+The Railway Ticket Booking Demo passed **30/30** Stage 3 cases in [submission 3e5f0811cfe4](https://arc-bench.com/playground/task-bank/web/ticketbooking/submissions/3e5f0811cfe4). The preserved source is [`f75792c`](https://github.com/Die4U23/arcbench-agent/commit/f75792c4a7b4377b4628163abd2c3445550a21e8), tagged [`ticketbooking-flash-30of30-20261020`](https://github.com/Die4U23/arcbench-agent/tree/ticketbooking-flash-30of30-20261020).
+
+| Metric | Frozen-run value |
+| --- | ---: |
+| Formal cases passed | 30 / 30 |
+| Model | deepseek-flash |
+| Complete responses / request attempts | 113 / 113 |
+| Input / output tokens | 4,492,045 / 176,392 |
+| Total tokens | 4,668,437 |
+| Cache-hit / cache-miss input tokens | 4,097,280 / 394,765 |
+| Whole-run input cache hit rate | **91.21%** |
+| Platform-displayed duration | **28m21s** |
+| Final frontend / backend self-tests | 18 / 18; 10 / 10 |
+| Final local public-case regression / Chromium probes | 32 / 32; 4 / 4 |
+
+[Release evidence](docs/releases/ticketbooking-formal30-flash-20261020.json) records the package identity, usage reconciliation, and provenance. All 113 attempts have complete responses; usage matches the final summary, but the provider bill was not verified. Local checks and formal acceptance are distinct evidence layers. The final delivery report, rather than an earlier unconfirmed 27/32 candidate log, supports the local 32/32 result.
+
+The local Agent ZIP is 125,604 bytes, SHA-256 `8a2ec0f1c5d680426d5d6b514af852a745c66a369e144121dfd9dd6f3931f066`. Its contents match the frozen source allowing line-ending differences; the server-uploaded package hash is unavailable. The archive does not establish a reliable total build/repair count or monetary cost.
+
+This is one task and one frozen run, **not a current-main rerun or a controlled A/B improvement claim**. In particular, this frozen source predates the current Docker sandbox, so its formal result does not validate the later isolation implementation. The 2026-10-14 record below remains historical evidence; differences between the two runs are not a controlled performance comparison.
+
+
+### Earlier frozen acceptance: 2026-10-14
+
+The Railway Ticket Booking Demo passed **30/30** Stage 3 cases in [submission 35128ac54f45](https://arc-bench.com/playground/task-bank/web/ticketbooking/submissions/35128ac54f45).
+
+| Metric | Archived value |
+| --- | ---: |
+| Formal cases passed | 30 / 30 |
+| Planning and generation model | deepseek-flash |
+| Complete model responses | 209 |
+| Input tokens | 8,286,426 |
+| Output tokens | 219,017 |
+| Total tokens | 8,505,443 |
+| Whole-run input cache hit rate | 86.46% |
+
+[Machine-readable release evidence](docs/releases/ticketbooking-formal30-flash-20261014.json) includes usage and local package hashes. The platform did not expose its uploaded ZIP hash, so server-package identity was not hash-verified.
+
+This is one successful frozen submission, **not a rerun of current main or a general completion rate**. Local self-tests still had failures before delivery; a deliverable candidate was restored before formal acceptance. Requirement-node traceability was incomplete in that package. Later traceability, isolation, and other changes do not inherit this result. The 99.44% figure in the archive describes a stable request segment, not the whole run.
+
+### Historical offline replay: stopping repeated failed tools
+
+An archived 2026-09-28 deterministic replay repeatedly returned the same missing-file error. The older flow reached its 24-request budget; the failure guard stopped after 3 requests.
+
+| Replay | Simulated requests | Cumulative serialized prompt characters |
+| --- | ---: | ---: |
+| Before guard | 24 | 185,070 |
+| With repeated-failure guard | 3 | 14,758 |
+
+[![Historical offline replay of repeated tool failures. The older flow reaches 24 simulated requests and 185070 cumulative prompt characters; the guarded flow stops at 3 requests and 14758 characters.](docs/performance/stalled-tool-curve.svg)](docs/performance/stalled-tool-data.json)
+
+The chart uses **fake model responses and serialized characters, not provider tokens**. It demonstrates a stopping policy, not successful task completion, measured API savings, latency, or cache hit rate. Its baseline is labeled `pre-stall-70b3c36.zip`; the guarded archive is labeled `arc_agent`, without a commit pin. It is historical evidence, not a current-main benchmark. [Raw data](docs/performance/stalled-tool-data.json) · [method and other curves](docs/PERFORMANCE_REPORT.md).
+
+## Quick start
+
+### 1. Prepare the controller
+
+Use 64-bit Python **3.12.6**, as pinned in [.python-version](.python-version). On Windows:
 
 ```powershell
 .\scripts\setup.ps1
 ```
 
-本地任务目录可提供 `requirements.yaml`，或提供 ARC-Bench 任务页对应的 `README.md` / `requirements.md`。Requirement Reader 会把任一格式归一化为同一需求树；两者同时存在时优先使用 `requirements.yaml`，原始 Markdown 保持不变。Markdown 中的图片引用会作为视觉输入交给规划与实现模型：本地图片限制为 PNG/JPEG/GIF/WebP 且不超过 8 MiB；公开 HTTP(S) 图片 URL 会直接传给兼容的模型服务。可用 `VISUAL_MODEL` 指定视觉模型，可用 `VISUAL_REVIEW_MODEL` 指定独立的视觉验收模型；未配置时两者回退到 `MODEL`。包含图片的任务要求所选模型支持图像输入。本地离线模式不调用模型，使用 `--demo` 可走确定性示例生成流程；不带 `--demo` 则走模型驱动流程，需要 ARC-Bench Runner 注入的模型环境变量。
+The script checks the Python version and prepares the virtual environment. Runtime dependencies are in [requirements.txt](requirements.txt); the ARC-Bench Runtime SDK is bundled in [arcbench-agent-runtime/](arcbench-agent-runtime/). [.nvmrc](.nvmrc) pins Node for local development; the sandbox image supplies its own reviewed toolchain.
 
-对含视觉参考的网页任务，Agent 还要求生成 `arcbench-visual-acceptance.json`，记录参考图对应的页面、视口、裁剪区域和浏览器交互流程。验证器启动生成的网站，用 Playwright/Chromium 截图并运行交互步骤，再让视觉模型对照参考图评审；有重大视觉差异或交互失败时，Agent 会把失败信息及对应的实际截图交给实现模型，进行一次有界修复。首次验收若没有 Chromium，Agent 会尝试下载；Runner 需允许访问 Playwright 浏览器下载源。截图与机器可读报告写入生成项目的 `artifacts/visual-acceptance/`。浏览器不可用或验收清单缺失时会明确报告未通过，不会只凭 build/test 标记完成。
+### 2. Build the trusted execution image
 
-为控制费用，单次 Agent 运行默认最多发起 **250 次模型请求**、累计使用 **8,000,000 token**（输入与输出之和）；每次请求的输出上限为 12,000 token。请求次数覆盖规划、实现和视觉评审，token 用量以模型服务返回的统计为准，在请求前检查，并记录返回后的实际超额；单次请求的用量无法预先精确确定，因此可能使总量超过阈值。可分别设置 `ARCBENCH_MAX_MODEL_REQUESTS` 和 `ARCBENCH_MAX_TOTAL_TOKENS` 为正整数调整；达到上限会停止继续生成、保留已有文件并报告未完成，不会把局部构建通过误报为任务完成。实现阶段默认开启思考，可用 `ARCBENCH_IMPLEMENTATION_THINKING=enabled/disabled` 配置；聚焦编辑时可能暂时关闭思考以使用受限工具选择。运行器在验证前自动准备 npm 依赖，依赖清单不变时复用成功安装；模块同时分配 token 和请求次数，为后续模块及整站集成保留额度。小任务可主动调低单次上限。本地构建、自测通过和平台验收分开记录。实现阶段的 `--max-model-turns`、`--max-tool-calls`（或同名 `ARCBENCH_` 环境变量）仍可额外限制每次实现轮数和整次运行的工具调用数。`examples/auth-interface-task/requirements.yaml` 是登录注册界面任务样例；`examples/auth-real-auth-task/requirements.yaml` 是本地真实认证任务样例。
+A local Docker engine in **Linux-container mode** is required:
 
-实现阶段从第 16 轮开始定期运行现有构建和测试脚本，并把最新失败结果送回模型修复。最终会重新验证整个项目；若失败内容在修复后发生变化，Agent 会继续修复，直到验证通过或同一失败重复出现。中途检查通过不代表任务验收通过。
+```sh
+docker info --format '{{.OSType}}'
+docker build -f sandbox/Dockerfile -t arcbench-sandbox:1 .
+```
 
-源码需求审核失败会记录具体问题及文件路径。修复这类问题时，检查点必须同时通过根目录构建/测试和新的源码审核，才能提前结束修复；自测转绿不能清除尚未解决的需求审核问题。平台 Stage 3 的正式测试结果仍独立记录。
+Build only this repository's reviewed Dockerfile, never one generated by the model. Building the image downloads dependencies; generated execution uses `--network none` and the pre-provisioned cache. Missing images, uncached package versions, and resource limits fail explicitly. The Agent does not install Docker, enable WSL, or change host security settings.
 
-接近预算上限时，Agent 会提前停止新的模型请求，转入本地验证和交付：token 预留为总额度的 5%（最多 400,000），请求预留最多 3 次。默认 800 万额度下，累计达到 760 万后收尾；最终修复每轮分配 12 次请求后重新检查失败。前端构建、Web 目录契约及独占后端启动检查通过时，可将仍有自测失败的候选交给正式验收，生成入口正常结束。失败断言和整站检查报告保留；只有检查明确关联到某项需求的失败案例才将该节点标为失败。预算、依赖、构建等全局失败不说明每项需求都失败，未取得明确结果的节点测试状态记录为未验证。节点通过仅表示本地验证通过，不能视为正式验收通过。构建、依赖或启动失败会阻止这类交付。`.arc/delivery-report.json` 分别记录本地验证结果、交付就绪状态和待执行的正式验收；单次模型响应用量仍可能越过预留阈值。
+Read [Docker setup and limits](docs/dev/docker-execution.md) before running. Use a dedicated generated-project directory, not a home directory or a checkout containing secrets.
 
-每项源码审核缺口必须引用对应原始要求及已读取生产源码的片段；要求编号、引文或源码证据不匹配，以及 pass/repair 与问题列表矛盾时，拒绝该结论，不计作通过。审核不得增加原始要求未规定的能力，也不得把已满足的行为或可选建议列为缺陷。失败测试修复先核对断言与测试隔离：独立用例清理 localStorage/sessionStorage；只有明确的刷新场景保留存储，并用单项及完整测试区分状态污染和业务缺陷。检查点日志保留有长度限制的具体失败信息。
+### 3. Inspect the command-line interface
 
-Railway Ticket Booking Demo 的规划、实现和源码审核现在附带平台公开的30个案例正文及共享交互辅助代码，按当前模块筛选。原始需求不变；精确标签、控件角色、输入操作和严格定位断言保留原样，不能调整公开测试来迎合生成网站。逐例面板没有提供完整spec的imports和文件内辅助函数，因此这些证据不是完整可执行官方测试包。本地补齐辅助函数后的DOM回归、真实浏览器检查与平台Stage3结果分别报告。
+```powershell
+.\.venv\Scripts\python.exe main.py --help
+```
 
-最终完成与整合修复检查点还会运行独立的公开交互回归：挂载真实App，启动真实后端3000服务，运行30个不变的公开案例正文，以及2条额外旅程探针，补齐的辅助函数使用jsdom适配器。额外探针检查审核时重复显示车次，以及旧订单覆盖新选择的旅程，来源是归档网站真实浏览器回放中的失败，不是平台4条失败的已确认归因。该检查由Agent生成在工具禁止编辑的frontend/.arc目录中，未通过时不能以自编测试转绿结束。缺少测试依赖、启动失败、结果文件缺失或实际用例数量不符均为失败。它是本地门槛，不能替代平台Playwright测试。
+The help command makes no model calls. To use deterministic demo mode, supply an existing requirement directory and a dedicated output directory, then add `--demo`. The legacy `demo/requirements` path printed by the setup script is not included in this checkout. Demo behavior is not evidence of model-driven task performance.
 
-同一运行中，只有完整审核输入（需求和所读取的生产源码）不变时才复用上一份审核结论；只扩写测试不会清除已有的业务缺陷。生产源码或需求发生变化后必须重新审核，避免未改业务却重复付费审核或因审查措辞变化重新开始修复。
+### 4. Run through ARC-Bench
 
-使用 DeepSeek API 时，规划、实现和视觉评审默认保留思考模式。实现阶段会完整回传保留的工具调用轮次中的 `reasoning_content`，以符合 DeepSeek 的接口要求；旧轮次仍会做有界压缩。若要单独比较非思考模式，可设置 `ARCBENCH_IMPLEMENTATION_THINKING=disabled`。
+The upload entry is `main.py`, with `requirements.txt`. The Runner provides `OPENAI_API_KEY`, `OPENAI_BASE_URL`, and `MODEL`; do not commit credentials. Target projects are read and edited in the explicit `--output-dir`, rather than replaced with a template.
 
-实现请求把系统指令、需求子树和实施计划保持为相同的消息前缀；之后连续追加完整工具调用轮次，让下一次请求复用上一轮的前缀。只有上下文超过 240,000 字符、检查反馈改变，或首次图片已经送达时，才把旧轮次压缩为简短进度并开始新的连续段。图片不会在每轮重复发送。运行日志逐次记录模型返回的 `cache_hit_tokens` 和 `cache_miss_tokens`，结束时汇总实际可观察的缓存命中率；若模型服务不提供这些字段，则显示 `unavailable`。缓存由服务商决定，不能保证命中率，也不能从输入 token 总数推断。
+Requirements may use `requirements.yaml`, `README.md`, or `requirements.md`; YAML takes precedence when both forms exist. Tasks with image references require image-input support from the configured Flash endpoint. The deployment must also support the local Linux Docker boundary; do not assume every hosted Runner exposes Docker.
 
-模型返回 `finish_reason=length` 时会明确报告截断；工具支持唯一匹配的 `replace_text` 局部替换。修复时优先处理能关联到失败检查的需求模块，最后仍运行全量验收；基础构建或结构检查失败时不会启动视觉模型评审。日志会记录模型及工具调用耗时。优化范围、完整测试和离线曲线见 [性能报告](docs/PERFORMANCE_REPORT.md)；该离线对照不代表平台实测费用或完成率。
+## Runtime controls
 
-实现模型会根据工具描述先定位已有代码、批量读取并使用脚本退出码验证结果；当剩余请求或显式轮数/工具额度较少时，会收到一次完成核心行为和验证的提醒。提醒不会重置整次运行的调用计数，也不会关闭思考模式。
+| Control | Current upload entry behavior |
+| --- | --- |
+| Model | Only `deepseek-flash`; other `MODEL`, `VISUAL_MODEL`, or `VISUAL_REVIEW_MODEL` values are rejected before requests |
+| Run allowance | `main.py` sets 10,000,000 total tokens and 250 model requests, overriding same-name environment values |
+| Model request deadline | 300 seconds; SDK automatic retries disabled |
+| Extra implementation limits | `--max-model-turns` and `--max-tool-calls` |
+| Delivery reserve | Up to 400,000 tokens and 3 requests trigger early wrap-up |
 
-如果模型连续三轮重复完全相同的失败工具调用，第二轮后会收到纠偏提示，第三轮仍未改变则停止该实现轮次并报告失败，避免一直消耗请求额度；改用有效调用时可继续。
+Usage is checked around requests. A final response can cross the token threshold; **these controls are not a strict monetary spending cap**. Interrupted model responses retain unknown usage rather than being counted as successful zero-cost calls. Lower defaults described in older documents or library configuration do not override `main.py`.
 
-如果实现阶段连续 12 轮工具调用都没有改动项目文件，第 6 轮会提示模型采取具体行动。达到上限时，若本轮已写入文件且构建与测试脚本通过，则结束该模块并继续下一个需求；否则报告无进展，不把它记为完成。可用 `ARCBENCH_MAX_IDLE_TOOL_TURNS` 设置不少于 2 的正整数调整阈值。脚本通过仅说明本地检查通过，仍需平台功能验收。
+A locally deliverable candidate can still have explicitly reported self-test failures. Build, dependency, or startup failures block that delivery path. `.arc/delivery-report.json` distinguishes local verification, delivery readiness, and pending formal acceptance. Neither a clean build nor a successful process exit means Stage 3 passed.
 
-## ARC-Bench 运行
+## How the checks are layered
 
-Python 上传入口为仓库根目录的 `main.py`，依赖声明为 `requirements.txt`。平台运行时通过环境变量提供 `OPENAI_API_KEY`、`OPENAI_BASE_URL` 和 `MODEL`。Agent 不会复制模板覆盖 Runner 准备的目标目录；它直接读取和修改 `--output-dir` 中已有项目。
+- **Python regression** checks orchestration, transport, tool boundaries, review evidence, and reporting.
+- **Real Docker integration** builds the reviewed image and exercises isolated scripts, offline dependencies, cleanup, filesystem boundaries, and browser/server execution.
+- **Task-local checks** inspect the generated application. Ticket-booking public-case adapters and extra probes are local gates, not the complete official Playwright evaluator.
+- **Platform Stage 3** is external acceptance, tied to a particular submitted package.
 
-这个冻结版本的 `main.py` 固定单轮上限为 **10,000,000 token / 250 次模型请求**，覆盖同名环境变量；上面的可配置默认值适用于直接使用 Agent 配置模块。接近上限时仍保留 400,000 token / 3 次请求用于交付。入口只接受 `deepseek-flash`，MODEL、VISUAL_MODEL、VISUAL_REVIEW_MODEL 任一配置为其他模型均在发请求前拒绝。模型请求总期限固定为 300 秒，SDK 自动重试为 0；SSE 必须收齐结束标记、工具调用和最终用量后才执行工具。中断请求保留未知用量，不能凭 HTTP 200 或部分内容认定完成。
+```sh
+python -m unittest discover -s tests -v
+```
 
-本冻结版本的规划与实现均使用 Flash。原始 Chromium 交互探针会在完整 jsdom 报告失败时仍执行，向修复提供实际浏览器阻塞证据；已执行的探针不重复运行。候选检查点、前端未定义名称检查和有界修复用于保留更好的候选并控制收尾，它们都是本地控制措施。
+CI installs Chromium for trusted fixtures. Its separate Docker job sets `ARCBENCH_RUN_DOCKER_TESTS=1` and runs `tests/test_docker_integration.py`. Mocked tests alone do not prove isolation, and Linux CI does not establish Windows Docker Desktop runtime validation. See [CI configuration](.github/workflows/ci.yml) and [verification scope](docs/dev/docker-execution.md#verification).
 
-当前模型路径要求目标模型兼容 OpenAI Chat Completions 的工具调用接口。此能力、Runner 依赖安装方式和目标项目的 Node 构建/测试环境，均需在首次平台运行中确认。
+## Current limits
 
-## 项目结构
+- The archived formal results cover one task and specific frozen packages; there is no established multi-task completion rate or controlled Claude Code comparison here.
+- Offline character curves do not establish real token, cache, time, or cost improvements.
+- The offline npm cache supports reviewed exact versions, not arbitrary online dependency installation.
+- Docker is a practical boundary, not perfect isolation. The daemon and image are trusted; arbitrary host/controller crashes can leave containers requiring operator cleanup.
+- Generated code can damage its permitted project files. Local tests and reports are not tamper-proof attestation.
+- Visual acceptance depends on endpoint image capability and valid browser evidence. It cannot be replaced by a build-only result.
 
-- `agent/requirements.py`：读取 YAML 或 Markdown 需求文件，并归一化为内部需求树。
-- `agent/orchestrator.py`：按需求子树编排设计、实现、验证和有限修复。
-- `agent/llm.py`：OpenAI 兼容模型调用与工具循环。
-- `agent/tools.py`：项目文件浏览/编辑和受限 npm 脚本执行。
-- `agent/verify.py`：构建/测试结果收集及离线示例验证。
-- `agent/visual_acceptance.py`：Playwright 页面截图、交互覆盖与视觉验收报告。
-- `arcbench-agent-runtime/`：官网下载 starter 随附的 Runtime SDK。
-- `docs/`：课程项目 PRD 与技术选型文档。
+## Layout
 
-## 课程信息
+```text
+main.py                    Flash-only upload entry and fixed run controls
+agent/requirements.py      YAML / Markdown requirement normalization
+agent/orchestrator.py      Planning, implementation, verification, and repair
+agent/llm.py                Model calls and tool conversation
+agent/tools.py              Project file tools and execution routing
+agent/verify.py             Local verification and result collection
+agent/visual_acceptance.py  Browser evidence and visual review
+sandbox/                   Trusted offline image, worker, dependency cache
+arcbench-agent-runtime/    Bundled ARC-Bench Runtime SDK
+tests/                     Python regression and Docker integration
+docs/releases/             Frozen submission evidence
+docs/performance/          Historical replay data and plots
+```
 
-- 课程：CS3604
-- 项目：ArcBench Agent
-- 仓库：`Die4U23/arcbench-agent`
+## Next steps
+
+1. Keep formal submission evidence separate from current implementation and local regression.
+2. Measure cache efficiency, tokens, runtime, and costs on matched real workloads before claiming improvement.
+3. Broaden task coverage while retaining explicit budget and execution boundaries.
+
+## Project background
+
+Developed for **CS3604**. ARC-Bench supplies the task and evaluation setting; its starter supplies the bundled Runtime SDK. This repository implements the Agent's orchestration and verification workflow.
+
+Further reading: [PRD](docs/PRD.md) · [technical selection](docs/TECH_SELECTION.md) · [performance report](docs/PERFORMANCE_REPORT.md) · [execution security](docs/dev/docker-execution.md).

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+# Legacy fixtures exercise worker internals; host isolation is tested separately.
+import unittest.mock as _sandbox_mock
+
 import json
 import tempfile
 import unittest
@@ -15,6 +18,7 @@ from agent.verify import CheckResult, VerificationResult
 from test_llm_budget import _FakeMessage, _make_client, _repair_review
 
 
+@_sandbox_mock.patch("agent.sandbox_context._WORKER", True)
 class RequirementReviewerRecoveryTests(unittest.TestCase):
     def test_fabricated_source_is_reaudited_once_against_same_source_then_validated(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -75,6 +79,7 @@ def local_checks():
     )
 
 
+@_sandbox_mock.patch("agent.sandbox_context._WORKER", True)
 class ReviewerFailureDeliveryTests(unittest.TestCase):
     def test_invalid_reviewer_does_not_repair_production_or_claim_local_success(self):
         with tempfile.TemporaryDirectory() as directory:

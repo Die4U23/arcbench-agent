@@ -43,7 +43,13 @@ class GitClient:
         return user_name, user_email
 
     def _build_env(self) -> dict[str, str]:
-        env = os.environ.copy()
+        # Runtime commits are local controller operations, not generated tools.
+        # Do not expose model/cloud tokens or inherit executable Git configuration.
+        allowed = {"PATH", "SystemRoot", "SYSTEMROOT", "WINDIR", "HOME", "USERPROFILE",
+                   "TEMP", "TMP", "LANG", "LC_ALL", "TZ", "APPDATA", "LOCALAPPDATA"}
+        env = {key: value for key, value in os.environ.items() if key in allowed}
+        env["GIT_CONFIG_NOSYSTEM"] = "1"
+        env["GIT_CONFIG_GLOBAL"] = os.devnull
         user_name, user_email = self._get_identity()
         env["GIT_AUTHOR_NAME"] = user_name
         env["GIT_AUTHOR_EMAIL"] = user_email
@@ -52,8 +58,12 @@ class GitClient:
         return env
 
     def run(self, args: list[str], *, check: bool = True) -> GitResult:
+        metadata = self.paths.project_dir / ".git"
+        if (metadata.is_symlink() or getattr(metadata, "is_junction", lambda: False)()
+                or (metadata.exists() and not metadata.is_dir())):
+            raise RuntimeError("Runtime requires an owned project-local Git directory")
         completed = subprocess.run(
-            ["git", *args],
+            ["git", "-c", f"core.hooksPath={os.devnull}", "-c", "core.fsmonitor=false", *args],
             cwd=str(self.paths.project_dir),
             env=self._build_env(),
             check=False,
@@ -80,6 +90,8 @@ class GitClient:
 
     def ensure_arc_gitignore(self) -> Path:
         gitignore_path = self.paths.project_dir / ".gitignore"
+        if gitignore_path.is_symlink() or (gitignore_path.is_file() and gitignore_path.stat().st_nlink != 1):
+            raise RuntimeError("Runtime refuses linked .gitignore files")
         managed_block = "\n".join(
             [
                 ARC_GITIGNORE_START,

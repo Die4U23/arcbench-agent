@@ -29,5 +29,32 @@ jobs:
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
 
+      - name: Install Chromium for trusted browser fixtures
+        run: python -m playwright install --with-deps chromium
+
       - name: Run unit tests
         run: python -m unittest discover -s tests -v
+
+  docker-isolation:
+    name: Docker isolation integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: .python-version
+
+      - name: Install controller dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Build trusted offline image
+        run: docker build -f sandbox/Dockerfile -t arcbench-sandbox:1 .
+
+      - name: Run real isolated execution tests
+        env:
+          ARCBENCH_RUN_DOCKER_TESTS: '1'
+        run: python -m unittest discover -s tests -p test_docker_integration.py -v

@@ -1,3 +1,6 @@
+
+# Legacy fixtures exercise worker internals; host isolation is tested separately.
+import unittest.mock as _sandbox_mock
 import unittest
 from unittest.mock import patch
 from pathlib import Path
@@ -12,6 +15,7 @@ from agent.station_units import check_locations, check_search_presentation, unav
 from agent.verify import CheckResult, VerificationResult
 
 
+@_sandbox_mock.patch("agent.sandbox_context._WORKER", True)
 class StationUnitTests(unittest.TestCase):
     def test_real_chromium_reference_count_and_time_captions(self):
         from playwright.sync_api import sync_playwright

@@ -32,6 +32,9 @@ def check_booking_controls(page) -> None:
 
 
 def verify_browser_contract(protected: Path) -> CheckResult:
+    from .sandbox_context import in_worker
+    if not in_worker():
+        return browser_guard_result(False, "Browser probes require an isolated verification session")
     # This function must be called only while the caller's owned backend is alive.
     from playwright.sync_api import sync_playwright
     from .visual_acceptance import _block_external_requests, _ensure_chromium

@@ -1,3 +1,6 @@
+
+# Legacy fixtures exercise worker internals; host isolation is tested separately.
+import unittest.mock as _sandbox_mock
 from contextlib import ExitStack
 import os
 from pathlib import Path
@@ -21,6 +24,7 @@ def complete_result():
     ))
 
 
+@_sandbox_mock.patch("agent.sandbox_context._WORKER", True)
 class BoundaryVerificationReuseTests(unittest.TestCase):
     def test_slow_input_scan_falls_back_to_full_verification(self):
         with tempfile.TemporaryDirectory() as directory:

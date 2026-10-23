@@ -32,6 +32,11 @@ class FlashPolicyTests(unittest.TestCase):
 
 
 class DelegatedVerificationTests(unittest.TestCase):
+    def setUp(self):
+        worker = patch('agent.sandbox_context._WORKER', True)
+        worker.start()
+        self.addCleanup(worker.stop)
+
     def run_fixture(self, wrapper, *, hooks=None, fail=False, repetitions=1):
         with TemporaryDirectory() as directory:
             root = Path(directory)

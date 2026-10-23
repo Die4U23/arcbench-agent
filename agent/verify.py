@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import html
 import os
 import shutil
@@ -9,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from .command_output import compact_command_output
+from .verification_inputs import verification_input_fingerprint
 
 
 OUTPUT_LIMIT = 10_000
@@ -79,6 +81,26 @@ def _run_npm_script(package_dir: Path, script: str) -> CheckResult:
         return CheckResult(f"{package_dir.name}: npm run {script}", False, None, f"Timed out after {TIMEOUT_SECONDS}s\n{output}")
 
 
+def _delegated_root_scripts(project_dir: Path, script: str,
+                            available: set[tuple[str, str]]) -> list[tuple[str, str]]:
+    """Recognize exact wrappers without changing the verification order."""
+    try:
+        package = json.loads((project_dir / "package.json").read_text(encoding="utf-8"))
+        scripts = package.get("scripts", {})
+        command = scripts.get(script)
+        if not isinstance(command, str) or any(hook in scripts for hook in ("pre" + script, "post" + script)):
+            return []
+        keys = []
+        for part in command.split("&&"):
+            match = re.fullmatch(r"\s*npm\s+--prefix\s+(frontend|backend)\s+run\s+(build|test)\s*", part)
+            if match is None or match.groups() not in available:
+                return []
+            keys.append(match.groups())
+        return keys if len(set(keys)) == len(keys) else []
+    except (OSError, ValueError, AttributeError):
+        return []
+
+
 def verify_project(project_dir: Path, *, include_root: bool = True) -> VerificationResult:
     from .static_names import verify_frontend_names
     checks: list[CheckResult] = []
@@ -108,8 +130,27 @@ def verify_project(project_dir: Path, *, include_root: bool = True) -> Verificat
         for script in ("build", "test"):
             if script in scripts:
                 npm_scripts.append((package_file.parent, script))
+    completed: dict[tuple[str, str], tuple[CheckResult, str | None]] = {}
+    available = {(directory.relative_to(project_dir).as_posix(), script) for directory, script in npm_scripts}
+    has_root = any(directory == project_dir for directory, _ in npm_scripts)
+    # Preserve the existing execution order, including unknown root scripts.
     for package_dir, script in npm_scripts:
-        checks.append(_run_npm_script(package_dir, script))
+        keys = _delegated_root_scripts(project_dir, script, available) if package_dir == project_dir else []
+        stamp = verification_input_fingerprint(project_dir) if keys else None
+        if (keys and stamp is not None
+                and all(key in completed and completed[key][1] == stamp for key in keys)):
+            children = [completed[key][0] for key in keys]
+            passed = all(child.passed for child in children)
+            failed = next((child for child in children if not child.passed), None)
+            check = CheckResult(f"{project_dir.name}: npm run {script}", passed,
+                0 if passed else failed.exit_code,
+                "Delegated wrapper reused child checks from this verification (wrapper not rerun):\n"
+                + "\n".join(f"{child.name}: {'PASSED' if child.passed else 'FAILED'}\n{child.output}" for child in children))
+        else:
+            check = _run_npm_script(package_dir, script)
+        checks.append(check)
+        stamp = verification_input_fingerprint(project_dir) if has_root else None
+        completed[(package_dir.relative_to(project_dir).as_posix(), script)] = check, stamp
     if not checks:
         return VerificationResult(False, (CheckResult("project scripts", False, None, "No package.json build/test scripts found"),))
     return VerificationResult(all(check.passed for check in checks), tuple(checks))

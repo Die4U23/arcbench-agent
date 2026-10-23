@@ -23,6 +23,8 @@ from .ticketbooking_contract import public_acceptance_context
 from .initial_bootstrap import initial_bootstrap_gaps
 from .generation_contract import generation_contract_context
 from .prompt_context import requirement_context
+from .read_evidence import ReadEvidence
+from .tool_context import initial_file_inventory
 from .visual_acceptance import REPORT_RELATIVE_PATH, SCREENSHOT_RELATIVE_DIR, collect_visual_references
 
 LOGGER = logging.getLogger(__name__)
@@ -1023,6 +1025,12 @@ class ModelClient:
             "suppressing genuine request errors. A JSON report with passing assertions and nonzero "
             "exit is still failed: inspect asynchronous errors; never ignore unhandled errors. "
             "The runner prepared the target project; do not copy or replace a starter template. "
+            "After required checks pass, stop optional edits, repeated checks and test expansion. "
+            "Start with a compact test of the required user journey using the real application/API, "
+            "then cover explicit validation boundaries. Reuse valid input fixtures derived from the "
+            "contract and vary only the field under test; assert fixture validity before testing an "
+            "unrelated boundary. Do not multiply UI/API fixtures or add tests for unspecified behavior. "
+            "Report any specific unmet requirement; the controller performs independent coverage review. "
             "When implementation is complete, provide a short summary."
         )
         if verification_feedback is not None:
@@ -1079,7 +1087,8 @@ class ModelClient:
         # Keep the image payload only for the first implementation request. The plan
         # already contains a textual visual checklist, so replaying base64 images on
         # every tool turn adds substantial prompt cost without new information.
-        compact_user_content = repair_text
+        inventory = initial_file_inventory(project_tools)
+        compact_user_content = repair_text + inventory
         if visual_inputs:
             compact_user_content += (
                 "\n\nThe visual references and any repair screenshots were supplied in the first "
@@ -1091,11 +1100,13 @@ class ModelClient:
         # Dynamic images, verification feedback, and progress follow that prefix.
         task_msg = {"role": "user", "content": text_message}
         conversation: list[dict[str, Any]] = [system_msg, task_msg]
+        if inventory:
+            conversation.append({"role": "user", "content": inventory})
         if first_dynamic_content:
             conversation.append({"role": "user", "content": first_dynamic_content})
         epoch_exchanges: list[list[dict[str, Any]]] = []
         epoch_reads: set[tuple[str, str]] = set()
-        epoch_file_reads: dict[str, str] = {}
+        read_evidence = ReadEvidence()
         compacted_summaries: list[str] = []
         checkpoint_note = ""
         budget_warned = False
@@ -1116,7 +1127,6 @@ class ModelClient:
         observed_writes = initial_writes
         idle_tool_turns = 0
         passing_checkpoint = False
-        passing_checkpoint_turn: int | None = None
         write_only_prompted = False
         thinking_disabled_epoch = False
         scope_key = self._implementation_scope_key(task_type, subtree, project_dir, model)
@@ -1172,7 +1182,7 @@ class ModelClient:
                 required_source_reads[key[0]] = key[1]
                 # Cached reads cannot establish fresh source after failed edits.
                 epoch_reads.clear()
-                epoch_file_reads.clear()
+                read_evidence.clear()
 
         def clear_fresh_source_reads(name: str, arguments: dict[str, Any], result: str) -> None:
             refreshed = set()
@@ -1202,9 +1212,7 @@ class ModelClient:
                     if key[0] == path:
                         source_failures.pop(key)
                         source_failure_details.pop(key, None)
-                for cached_path in tuple(epoch_file_reads):
-                    if _normalized_source_path(cached_path) == path:
-                        epoch_file_reads.pop(cached_path)
+                read_evidence.invalidate([path])
             if name == "list_files" and isinstance(arguments.get("path"), str):
                 parent = _normalized_source_path(arguments["path"])
                 for path, family in tuple(required_source_reads.items()):
@@ -1244,7 +1252,7 @@ class ModelClient:
             del compacted_summaries[:-MAX_COMPACTED_EXCHANGES]
             epoch_exchanges[:] = retained
             epoch_reads.clear()
-            epoch_file_reads.clear()
+            read_evidence.retain(retained)
             if not retained:
                 thinking_disabled_epoch = False
             parts = [compact_user_content] if compact_user_content else []
@@ -1273,7 +1281,7 @@ class ModelClient:
 
         def rebase_restored_source() -> None:
             nonlocal conversation, observed_source_revision, written_context_start, restore_notice
-            nonlocal passing_checkpoint, passing_checkpoint_turn
+            nonlocal passing_checkpoint
             revision = getattr(project_tools, "source_revision", 0)
             if revision == observed_source_revision:
                 return
@@ -1291,7 +1299,6 @@ class ModelClient:
                 "Reread the current source before making another edit."
             )
             passing_checkpoint = False
-            passing_checkpoint_turn = None
             conversation = compact_context()
 
         def finish_implementation(reason: str, *, exhausted: bool = False,
@@ -1345,24 +1352,6 @@ class ModelClient:
             if token_allowance is not None and not allowance_warned and phase_tokens >= token_allowance * .75:
                 allowance_warned = True
                 conversation.append({"role": "user", "content": "This module has little allocated budget left. Finish its required application wiring now; leave unresolved failures for whole-project integration. Avoid expanding tests or optional styling."})
-            # Give a green module two final turns, then verify its latest files.
-            # Optional edits must not indefinitely postpone the next module.
-            if passing_checkpoint_turn is not None and turn_index >= passing_checkpoint_turn + 2:
-                try:
-                    checker = boundary_feedback if boundary_feedback is not None else checkpoint_feedback
-                    feedback = checker() if checker is not None else "No checkpoint available"
-                except ModelRequestInterrupted:
-                    raise
-                except Exception as exc:
-                    feedback = f"Checkpoint verification failed: {type(exc).__name__}: {exc}"
-                if feedback.startswith("Current build and test scripts pass."):
-                    LOGGER.info("Implementation final checkpoint passed; moving to the next requirement")
-                    return finish_implementation("checkpoint_passed", handoff=True, checked_feedback=feedback)
-                passing_checkpoint_turn = None
-                passing_checkpoint = False
-                checkpoint_note = feedback
-                conversation.append({"role": "user", "content": "Final module checkpoint failed; repair these failures:\n" + feedback})
-                rebase_restored_source()
             if self.max_tool_calls is not None and self.tool_calls_used >= self.max_tool_calls:
                 self.last_budget_report = BudgetExhaustion(
                     budget="tool_call_budget",
@@ -1424,9 +1413,10 @@ class ModelClient:
                 else:
                     fixed_failure_signature = ()
                     unchanged_fixed_checkpoints = 0
-                if passing_checkpoint and passing_checkpoint_turn is None:
-                    passing_checkpoint_turn = turn_index
-                    conversation.append({"role": "user", "content": "Local module checks pass. You have two final turns to finish required behavior and report any uncovered acceptance criteria. Defer optional test expansion or styling polish; the agent will recheck the files and proceed to the next module."})
+                if passing_checkpoint:
+                    LOGGER.info("Local checks passed; handing off without optional edit turns")
+                    return finish_implementation("checkpoint_passed", handoff=True,
+                        checked_feedback=feedback if boundary_feedback is None else None)
                 if feedback and feedback != checkpoint_note:
                     checkpoint_note = feedback
                     # Keep the existing request prefix cacheable across checkpoints.
@@ -1689,7 +1679,7 @@ class ModelClient:
                             verified_feedback = verification_feedback()
                             verified_revision = (len(progress_paths), getattr(project_tools, "source_revision", 0))
                             result = verified_feedback
-                    elif tool_call.function.name in {"list_files", "read_files", "search_text"} and read_key in epoch_reads:
+                    elif tool_call.function.name in {"list_files", "search_text"} and read_key in epoch_reads:
                         result = (
                             "The same read already returned in this conversation and no project file "
                             "has changed. Use its earlier result to make the next concrete edit."
@@ -1698,30 +1688,17 @@ class ModelClient:
                         result = project_tools.call(tool_call.function.name, arguments)
                         reset_changed_source_failures()
                         clear_fresh_source_reads(tool_call.function.name, arguments, result)
-                        if tool_call.function.name == "read_files":
-                            try:
-                                read_payload = json.loads(result)
-                                files = read_payload.get("files", [])
-                                if isinstance(files, list):
-                                    for file in files:
-                                        if not isinstance(file, dict):
-                                            continue
-                                        path, content = file.get("path"), file.get("content")
-                                        if not isinstance(path, str) or not isinstance(content, str):
-                                            continue
-                                        digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
-                                        if epoch_file_reads.get(path) == digest:
-                                            file["content"] = "[unchanged since earlier read in this conversation]"
-                                        else:
-                                            epoch_file_reads[path] = digest
-                                    result = json.dumps(read_payload, ensure_ascii=False)
-                            except (TypeError, ValueError):
-                                pass
-                        if tool_call.function.name in {"list_files", "read_files", "search_text"}:
-                            epoch_reads.add(read_key)
-                        elif len(progress_paths) > observed_writes:
+                        if len(progress_paths) > observed_writes:
                             epoch_reads.clear()
-                            epoch_file_reads.clear()
+                            read_evidence.invalidate(progress_paths[observed_writes:])
+                        if tool_call.function.name in {"read_file", "read_files"}:
+                            original_chars = len(result)
+                            result = read_evidence.filter(tool_call.function.name, arguments, result)
+                            if len(result) < original_chars:
+                                LOGGER.info("Source evidence reused: tool=%s removed_chars=%d",
+                                            tool_call.function.name, original_chars - len(result))
+                        if tool_call.function.name in {"list_files", "search_text"}:
+                            epoch_reads.add(read_key)
                 except ModelRequestInterrupted:
                     raise
                 except Exception as exc:
@@ -1740,6 +1717,9 @@ class ModelClient:
                 tool_payloads.append(
                     {"role": "tool", "tool_call_id": tool_call.id, "content": result[:MAX_BATCH_OUTPUT_CHARS]}
                 )
+                if not result.startswith("Tool error:"):
+                    read_evidence.remember(tool_call.function.name, arguments, tool_payloads[-1])
+                    read_evidence.remember_write(tool_call.function.name, arguments, assistant_payload)
             exchange = [assistant_payload, *tool_payloads]
             conversation.extend(exchange)
             epoch_exchanges.append(exchange)

@@ -14,6 +14,7 @@ from typing import Any
 from arcbench_agent_runtime import AgentRuntime
 
 from .config import AgentConfig
+from .execution_scope import execution_modules
 from .candidate_checkpoint import CandidateCheckpoint, PUBLIC_CHECK, public_checks_ready
 from .browser_contract import BROWSER_CHECK
 from .command_output import failure_details
@@ -24,6 +25,7 @@ from .requirements import RequirementModule, load_requirement_tree, root_modules
 from .requirement_progress import mark_subtree_progress, record_local_verification
 from .repair_policy import failed_behavior_ids, focused_subtree, repair_guidance
 from .tools import ProjectTools
+from .verification_inputs import verification_input_fingerprint as _boundary_input_fingerprint
 from .verify import (
     CheckResult,
     VerificationResult,
@@ -242,51 +244,6 @@ def _source_fingerprint(project: Path) -> str:
     return digest.hexdigest()
 
 
-def _boundary_input_fingerprint(project: Path) -> str | None:
-    """Observe local check inputs without reading secrets or hashing dependencies."""
-    digest = hashlib.sha256()
-    content_suffixes = {'.js', '.jsx', '.mjs', '.cjs', '.ts', '.tsx', '.py',
-                        '.css', '.html', '.sh', '.ps1', '.yaml', '.yml'}
-    manifests = {'package.json', 'package-lock.json', 'npm-shrinkwrap.json',
-                 'tsconfig.json', 'jsconfig.json'}
-    root = project.resolve()
-    content_bytes = 0
-    started = time.monotonic()
-    observed_nodes = 0
-    def raise_walk_error(error):
-        raise error
-    try:
-        for current, directories, names in os.walk(root, followlinks=False, onerror=raise_walk_error):
-            observed_nodes += 1 + len(directories) + len(names)
-            if observed_nodes > 50_000 or time.monotonic() - started > 2:
-                return None
-            base = Path(current)
-            directories[:] = sorted(name for name in directories if name != '.git')
-            # External directory links can hide changed dependency/test inputs.
-            if any((base / name).resolve() != base / name for name in directories):
-                return None
-            for name in sorted(names):
-                if time.monotonic() - started > 2:
-                    return None
-                path = base / name
-                resolved = path.resolve()
-                if not resolved.is_relative_to(root):
-                    return None
-                relative = path.relative_to(root)
-                stat = path.stat()
-                digest.update(repr((relative.as_posix(), stat.st_size, stat.st_mtime_ns,
-                                    stat.st_ctime_ns, stat.st_ino)).encode())
-                # Dependency installs and runtime/secret files are observed by
-                # metadata. Hash source and check scripts too, including .arc.
-                if ('node_modules' not in relative.parts and not name.startswith('.')
-                        and (path.suffix.lower() in content_suffixes or name in manifests)):
-                    content_bytes += stat.st_size
-                    if content_bytes > 16 * 1024 * 1024:
-                        return None
-                    digest.update(hashlib.sha256(path.read_bytes()).digest())
-        return digest.hexdigest()
-    except (OSError, ValueError):
-        return None
 
 
 class _BoundaryVerification:
@@ -297,11 +254,18 @@ class _BoundaryVerification:
     def clear(self):
         self.saved = None
 
-    def remember(self, project, revision, result):
+    def remember(self, project, revision, result, *, complete_scope=False):
         self.clear()
         public = next((check for check in result.checks if check.name == PUBLIC_CHECK), None)
         # Incomplete/infrastructure reports must run the normal verification path.
-        if public is None or not public.case_statuses:
+        # A full successful generic build/test boundary is also reusable when
+        # this task has no reconstructed public suite. Never reuse partial or
+        # infrastructure-failed reports just because one script passed.
+        generic_complete = (complete_scope and result.passed and public is None
+            and any(check.name.endswith(': npm run build') for check in result.checks)
+            and any(check.name.endswith(': npm run test') for check in result.checks)
+            and any(check.name == 'web template structure' for check in result.checks))
+        if not generic_complete and (public is None or not public.case_statuses):
             return
         stamp = _boundary_input_fingerprint(project)
         if stamp is not None:
@@ -412,6 +376,11 @@ def run_model_agent(runtime: AgentRuntime, config: AgentConfig, tree: dict[str, 
 def _run_model_agent(runtime: AgentRuntime, config: AgentConfig, tree: dict[str, Any],
                      modules: list[RequirementModule], model: ModelClient, *,
                      candidate: CandidateCheckpoint | None = None) -> VerificationResult:
+    scheduled_modules = execution_modules(tree, modules)
+    joint_scope = scheduled_modules is not modules
+    if joint_scope:
+        LOGGER.info('Execution scope: %d modules share one full-contract implementation context', len(modules))
+        modules = scheduled_modules
     project_tools = ProjectTools(config.output_dir, timeout_seconds=120)
     changed_paths = getattr(project_tools, "changed_paths", project_tools.written_paths)
     plans: dict[str, str] = {}
@@ -446,19 +415,26 @@ def _run_model_agent(runtime: AgentRuntime, config: AgentConfig, tree: dict[str,
             if not initial_result.passed:
                 initial_feedback = _repair_feedback(initial_result)
 
+    latest_boundary_feedback = ""
+
     def checkpoint_feedback(*, include_root: bool = False, allow_restore: bool = False,
                             repair_focus: str | None = None) -> str:
+        nonlocal latest_boundary_feedback
         local = _prepare_local_candidate(config, tree, candidate, project_tools,
             include_root=include_root, allow_restore=allow_restore)
         if include_root and allow_restore:
             boundary_verification.remember(config.output_dir,
-                getattr(project_tools, 'source_revision', 0), local)
+                getattr(project_tools, 'source_revision', 0), local, complete_scope=True)
         checks = local.checks
         failures = [check for check in checks if not check.passed]
         if not failures:
+            if include_root:
+                latest_boundary_feedback = ""
             LOGGER.info("Implementation checkpoint: current build and test scripts passed")
             return "Current build and test scripts pass. Finish any uncovered requirements and run final checks."
         feedback = _repair_feedback(VerificationResult(False, checks))
+        if include_root:
+            latest_boundary_feedback = feedback
         if repair_focus:
             feedback += "\n\nCurrent repair task:\n" + repair_guidance(local, repair_focus)
         LOGGER.warning("Implementation checkpoint found %d failing checks:\n%s", len(failures), feedback[:6000])
@@ -498,6 +474,11 @@ def _run_model_agent(runtime: AgentRuntime, config: AgentConfig, tree: dict[str,
             break
         _raise_if_model_interrupted(model)
         plans[module.node_id] = plan
+        if joint_scope:
+            plan += ("\nImplement all supplied requirements together through the real App and API. "
+                     "Cover the required end-to-end user journey before extending isolated unit tests. "
+                     "Do not add business behavior or test matrices outside the supplied contract. "
+                     "Finish with the root build/test scripts; all original requirements remain mandatory.")
         mark_subtree_progress(runtime, module.subtree, "mark_design_done", "Implementation plan prepared")
         mark_subtree_progress(runtime, module.subtree, "mark_implementation_started", "Applying requirement subtree")
         writes_before = len(changed_paths)
@@ -519,7 +500,7 @@ def _run_model_agent(runtime: AgentRuntime, config: AgentConfig, tree: dict[str,
             project_tools=project_tools,
             repair_feedback=initial_feedback or None,
             reference_dir=config.requirement_dir,
-            checkpoint_feedback=checkpoint_feedback,
+            checkpoint_feedback=(lambda: checkpoint_feedback(include_root=True)) if joint_scope else checkpoint_feedback,
             boundary_feedback=repair_checkpoint_feedback,
             token_allowance=token_allowance,
             request_allowance=request_allowance,
@@ -573,6 +554,7 @@ def _run_model_agent(runtime: AgentRuntime, config: AgentConfig, tree: dict[str,
                 "Run the full build and test suites, and finish only after all leaf requirements are integrated."
             ),
             project_tools=project_tools,
+            repair_feedback=latest_boundary_feedback or None,
             reference_dir=config.requirement_dir,
             checkpoint_feedback=lambda: checkpoint_feedback(include_root=True),
             boundary_feedback=repair_checkpoint_feedback,

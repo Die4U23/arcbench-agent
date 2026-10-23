@@ -668,6 +668,9 @@ class ModelClient:
             "Trace frontend and backend together; server-side enforcement can satisfy a requirement. "
             "For each issue quote the exact requirement text and an exact excerpt from the supplied production "
             "source that establishes the gap. State the failing user action and missing observable behavior. "
+            "Copy requirement_quote verbatim in its ORIGINAL LANGUAGE from the exact requirement_id node. "
+            "Never translate, summarize, join separate fields, or assign a parent's shared text to a child ID; "
+            "use the parent's ID for that text. A short contiguous exact quote is sufficient. "
             "Return JSON only: {\"verdict\":\"pass\"|\"repair\",\"issues\":[{\"requirement_id\":string,"
             "\"requirement_quote\":string,\"path\":string,\"evidence\":string,\"missing_behavior\":string}]}. "
             "Pass requires an empty issues array; repair requires at least one evidenced issue. "
@@ -758,7 +761,15 @@ class ModelClient:
             node = requirement_nodes.get(issue["requirement_id"])
             quote = " ".join(issue["requirement_quote"].split())
             if node is None or not any(quote in " ".join(text.split()) for text in text_values(node)):
-                raise RequirementReviewError("Requirement reviewer cited text outside the supplied requirement")
+                # Identify the rejected pair so the single corrective request
+                # can fix its citation instead of guessing which issue failed.
+                # Keep strict evidence matching; no translated/fuzzy acceptance.
+                raise RequirementReviewError(
+                    "Requirement reviewer cited text outside the supplied requirement: "
+                    f"requirement_id={issue['requirement_id']!r}, quote={quote[:240]!r}. "
+                    "Copy a contiguous excerpt in the original language from that exact node; "
+                    "shared parent text must use the parent's ID"
+                )
             source_path = PurePosixPath(issue["path"].replace("\\", "/"))
             source = source_contents.get(source_path.as_posix()) if not source_path.is_absolute() and ".." not in source_path.parts else None
             evidence = " ".join(issue["evidence"].split())

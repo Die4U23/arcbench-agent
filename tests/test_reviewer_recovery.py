@@ -51,6 +51,28 @@ class RequirementReviewerRecoveryTests(unittest.TestCase):
                 self.assertEqual(model.client.completions.calls, 2)
                 self.assertIsNone(model._requirement_review_cache)
 
+    def test_misattributed_or_translated_quote_is_identified_and_corrected_once(self):
+        tree = {'id': 'ROOT', 'description': '登录后显示用户名。',
+                'children': [{'id': 'REQ-1', 'description': '点击退出后清除会话。'}]}
+        for bad_quote in ('登录后显示用户名。', 'Clear the session after sign out.'):
+            with self.subTest(quote=bad_quote), tempfile.TemporaryDirectory() as directory:
+                tools = ProjectTools(Path(directory))
+                tools.write_file('frontend/src/App.jsx', 'return null;')
+                issue = dict(requirement_id='REQ-1', requirement_quote=bad_quote,
+                             path='frontend/src/App.jsx', evidence='return null;',
+                             missing_behavior='没有实现退出操作')
+                invalid = json.dumps({'verdict': 'repair', 'issues': [issue]})
+                issue['requirement_quote'] = '点击退出后清除会话。'
+                valid = json.dumps({'verdict': 'repair', 'issues': [issue]})
+                model = _make_client(None, None, [_FakeMessage(None, invalid), _FakeMessage(None, valid)])
+                feedback = model.review_requirements(tree, tools)
+                self.assertIn('点击退出后清除会话。', feedback)
+                self.assertEqual(model.model_requests_used, 2)
+                correction = model.client.completions.requests[1]['messages'][-1]['content']
+                self.assertIn("requirement_id='REQ-1'", correction)
+                self.assertIn(bad_quote, correction)
+                self.assertIn('original language', correction)
+
     def test_retry_stops_at_request_budget_before_second_provider_call(self):
         with tempfile.TemporaryDirectory() as directory:
             tools = ProjectTools(Path(directory))

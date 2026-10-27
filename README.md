@@ -1,10 +1,12 @@
-English | [简体中文](README_CN.md)
+**English** | [简体中文](README_CN.md)
 
 # ArcBench Agent
 
 [![CI](https://github.com/Die4U23/arcbench-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/Die4U23/arcbench-agent/actions/workflows/ci.yml)
 
-A Python software-engineering agent for ARC-Bench, developed for CS3604. It turns a requirement tree into a web application through explicit planning, tool-driven implementation, local verification, and bounded repair. The upload entry point uses **deepseek-flash only**.
+A **requirement-driven Web development Agent** in Python. It turns requirement documents into applications through explicit planning, tool-driven implementation, verification, bounded repair, and candidate delivery.
+
+Designed as a reusable workflow across business domains, with ARC-Bench providing the task and evaluation environment. Railway Ticket Booking is the first formally validated example; broader autonomous task completion remains an engineering goal under evaluation. Developed for **CS3604**.
 
 ## What it does
 
@@ -27,7 +29,7 @@ YAML / Markdown requirements
                                |
                   Plan -> Implement -> Verify -> Bounded repair
                                |          |
-                 Flash + file tools       v
+                 Model + file tools       v
                                |    Offline Docker sandbox
                                |    build / tests / browser
                                |          |
@@ -37,6 +39,35 @@ YAML / Markdown requirements
 ```
 
 The host coordinates the run and calls the model service. Generated programs execute inside the sandbox; screenshots return to the host for model review. “Offline” describes generated-code execution, not model API traffic. [Execution boundary and residual risks](docs/dev/docker-execution.md).
+
+## Generalization track and local progress
+
+The project aims to reuse one requirements, planning, implementation, verification, and delivery workflow across notes, knowledge bases, Q&A, commerce, and travel applications. Business facts should come from task requirements, data, and tests. The formal generalization target is **one frozen Agent autonomously completing different tasks from clean workspaces, with complete acceptance results for each**.
+
+The published entry still uses Flash and retains TicketBooking-specific compatibility paths. The following competition-track mechanisms are implemented in the local working tree; **their code is not shipped by this documentation update**:
+
+| Mechanism under local development | Implementation |
+| --- | --- |
+| Task-input contracts | Pin requirements, public tests, helpers, and references by hash; retain ancestor constraints, prose obligations, dependencies, and data lifecycles |
+| Dependency planning and context partitions | Schedule atomic business flows topologically, expose retrievable sources, and bind reviews to current source actually read |
+| Stateful verification worlds | Explicit origins, storage, run IDs, seeds, and business clocks; initialize only SEED data and independently inspect actual SQL/HTTP state |
+| Repair and candidate recovery | Compare gained, lost, and unexecuted sets by complete case identity; recreate worlds and rerun the full suite after restoring source |
+| Durable budgets | Reserve and settle request, token, tool, cash, and time limits by campaign/task/stage; revalidate billing provenance and validity before each request |
+
+As of **2026-10-27**, five **manually implemented local reference applications** have been exercised to check initialization, business state, and the original public-test workflow:
+
+| Reference application | Domain | Local public cases | Available / published cases |
+| --- | --- | --- | --- |
+| Keep | Notes | 33/33 passed | 33/33 |
+| BookStack | Knowledge base | 35/35 passed | 35/36; gap retained |
+| Stack Overflow | Q&A | 66/66 passed | 66/68; gap retained |
+| PrestaShop | Commerce | 86/86 passed | 86/86 |
+| 12306 | Rail travel | 142/142 passed | 142/142 |
+| Ctrip | Travel | Not run | 152/153; gap retained |
+
+The five references passed 362 available public cases, with zero skips and retries. BookStack and Stack Overflow still retain unsuccessful whole-suite verifier results because of catalog mismatches. The six-task catalog has 514 available cases versus 518 published cases; the four-case gap remains unresolved. The [machine-readable progress summary](docs/releases/local-reference-public-cases-20261027.json) records local status, artifact hashes, and original report locations; the original run artifacts are not included in this documentation release.
+
+These reference applications did not go through autonomous Agent generation and **do not establish cross-task autonomous completion or formal platform acceptance**. Real generation and formal acceptance for the six-task track remain pending, together with deployment, isolation/initialization, and applicable billing evidence for the online Runner. The reference-validation stage made no real model requests, paid evaluations, or platform submissions.
 
 ## Recorded results
 

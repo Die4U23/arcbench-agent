@@ -54,7 +54,7 @@ The published entry still uses Flash and retains TicketBooking-specific compatib
 | Repair and candidate recovery | Compare gained, lost, and unexecuted sets by complete case identity; recreate worlds and rerun the full suite after restoring source |
 | Durable budgets | Reserve and settle request, token, tool, cash, and time limits by campaign/task/stage; revalidate billing provenance and validity before each request |
 
-As of **2026-10-27**, five **manually implemented local reference applications** have been exercised to check initialization, business state, and the original public-test workflow:
+As of **2026-10-28**, six **manually implemented local reference applications** have been exercised to check initialization, business state, and the original public-test workflow:
 
 | Reference application | Domain | Local public cases | Available / published cases |
 | --- | --- | --- | --- |
@@ -63,9 +63,9 @@ As of **2026-10-27**, five **manually implemented local reference applications**
 | Stack Overflow | Q&A | 66/66 passed | 66/68; gap retained |
 | PrestaShop | Commerce | 86/86 passed | 86/86 |
 | 12306 | Rail travel | 142/142 passed | 142/142 |
-| Ctrip | Travel | Not run | 152/153; gap retained |
+| Ctrip | Travel | 152/152 passed | 152/153; gap retained |
 
-The five references passed 362 available public cases, with zero skips and retries. BookStack and Stack Overflow still retain unsuccessful whole-suite verifier results because of catalog mismatches. The six-task catalog has 514 available cases versus 518 published cases; the four-case gap remains unresolved. The [machine-readable progress summary](docs/releases/local-reference-public-cases-20261027.json) records local status, artifact hashes, and original report locations; the original run artifacts are not included in this documentation release.
+Across their separate frozen local runs, the six references passed all 514 available public cases, with zero skips and retries. BookStack, Stack Overflow, and Ctrip still retain unsuccessful whole-suite verifier results because of catalog mismatches. The six-task catalog has 514 available cases versus 518 published cases; the four-case gap remains unresolved. The [machine-readable progress summary](docs/releases/local-reference-public-cases-20261028.json) records local status, artifact hashes, and original report locations; the original run artifacts are not included in this documentation release.
 
 These reference applications did not go through autonomous Agent generation and **do not establish cross-task autonomous completion or formal platform acceptance**. Real generation and formal acceptance for the six-task track remain pending, together with deployment, isolation/initialization, and applicable billing evidence for the online Runner. The reference-validation stage made no real model requests, paid evaluations, or platform submissions.
 

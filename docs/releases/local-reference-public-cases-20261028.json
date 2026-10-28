@@ -1,0 +1,178 @@
+{
+  "schema_version": 1,
+  "as_of": "2026-10-28",
+  "evidence_kind": "manual_local_reference_summary",
+  "scope": "Documentation of local reference applications; not autonomous Agent generation or formal acceptance",
+  "source_code_status": "Generic competition-track implementation and reference applications remain local; this release changes documentation only",
+  "original_reports_included": false,
+  "original_task_inputs_changed": false,
+  "pinned_input_files": 526,
+  "completed_local_reference_apps": 6,
+  "passed_public_cases_across_reference_apps": 514,
+  "six_task_catalog": {
+    "available": 514,
+    "published": 518,
+    "mismatch_unresolved": true
+  },
+  "competition_autonomous_generation": "UNRUN",
+  "competition_formal_status": "UNVERIFIED",
+  "reference_iteration_model_requests": 0,
+  "reference_iteration_paid_evaluations": 0,
+  "reference_iteration_platform_submissions": 0,
+  "tasks": [
+    {
+      "task": "keep",
+      "status": "LOCAL_MANUAL_REFERENCE_VERIFIED",
+      "public_cases": {
+        "declared": 33,
+        "executed": 33,
+        "passed": 33,
+        "failed": 0,
+        "skipped": 0,
+        "retries": 0
+      },
+      "published_cases": 33,
+      "raw_verifier_passed": true,
+      "agent_generated": false,
+      "formal_status": "UNVERIFIED",
+      "application_fingerprint": "1214cf1438e74f4c271e6a7e8c2aad87de026d5bdbc89841c524adcc6dac3633",
+      "source_hash": "27dd3e503868827d528d550e1dfaf52d39f1e8d99bab8062408e60239cc404ac",
+      "bundle_suite_hash": "e1c643f051a9f3fd87efd81b9f70186125a49691413174d46a4169236b040b88",
+      "application_archive_sha256": "dc9bd402da13ceb0e340f3311fc2b8a94d04eec1e593eb4b9b77ccd9af9b3c7d",
+      "original_report": {
+        "location": "local working directory, not included in this documentation release",
+        "path": "local-runs/m4-keep-implementation-20261026/run-03/verification/report.json"
+      }
+    },
+    {
+      "task": "bookstack",
+      "status": "LOCAL_PUBLIC_CASES_VERIFIED_CATALOG_MISMATCH",
+      "public_cases": {
+        "available": 35,
+        "executed": 35,
+        "passed": 35,
+        "failed": 0,
+        "skipped": 0,
+        "retries": 0
+      },
+      "published_cases": 36,
+      "raw_verifier_passed": false,
+      "agent_generated": false,
+      "formal_status": "UNVERIFIED",
+      "application_fingerprint": "d93d75b101df2c879e59fb28d72790ef3aa840332ce83d8f261026ef920270ce",
+      "source_hash": "03c29015b15e86c10364689f403a3ea36fbdea60a8898bcdc435a266adfaec3c",
+      "bundle_suite_hash": "f79ac47f73557723dfd0092fc3bf8ae2f065d5551bf55dd4f522904df177543a",
+      "application_archive_sha256": "0a3ddec785eaed6056a89db1776834ffa99081c00e7bb6fa2e351f47b970937a",
+      "original_report": {
+        "location": "local working directory, not included in this documentation release",
+        "path": "local-runs/m4-bookstack-implementation-20261026/run-02/verification/report.json"
+      }
+    },
+    {
+      "task": "stackoverflow",
+      "status": "LOCAL_PUBLIC_CASES_VERIFIED_CATALOG_MISMATCH",
+      "public_cases": {
+        "available": 66,
+        "executed": 66,
+        "passed": 66,
+        "failed": 0,
+        "skipped": 0,
+        "retries": 0
+      },
+      "published_cases": 68,
+      "raw_verifier_passed": false,
+      "agent_generated": false,
+      "formal_status": "UNVERIFIED",
+      "application_fingerprint": "fd1af097497f5849ee890e9457c0bcd09f43a373e0cae81683003ebfb247113f",
+      "source_hash": "891573a565f95030f944c8a42b130bb8d2ce78329221ac3e21b6c8fec43d23c0",
+      "bundle_suite_hash": "66cf0d58f8167aa5945ef43b165965821be0738c387c48828227ad73e5f7292a",
+      "application_archive_sha256": "f1455241c16b2e5dae07d87d8e4e2bdbad2d89356a215d0f2c1f84bfcee3cd60",
+      "original_report": {
+        "location": "local working directory, not included in this documentation release",
+        "path": "local-runs/m4-stackoverflow-implementation-20261026/run-02/verification/report.json"
+      }
+    },
+    {
+      "task": "prestashop",
+      "status": "LOCAL_MANUAL_REFERENCE_VERIFIED",
+      "public_cases": {
+        "available": 86,
+        "executed": 86,
+        "passed": 86,
+        "failed": 0,
+        "skipped": 0,
+        "retries": 0
+      },
+      "published_cases": 86,
+      "raw_verifier_passed": true,
+      "agent_generated": false,
+      "formal_status": "UNVERIFIED",
+      "application_fingerprint": "0cf983ae82eac7ca0a879a4253b73891fa4fea0a4fc15af13b29b1bfc2a5e5fd",
+      "source_hash": "89bc8fa7bd5f819d20825fa052e4cb2772ffebd27df1822699d08192ebfa9118",
+      "bundle_suite_hash": "4ced189fb9ed28d727056b14cfcd17066ec5e3aadbbf78bc9f4ca6507363fe78",
+      "application_archive_sha256": "1951ce2e159ed3242b670334927a79921489a23cf855cf417ba94e3e6a297dbd",
+      "original_report": {
+        "location": "local working directory, not included in this documentation release",
+        "path": "local-runs/m4-prestashop-implementation-20261026/run-04/verification/report.json"
+      }
+    },
+    {
+      "task": "12306",
+      "status": "LOCAL_MANUAL_REFERENCE_VERIFIED",
+      "public_cases": {
+        "available": 142,
+        "executed": 142,
+        "passed": 142,
+        "failed": 0,
+        "skipped": 0,
+        "retries": 0
+      },
+      "published_cases": 142,
+      "raw_verifier_passed": true,
+      "agent_generated": false,
+      "formal_status": "UNVERIFIED",
+      "application_fingerprint": "0e18ca029758e68041e76c515e41afc863d380df13a687d738264e1bbb2531e3",
+      "source_hash": "aba767a051f52eae583d1fb3e0103d4164402b018493803eb000121145c05ae3",
+      "bundle_suite_hash": "650cfbf82bd15925bba6342c98ae831ebaa645b2e11e68f0192402cba53a5819",
+      "application_archive_sha256": "def28e72eaa46651c668ae1ce0415457c000489154c0ebc3a8ca548fb4dd2b02",
+      "original_report": {
+        "location": "local working directory, not included in this documentation release",
+        "path": "local-runs/m4-12306-implementation-20261027/run-06/verification/report.json"
+      }
+    },
+    {
+      "task": "ctrip",
+      "status": "LOCAL_PUBLIC_CASES_VERIFIED_CATALOG_MISMATCH",
+      "public_cases": {
+        "available": 152,
+        "executed": 152,
+        "passed": 152,
+        "failed": 0,
+        "skipped": 0,
+        "retries": 0
+      },
+      "published_cases": 153,
+      "raw_verifier_passed": false,
+      "raw_verifier_errors": [
+        "declared and collected counts differ"
+      ],
+      "agent_generated": false,
+      "formal_status": "UNVERIFIED",
+      "application_fingerprint": "55f1bd2c0623ecf176095b21120db17fc0ea738e69878dc1a132d6caaeee1dda",
+      "source_hash": "1d0cbf333dcb8b060b6fb5c3f53440ea4052b68421c0edefebb4f821476aaaf8",
+      "bundle_suite_hash": "df3f29947a03411d2911f286dc0a3f33063689437ccdab33ff8696d66d8531e2",
+      "application_archive_sha256": "04733c4fcbf6e6ea1310f2e1e178093088cad6502966ee564847e8f14fb21390",
+      "original_report": {
+        "location": "local working directory, not included in this documentation release",
+        "path": "local-runs/m4-ctrip-implementation-20261028/run-03/verification/report.json"
+      },
+      "initialization_assertions": {
+        "sqlite_passed": 8,
+        "http_passed": 1
+      },
+      "independent_contract_checks_passed": true,
+      "local_evidence_index_sha256": "15dcb67fdd97446c2a5bdefb125c8ac5aa549a8a4b04410346b57d034a38f5da"
+    }
+  ],
+  "runs_are_separate_per_task": true
+}

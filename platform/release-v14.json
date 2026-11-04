@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "version": "v14-phase-budget-view-candidate",
+  "version": "v14-author-navigation-contract-candidate",
   "formal_status": "UNRUN",
   "baseline_tag": "platform-v13-20261104",
   "issue": "https://github.com/Die4U23/arcbench-agent/issues/44",
@@ -10,8 +10,8 @@
       "bytes": 45
     },
     "agent/behavior_checks.py": {
-      "sha256": "19a8cdcba1d33355bc8f02605dbc4e6c349d787fe303b17561f19a2e3cf1bace",
-      "bytes": 10774
+      "sha256": "f33b545d922e6dae439c68b21934fe938175801d240fc4a13e4a723ffc571b58",
+      "bytes": 11060
     },
     "agent/campaign_budget.py": {
       "sha256": "3063ced79a8990ed473011dca417a2339981bd44bba810ccc230901a0c6bcbc2",

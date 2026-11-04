@@ -54,10 +54,16 @@ class ModelClient:
             raise ValueError('Runner must provide OPENAI_API_KEY, MODEL and OPENAI_BASE_URL')
         self.metrics_provider = urlsplit(self.base_url).hostname
         self.is_deepseek = self.metrics_provider == 'api.deepseek.com' or self.model.lower().startswith('deepseek-')
+        transport = os.environ.get('ARCBENCH_MODEL_TRANSPORT', 'auto').strip()
+        if transport not in {'auto', 'json', 'assembled_stream'}:
+            raise ValueError('ARCBENCH_MODEL_TRANSPORT must be auto, json or assembled_stream')
+        assemble_stream = (transport == 'assembled_stream' or
+                           (transport == 'auto' and self.metrics_provider == 'api.deepseek.com'))
         self.client = CompletionClient(api_key=api_key, base_url=self.base_url,
             deadline_seconds=float(os.environ.get('ARCBENCH_MODEL_DEADLINE_SECONDS',
                                                   default_model_deadline(self.model, self.base_url))),
-            assemble_stream=self.metrics_provider == 'api.deepseek.com')
+            assemble_stream=assemble_stream)
+        LOGGER.info('Model response transport: %s', 'assembled_stream' if assemble_stream else 'json')
         self.last_request_interruption = None
         self.max_turns, self.max_tool_calls = max_turns, max_tool_calls
         self.max_model_requests = int(os.environ.get('ARCBENCH_MAX_MODEL_REQUESTS', DEFAULT_MAX_MODEL_REQUESTS))

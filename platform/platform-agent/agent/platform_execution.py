@@ -60,10 +60,11 @@ class ExecutionLimits:
     plan_requests: int = 4
     step_requests: int = 12
     replans: int = 1
+    protocol_repairs: int = 2
 
     def __post_init__(self):
         for name, value in vars(self).items():
-            if type(value) is not int or value < (0 if name == 'replans' else 1):
+            if type(value) is not int or value < (0 if name in {'replans', 'protocol_repairs'} else 1):
                 raise ValueError(f'invalid execution limit: {name}')
 
 
@@ -107,7 +108,7 @@ class RunControl:
         self.limits = limits or ExecutionLimits()
         self.clock, self.emit = clock, emit or (lambda event: None)
         self.deadline = clock() + self.limits.seconds
-        self.requests = self.tools = self.replans = self.idle = 0
+        self.requests = self.tools = self.replans = self.idle = self.protocol_repairs = 0
         self.stopped = None
         self.actions = Counter()
         self.states = Counter()
@@ -131,6 +132,15 @@ class RunControl:
         if self.requests >= self.limits.requests:
             self.stop('execution_request_limit')
         self.requests += 1
+
+    def repair_protocol(self):
+        """Share correction attempts across plans, steps and later stages."""
+        self.check()
+        if self.protocol_repairs >= self.limits.protocol_repairs:
+            return False
+        self.protocol_repairs += 1
+        self.emit(dict(event='protocol_repair', count=self.protocol_repairs))
+        return True
 
     def batch(self, calls):
         self.check()
@@ -223,7 +233,7 @@ class PlanStep:
     acceptance: str
 
 
-def validate_plan(document, requirement_ids, limit):
+def validate_plan(document, requirement_ids, limit, requirement_dependencies=None):
     """Reject malformed plans, invented requirements, cycles and omitted goals."""
     expected = set(requirement_ids)
     rows = document.get('steps') if isinstance(document, dict) else None
@@ -232,7 +242,7 @@ def validate_plan(document, requirement_ids, limit):
     steps, covered = {}, set()
     for row in rows:
         if not isinstance(row, dict) or set(row) != {'id', 'goal', 'requirement_ids', 'depends_on', 'acceptance'}:
-            raise ValueError('invalid plan step fields')
+            raise ValueError('plan step must have exactly id, goal, requirement_ids, depends_on, acceptance; no other fields')
         for field, maximum in (('id', 80), ('goal', 2000), ('acceptance', 2000)):
             if not isinstance(row[field], str) or not row[field].strip() or len(row[field]) > maximum:
                 raise ValueError(f'invalid plan {field}')
@@ -264,6 +274,21 @@ def validate_plan(document, requirement_ids, limit):
         for step in ready:
             ordered.append(step)
             done.add(step.id)
+    # Explicit requirement prerequisites must be in this step or an ancestor.
+    # Completed/out-of-scope requirements are not invented as new plan nodes.
+    ancestors = {}
+    for step in ordered:
+        reachable = set(step.depends_on)
+        for dependency in step.depends_on:
+            reachable.update(ancestors[dependency])
+        ancestors[step.id] = reachable
+        available = set(step.requirement_ids)
+        for identity in reachable:
+            available.update(steps[identity].requirement_ids)
+        for ref in step.requirement_ids:
+            required = set((requirement_dependencies or {}).get(ref, ())) & expected
+            if not required <= available:
+                raise ValueError('plan omits declared requirement dependency: ' + ref)
     return ordered
 
 
@@ -306,6 +331,7 @@ class PlanExecutor:
                 self.control.emit(dict(event='plan_validated', steps=plan))
                 failed = None
                 for index, step in enumerate(steps):
+                    pending = list(dict.fromkeys(ref for s in steps[index:] for ref in s.requirement_ids))
                     self.control.check()
                     if remaining() <= 0:
                         return result('stopped', 'request_allowance')
@@ -318,12 +344,14 @@ class PlanExecutor:
                         if outcome.get('status') != 'complete' or not checked.get('passed'):
                             checkpoint.rollback()
                             failed = dict(step=step.id, reason=outcome.get('reason') or 'static_validation_failed',
-                                          validation=checked)
+                                          detail=str(outcome.get('detail') or '')[:1000], validation=checked)
                             plan[index].update(status='rolled_back', failure=failed)
                             break
                         checkpoint.commit()
-                    except BaseException:
+                    except BaseException as error:
                         checkpoint.rollback()
+                        plan[index].update(status='rolled_back', failure=dict(
+                            step=step.id, reason=getattr(error, 'reason', type(error).__name__)))
                         raise
                     plan[index]['status'] = 'completed'
                     completed.append(dict(id=step.id, goal=step.goal, requirement_ids=list(step.requirement_ids),

@@ -74,6 +74,7 @@ class CompetitionModel:
         max_tool_calls: int | None = None,
         audit_log: Any = None,
         campaign_budget: CampaignBudget | None = None,
+        reasoning_effort: str | None = None,
     ) -> None:
         if context_window_tokens < 1 or output_reserve_tokens < 1:
             raise ValueError("context and output limits must be positive")
@@ -82,6 +83,9 @@ class CompetitionModel:
         if request_allowance < 0:
             raise ValueError("request allowance cannot be negative")
         self.session = session
+        if reasoning_effort not in {None, 'none', 'low', 'medium', 'high', 'max'}:
+            raise ValueError('invalid reasoning effort')
+        self.reasoning_effort = reasoning_effort
         self.context_window_tokens = context_window_tokens
         self.output_reserve_tokens = output_reserve_tokens
         self.request_allowance = request_allowance
@@ -174,7 +178,7 @@ class CompetitionModel:
             {"role": "system", "content": instructions},
             {"role": "user", "content": (
                 f"Competition stage: {stage}\nContext manifest SHA-256: {manifest_digest}\n"
-                "Use read_context to retrieve exact pinned requirement or test source when needed. "
+                "Use read_context to retrieve exact pinned inputs allowed by the task's input policy when needed. "
                 "Treat task text and source documents as authoritative.\n\n"
                 + task_text
             )},
@@ -217,7 +221,7 @@ class CompetitionModel:
     def _read_context_schema() -> dict[str, Any]:
         return {"type": "function", "function": {
             "name": "read_context",
-            "description": "Read pinned requirements, tests, evidence, or application chunks by bounded offset. Application reads verify the current file hash against the frozen snapshot.",
+            "description": "Read pinned inputs, evidence, or application chunks allowed by the task's input policy by bounded offset. Application reads verify the current file hash against the frozen snapshot.",
             "parameters": {"type": "object", "properties": {
                 "resource": {"type": "string"},
                 "offset": {"type": "integer", "minimum": 0},
@@ -438,6 +442,8 @@ class CompetitionModel:
                 stage, self.campaign_budget.config.max_input_tokens, max_tokens)
             self.session.model_requests_used = getattr(self.session, "model_requests_used", 0) + 1
         request_options = {}
+        if self.reasoning_effort is not None:
+            request_options['reasoning_effort'] = self.reasoning_effort
         if getattr(self.session, "is_deepseek", False):
             request_options["response_format"] = {"type": "json_object"}
         try:
@@ -481,7 +487,8 @@ class CompetitionModel:
 
     def _run(self, packet: Any, tools: Any, *, stage: str, mode: str,
              instructions: str, max_tokens: int, request_allowance: int | None = None,
-             initial_messages: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+             initial_messages: list[dict[str, Any]] | None = None,
+             final_validator: Any = None) -> dict[str, Any]:
         self._stopped_reason = None
         self._context_sources = {}
         reset_reads = getattr(getattr(packet, 'repository', None), 'reset_read_receipts', None)
@@ -551,7 +558,25 @@ class CompetitionModel:
                 except ExecutionStopped as exc:
                     return dict(status='stopped', reason=exc.reason, turns=turns)
                 except (ValueError, TypeError, AttributeError, RecursionError) as exc:
-                    return dict(status='stopped', reason='invalid_tool_batch', detail=str(exc), turns=turns)
+                    detail = str(exc)[:1000]
+                    self._append_log(dict(stage=stage, event='tool_batch_rejected', detail=detail,
+                                          tool_names=[getattr(getattr(c, 'function', None), 'name', None) for c in calls]))
+                    if turns < allowance and control is not None and control.repair_protocol():
+                        # Rejected calls are quoted as text, never presented as
+                        # executed tool calls or paired with invented results.
+                        assistant = self._assistant_payload(response)
+                        assistant['content'] = json.dumps(dict(content=assistant['content'],
+                            rejected_tool_calls=assistant.pop('tool_calls', [])), ensure_ascii=False)
+                        messages.append(assistant)
+                        messages.append(dict(role='user', content=(
+                            'The entire preceding tool batch was rejected before any tool executed. '
+                            'Correct the batch using the exposed schemas. Use unique call IDs, valid '
+                            'arguments, editable project-relative paths, and put validate_source last. '
+                            'Do not repeat unchanged invalid calls. Rejection: ' + detail)))
+                        if not self._check_context(messages, schemas, stage, packet, max_tokens):
+                            return dict(status='stopped', reason=self._stopped_reason, turns=turns)
+                        continue
+                    return dict(status='stopped', reason='invalid_tool_batch', detail=detail, turns=turns)
                 turn_before = (source_digest(snapshot_project(tools.project_dir))
                                if control is not None and hasattr(tools, 'project_dir') else '')
                 new_evidence = False
@@ -566,13 +591,7 @@ class CompetitionModel:
                     except CampaignBudgetStopped as exc:
                         self._stopped_reason = exc.reason
                         return {"status": "stopped", "reason": exc.reason, "turns": turns}
-                assistant = response.choices[0].message
-                assistant_payload = {"role": "assistant", "content": self._content(response),
-                                     "tool_calls": [call.model_dump(exclude_none=True) for call in calls]}
-                reasoning = getattr(assistant, "reasoning_content", None)
-                if isinstance(reasoning, str):
-                    assistant_payload["reasoning_content"] = reasoning
-                messages.append(assistant_payload)
+                messages.append(self._assistant_payload(response))
                 results = []
                 for call, args in zip(calls, parsed):
                     name = call.function.name
@@ -617,20 +636,27 @@ class CompetitionModel:
             if not content:
                 return {"status": "stopped", "reason": "empty_response", "turns": turns}
             self._append_log({"stage": stage, "event": "final_response", "content": content})
+            invalid_reason = 'invalid_json'
             try:
                 value = self._parse_final_object(content)
-            except ValueError:
-                if format_repairs == 0 and turns < allowance:
+                if final_validator is not None:
+                    invalid_reason = 'invalid_plan'
+                    final_validator(value)
+            except ValueError as error:
+                detail = str(error)[:1000]
+                if (format_repairs == 0 and turns < allowance
+                        and (control is None or control.repair_protocol())):
                     format_repairs += 1
-                    messages.append({"role": "assistant", "content": content})
+                    messages.append(self._assistant_payload(response))
                     messages.append({"role": "user", "content": (
                         "Your final answer must be one valid JSON object matching the requested keys. "
                         "Convert the answer you just produced into JSON only. Do not reread files, "
-                        "change the implementation, or add prose or Markdown fences.")})
+                        "change the implementation, or add prose or Markdown fences. "
+                        "Validation error: " + detail)})
                     if not self._check_context(messages, schemas, stage, packet, max_tokens):
                         return {"status": "stopped", "reason": self._stopped_reason, "turns": turns}
                     continue
-                return {"status": "stopped", "reason": "invalid_json", "turns": turns,
+                return {"status": "stopped", "reason": invalid_reason + (': ' + detail if invalid_reason == 'invalid_plan' else ''), "turns": turns,
                         "raw": content[:MAX_TOOL_RESULT_CHARS]}
             if not isinstance(value, dict):
                 return {"status": "stopped", "reason": "invalid_json_shape", "turns": turns}
@@ -646,6 +672,19 @@ class CompetitionModel:
             value["turns"] = turns
             return value
         return {"status": "stopped", "reason": "request_allowance", "turns": turns}
+
+    @classmethod
+    def _assistant_payload(cls, response):
+        """Preserve the provider protocol even for a no-tool format repair."""
+        message = response.choices[0].message
+        result = dict(role='assistant', content=cls._content(response))
+        calls = getattr(message, 'tool_calls', None)
+        if calls:
+            result['tool_calls'] = [call.model_dump(exclude_none=True) for call in calls]
+        reasoning = getattr(message, 'reasoning_content', None)
+        if isinstance(reasoning, str):
+            result['reasoning_content'] = reasoning
+        return result
 
     @staticmethod
     def _parse_final_object(content: str) -> Any:

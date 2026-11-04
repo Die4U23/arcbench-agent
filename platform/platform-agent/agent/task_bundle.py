@@ -66,7 +66,7 @@ def _root(path: Path) -> Path:
     return path.resolve()
 
 
-def _inventory(root: Path) -> dict[str, Path]:
+def _inventory(root: Path, *, include_tests=True) -> dict[str, Path]:
     result: dict[str, Path] = {}
     folded: set[str] = set()
     pending = [root]
@@ -74,6 +74,8 @@ def _inventory(root: Path) -> dict[str, Path]:
     while pending:
         directory = pending.pop()
         for path in sorted(directory.iterdir()):
+            if not include_tests and is_test_path(path.relative_to(root).as_posix()):
+                continue
             # Inspect directory links before recursing; rglob can traverse a
             # Windows junction before its caller gets to reject that junction.
             if _linked(path) or not path.resolve().is_relative_to(root):
@@ -455,10 +457,11 @@ class TaskBundle:
     diagnostics: tuple[str, ...]
     _requirement_dir: Path = field(repr=False)
     _tests_dir: Path | None = field(repr=False)
+    _include_tests: bool = field(default=True, repr=False)
 
     def assert_integrity(self) -> None:
         """Invalidate prior evidence on added/deleted/changed or linked input."""
-        current = _read_files(self._requirement_dir, self._tests_dir)
+        current = _read_files(self._requirement_dir, self._tests_dir, include_tests=self._include_tests)
         expected = {record.relative_path: record.sha256 for record in self.files}
         actual = {record.relative_path: record.sha256 for record in current}
         if expected != actual:
@@ -474,13 +477,21 @@ class TaskBundle:
                 "integrity_scope": "byte and file-set mutation detection; does not provide OS write isolation"}
 
 
-def _read_files(requirement_dir: Path, tests_dir: Path | None) -> tuple[FileRecord, ...]:
+def is_test_path(relative: str) -> bool:
+    path = Path(relative)
+    return (any(part.casefold() in {'tests', '__tests__'} for part in path.parts)
+            or bool(re.search(r'\.(spec|test)\.[^.]+$', path.name, re.I)))
+
+
+def _read_files(requirement_dir: Path, tests_dir: Path | None, *, include_tests=True) -> tuple[FileRecord, ...]:
     records = []
     roots = [("requirements", _root(requirement_dir))]
-    if tests_dir is not None:
+    if tests_dir is not None and include_tests:
         roots.append(("tests", _root(tests_dir)))
     for prefix, root in roots:
-        for relative, path in _inventory(root).items():
+        for relative, path in _inventory(root, include_tests=include_tests).items():
+            if not include_tests and is_test_path(relative):
+                continue
             if prefix == "requirements" and tests_dir is not None and path.is_relative_to(tests_dir):
                 continue
             raw = path.read_bytes()
@@ -491,7 +502,8 @@ def _read_files(requirement_dir: Path, tests_dir: Path | None) -> tuple[FileReco
 def load_task_bundle(requirement_dir: Path, tests_dir: Path | None, *, task_id: str,
                      published_test_count: int | None = None,
                      expected_hashes: dict[str, str] | None = None,
-                     source_metadata: Mapping[str, Any] | None = None) -> TaskBundle:
+                     source_metadata: Mapping[str, Any] | None = None,
+                     include_tests: bool = True) -> TaskBundle:
     """Load generic input directories without writing or running task code.
 
     expected_hashes pins supplied canonical requirements/* or tests/* paths;
@@ -509,7 +521,7 @@ def load_task_bundle(requirement_dir: Path, tests_dir: Path | None, *, task_id: 
         requirement_dir == tests_dir or requirement_dir.is_relative_to(tests_dir)
     ):
         raise TaskBundleError("OVERLAPPING_INPUT_ROOTS")
-    files = _read_files(requirement_dir, tests_dir)
+    files = _read_files(requirement_dir, tests_dir, include_tests=include_tests)
     file_map = {record.relative_path: record for record in files}
     for relative, expected in (expected_hashes or {}).items():
         if relative not in file_map or file_map[relative].sha256 != expected:
@@ -564,7 +576,8 @@ def load_task_bundle(requirement_dir: Path, tests_dir: Path | None, *, task_id: 
         diagnostics.extend(import_diagnostics)
     else:
         graph = _freeze({})
-        diagnostics.append("TEST_SUITE_MISSING: no public tests were supplied")
+        diagnostics.append("TEST_SUITE_MISSING: no public tests were supplied" if include_tests else
+                           "TEST_SUITE_WITHHELD: evaluation is outside generation")
     if published_test_count is not None and published_test_count != len(index.scenarios):
         diagnostics.append(f"CATALOG_MISMATCH: published={published_test_count}, requirement_scenarios={len(index.scenarios)}; cause unknown")
     metadata = dict(source_metadata or {})
@@ -576,7 +589,8 @@ def load_task_bundle(requirement_dir: Path, tests_dir: Path | None, *, task_id: 
 
     result = TaskBundle(task_id, _freeze(tree), index, files, fingerprint(files),
                         fingerprint(tuple(record for record in files if record.relative_path.startswith("tests/"))),
-                        published_test_count, graph, _freeze(metadata), tuple(diagnostics), requirement_dir, tests_dir)
+                        published_test_count, graph, _freeze(metadata), tuple(diagnostics), requirement_dir, tests_dir,
+                        include_tests)
     # Catch changes between first byte capture and parsed-tree construction.
     result.assert_integrity()
     return result

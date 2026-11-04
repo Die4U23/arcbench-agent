@@ -19,7 +19,7 @@ Designed as a reusable workflow across business domains, with ARC-Bench providin
 - **Observable context reuse**: stable message prefixes, contiguous tool rounds, bounded history compression, and provider-reported cache hit/miss counters. Cache hits are not guaranteed.
 - **Isolated generated execution**: generated scripts and browsers run in short-lived offline Linux containers, with a reviewed dependency cache and no silent host fallback.
 
-Design background: [requirements](docs/PRD.md) · [technical choices](docs/TECH_SELECTION.md) · [performance methodology](docs/PERFORMANCE_REPORT.md).
+Design background: [requirements](docs/PRD.md) · [technical choices](docs/TECH_SELECTION.md).
 
 ## Architecture
 
@@ -115,19 +115,6 @@ The Railway Ticket Booking Demo passed **30/30** Stage 3 cases in [submission 35
 
 This is one successful frozen submission, **not a rerun of current main or a general completion rate**. Local self-tests still had failures before delivery; a deliverable candidate was restored before formal acceptance. Requirement-node traceability was incomplete in that package. Later traceability, isolation, and other changes do not inherit this result. The 99.44% figure in the archive describes a stable request segment, not the whole run.
 
-### Historical offline replay: stopping repeated failed tools
-
-An archived 2026-09-28 deterministic replay repeatedly returned the same missing-file error. The older flow reached its 24-request budget; the failure guard stopped after 3 requests.
-
-| Replay | Simulated requests | Cumulative serialized prompt characters |
-| --- | ---: | ---: |
-| Before guard | 24 | 185,070 |
-| With repeated-failure guard | 3 | 14,758 |
-
-[![Historical offline replay of repeated tool failures. The older flow reaches 24 simulated requests and 185070 cumulative prompt characters; the guarded flow stops at 3 requests and 14758 characters.](docs/performance/stalled-tool-curve.svg)](docs/performance/stalled-tool-data.json)
-
-The chart uses **fake model responses and serialized characters, not provider tokens**. It demonstrates a stopping policy, not successful task completion, measured API savings, latency, or cache hit rate. Its baseline is labeled `pre-stall-70b3c36.zip`; the guarded archive is labeled `arc_agent`, without a commit pin. It is historical evidence, not a current-main benchmark. [Raw data](docs/performance/stalled-tool-data.json) · [method and other curves](docs/PERFORMANCE_REPORT.md).
-
 ## Quick start
 
 ### 1. Prepare the controller
@@ -197,7 +184,6 @@ CI installs Chromium for trusted fixtures. Its separate Docker job sets `ARCBENC
 ## Current limits
 
 - The archived formal results cover one task and specific frozen packages; there is no established multi-task completion rate or controlled Claude Code comparison here.
-- Offline character curves do not establish real token, cache, time, or cost improvements.
 - The offline npm cache supports reviewed exact versions, not arbitrary online dependency installation.
 - Docker is a practical boundary, not perfect isolation. The daemon and image are trusted; arbitrary host/controller crashes can leave containers requiring operator cleanup.
 - Generated code can damage its permitted project files. Local tests and reports are not tamper-proof attestation.
@@ -217,7 +203,6 @@ sandbox/                   Trusted offline image, worker, dependency cache
 arcbench-agent-runtime/    Bundled ARC-Bench Runtime SDK
 tests/                     Python regression and Docker integration
 docs/releases/             Frozen submission evidence
-docs/performance/          Historical replay data and plots
 ```
 
 ## Next steps
@@ -230,4 +215,4 @@ docs/performance/          Historical replay data and plots
 
 Developed for **CS3604**. ARC-Bench supplies the task and evaluation setting; its starter supplies the bundled Runtime SDK. This repository implements the Agent's orchestration and verification workflow.
 
-Further reading: [PRD](docs/PRD.md) · [technical selection](docs/TECH_SELECTION.md) · [performance report](docs/PERFORMANCE_REPORT.md) · [execution security](docs/dev/docker-execution.md).
+Further reading: [PRD](docs/PRD.md) · [technical selection](docs/TECH_SELECTION.md) · [execution security](docs/dev/docker-execution.md).

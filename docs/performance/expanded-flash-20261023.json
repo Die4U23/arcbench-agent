@@ -1,0 +1,230 @@
+{
+  "task": "first-competition--ticket-booking",
+  "candidate_zip_sha256": "5dc480b2b09f1c16feae00304f8618590fd4973d2ad764665caf5de4d3b20cd1",
+  "source_commit": "f371ed81df19a53cda61cb3ca35034e68a42e87f",
+  "model": "deepseek-flash",
+  "platform_backend": "原冻结包原生执行后端；主线 Docker 另行验收",
+  "baseline": {
+    "run_url": "https://arc-bench.com/runs/f63e506acbf2",
+    "successful_samples": 1,
+    "formal_passed": 5,
+    "formal_total": 5,
+    "prompt_tokens": 1787491,
+    "completion_tokens": 89817,
+    "cache_hit_tokens": 1679360,
+    "cache_miss_tokens": 108131,
+    "requests": 50,
+    "total_tokens": 1877308,
+    "input_cache_hit_rate": 0.9395068282861284,
+    "models": [
+      "deepseek-flash"
+    ],
+    "tool_calls": {
+      "list_files": 5,
+      "read_file": 3,
+      "write_files": 13,
+      "replace_text": 18,
+      "run_project_scripts": 9,
+      "read_files": 8,
+      "run_project_script": 1
+    },
+    "failed_script_executions": 3,
+    "source_reuse_events": 0,
+    "immediate_handoffs": 0,
+    "tool_errors": {
+      "write_files": 1
+    },
+    "audit_rejections": 1,
+    "http_error_statuses": [],
+    "attempted_requests": 50,
+    "stage_requests": {
+      "planning": 2,
+      "implementation": 46,
+      "requirement_review": 2
+    }
+  },
+  "candidate_samples": [
+    {
+      "prompt_tokens": 542301,
+      "completion_tokens": 64045,
+      "cache_hit_tokens": 509056,
+      "cache_miss_tokens": 33245,
+      "requests": 19,
+      "total_tokens": 606346,
+      "input_cache_hit_rate": 0.9386964066081382,
+      "models": [
+        "deepseek-flash"
+      ],
+      "tool_calls": {
+        "read_files": 1,
+        "list_files": 1,
+        "read_file": 3,
+        "write_files": 6,
+        "run_project_script": 2,
+        "replace_text": 3,
+        "run_project_scripts": 1
+      },
+      "failed_script_executions": 1,
+      "source_reuse_events": 0,
+      "immediate_handoffs": 0,
+      "tool_errors": {
+        "read_file": 1
+      },
+      "audit_rejections": 1,
+      "http_error_statuses": [],
+      "attempted_requests": 19,
+      "stage_requests": {
+        "planning": 1,
+        "implementation": 16,
+        "requirement_review": 2
+      },
+      "sample": "C1",
+      "run_url": "https://arc-bench.com/runs/b951b110b9bf",
+      "formal_passed": 5,
+      "formal_total": 5,
+      "ui_duration_seconds": 419,
+      "requirement_audit": "两次自相矛盾审核均拒绝，保持未验证",
+      "local_build_tests": "通过",
+      "read_tool_calls": 4
+    },
+    {
+      "prompt_tokens": 745543,
+      "completion_tokens": 59817,
+      "cache_hit_tokens": 706944,
+      "cache_miss_tokens": 38599,
+      "requests": 24,
+      "total_tokens": 805360,
+      "input_cache_hit_rate": 0.948226996967311,
+      "models": [
+        "deepseek-flash"
+      ],
+      "tool_calls": {
+        "read_files": 3,
+        "list_files": 1,
+        "write_files": 12,
+        "replace_text": 7,
+        "read_file": 2
+      },
+      "failed_script_executions": 0,
+      "source_reuse_events": 0,
+      "immediate_handoffs": 1,
+      "tool_errors": {
+        "write_files": 1
+      },
+      "audit_rejections": 0,
+      "http_error_statuses": [],
+      "attempted_requests": 24,
+      "stage_requests": {
+        "planning": 1,
+        "implementation": 22,
+        "requirement_review": 1
+      },
+      "sample": "C2",
+      "run_url": "https://arc-bench.com/runs/1a4c4366b6b7",
+      "formal_passed": 5,
+      "formal_total": 5,
+      "ui_duration_seconds": 396,
+      "requirement_audit": "通过",
+      "local_build_tests": "通过",
+      "read_tool_calls": 5
+    },
+    {
+      "prompt_tokens": 1693202,
+      "completion_tokens": 51882,
+      "cache_hit_tokens": 1651072,
+      "cache_miss_tokens": 42130,
+      "requests": 56,
+      "total_tokens": 1745084,
+      "input_cache_hit_rate": 0.9751181489272986,
+      "models": [
+        "deepseek-flash"
+      ],
+      "tool_calls": {
+        "read_files": 1,
+        "list_files": 1,
+        "write_files": 16,
+        "replace_text": 31,
+        "run_project_scripts": 1,
+        "run_project_script": 11,
+        "read_file": 3
+      },
+      "failed_script_executions": 11,
+      "source_reuse_events": 0,
+      "immediate_handoffs": 1,
+      "tool_errors": {
+        "replace_text": 3
+      },
+      "audit_rejections": 1,
+      "http_error_statuses": [],
+      "attempted_requests": 56,
+      "stage_requests": {
+        "planning": 1,
+        "implementation": 52,
+        "implementation-retry": 1,
+        "requirement_review": 2
+      },
+      "sample": "C3",
+      "run_url": "https://arc-bench.com/runs/47ded15a2316",
+      "formal_passed": 5,
+      "formal_total": 5,
+      "ui_duration_seconds": 591,
+      "requirement_audit": "纠错一次后通过",
+      "local_build_tests": "通过",
+      "read_tool_calls": 4
+    }
+  ],
+  "aggregate": {
+    "samples": 3,
+    "formal_successful_runs": 3,
+    "formal_passed_cases": 15,
+    "formal_total_cases": 15,
+    "means": {
+      "total_tokens": 1052263.3333333333,
+      "prompt_tokens": 993682,
+      "completion_tokens": 58581.333333333336,
+      "cache_miss_tokens": 37991.333333333336,
+      "requests": 33,
+      "read_tool_calls": 4.333333333333333,
+      "ui_duration_seconds": 468.6666666666667
+    },
+    "median_total_tokens": 805360,
+    "min_total_tokens": 606346,
+    "max_total_tokens": 1745084,
+    "weighted_input_cache_hit_rate": 0.9617671112757066,
+    "mean_total_token_reduction": 0.4394828481350246,
+    "mean_miss_token_reduction": 0.6486545640627264,
+    "read_call_reduction": 0.6060606060606061
+  },
+  "excluded_attempts": [
+    {
+      "run_url": "https://arc-bench.com/runs/7989e6d52cb7",
+      "kind": "原冻结包新增基线",
+      "failure": "第二次请求 HTTP 503: Model accounting or configuration is unavailable",
+      "known_total_tokens": 9384,
+      "failed_request_usage": "未知",
+      "formal_passed": null
+    },
+    {
+      "run_url": "https://arc-bench.com/runs/4f6ca3e26c08",
+      "kind": "v3 开发诊断",
+      "formal_passed": 5,
+      "formal_total": 5,
+      "total_tokens": 960336,
+      "requirement_audit": "未验证"
+    },
+    {
+      "run_url": "https://arc-bench.com/runs/f1511a518322",
+      "kind": "v4 开发诊断",
+      "formal_passed": 5,
+      "formal_total": 5,
+      "total_tokens": 1774492,
+      "requirement_audit": "通过，但错误审核触发额外修补"
+    }
+  ],
+  "limits": [
+    "同一任务三个候选样本，对照仅一次成功；包含缓存温度和生成随机性，非通用性能或因果证明。",
+    "C1 需求审核仍未验证；不能把平台 5/5 当成所有需求和审核全部通过。",
+    "C3 自测反复修补仍明显，命中率提高不代表该问题已解决。",
+    "没有新的 Playground 30/30，也没有 Claude Code 对照。"
+  ]
+}

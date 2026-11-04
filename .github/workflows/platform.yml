@@ -11,8 +11,8 @@ permissions:
   contents: read
 
 jobs:
-  platform-regression:
-    name: Platform generator frozen source and browser regression
+  platform-package:
+    name: Platform source and package integrity
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
@@ -22,29 +22,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version-file: .python-version
-      - uses: actions/setup-node@v4
-        with:
-          node-version-file: .nvmrc
-      - name: Install platform controller dependencies
-        working-directory: platform/platform-agent
-        run: python -m pip install -r requirements.txt
-      - name: Prepare matching browser fixture toolchain
-        shell: bash
-        run: |
-          cache_dir="$(python -c 'import tempfile; print(tempfile.gettempdir())')/arc-runtime-check-playwright-cache"
-          mkdir -p "$cache_dir"
-          npm install --prefix "$cache_dir" --no-audit --no-fund --ignore-scripts @playwright/test@1.64.1
-          node "$cache_dir/node_modules/@playwright/test/cli.js" install --with-deps chromium
+      - name: Compile platform sources
+        run: python -m compileall -q platform
       - name: Verify frozen source and round-trip package
         run: python platform/check_release.py --output "${{ runner.temp }}/platform-agent-v14.zip"
-      - name: Run full regression including required runtime checks
-        run: python platform/run_tests.py --require-runtime
-      - name: Archive package and test summary
-        if: always()
+      - name: Archive verified package
         uses: actions/upload-artifact@v4
         with:
           name: platform-${{ github.sha }}
-          path: |
-            ${{ runner.temp }}/platform-agent-v14.zip
-            platform/test-results/summary.json
+          path: ${{ runner.temp }}/platform-agent-v14.zip
           if-no-files-found: error

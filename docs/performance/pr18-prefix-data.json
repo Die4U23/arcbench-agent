@@ -1,0 +1,358 @@
+{
+  "observed_on": "2026-09-28",
+  "workload": "21 synthetic requests and 20 tool responses of 8000 characters",
+  "scenarios": {
+    "main before PR18": {
+      "source": "70b3c36",
+      "rounds": 20,
+      "tool_result_chars": 8000,
+      "method": "exact serialized-message prefix versus previous request; offline proxy, not provider cache usage",
+      "samples": [
+        {
+          "request": 1,
+          "prompt_chars": 4592,
+          "shared_prefix_chars": 0,
+          "fresh_chars": 4592,
+          "cumulative_prompt_chars": 4592,
+          "cumulative_fresh_chars": 4592
+        },
+        {
+          "request": 2,
+          "prompt_chars": 13368,
+          "shared_prefix_chars": 4591,
+          "fresh_chars": 8777,
+          "cumulative_prompt_chars": 17960,
+          "cumulative_fresh_chars": 13369
+        },
+        {
+          "request": 3,
+          "prompt_chars": 22144,
+          "shared_prefix_chars": 13367,
+          "fresh_chars": 8777,
+          "cumulative_prompt_chars": 40104,
+          "cumulative_fresh_chars": 22146
+        },
+        {
+          "request": 4,
+          "prompt_chars": 30920,
+          "shared_prefix_chars": 22143,
+          "fresh_chars": 8777,
+          "cumulative_prompt_chars": 71024,
+          "cumulative_fresh_chars": 30923
+        },
+        {
+          "request": 5,
+          "prompt_chars": 39696,
+          "shared_prefix_chars": 30919,
+          "fresh_chars": 8777,
+          "cumulative_prompt_chars": 110720,
+          "cumulative_fresh_chars": 39700
+        },
+        {
+          "request": 6,
+          "prompt_chars": 48472,
+          "shared_prefix_chars": 39695,
+          "fresh_chars": 8777,
+          "cumulative_prompt_chars": 159192,
+          "cumulative_fresh_chars": 48477
+        },
+        {
+          "request": 7,
+          "prompt_chars": 57248,
+          "shared_prefix_chars": 48471,
+          "fresh_chars": 8777,
+          "cumulative_prompt_chars": 216440,
+          "cumulative_fresh_chars": 57254
+        },
+        {
+          "request": 8,
+          "prompt_chars": 66024,
+          "shared_prefix_chars": 57247,
+          "fresh_chars": 8777,
+          "cumulative_prompt_chars": 282464,
+          "cumulative_fresh_chars": 66031
+        },
+        {
+          "request": 9,
+          "prompt_chars": 74800,
+          "shared_prefix_chars": 66023,
+          "fresh_chars": 8777,
+          "cumulative_prompt_chars": 357264,
+          "cumulative_fresh_chars": 74808
+        },
+        {
+          "request": 10,
+          "prompt_chars": 83576,
+          "shared_prefix_chars": 74799,
+          "fresh_chars": 8777,
+          "cumulative_prompt_chars": 440840,
+          "cumulative_fresh_chars": 83585
+        },
+        {
+          "request": 11,
+          "prompt_chars": 92352,
+          "shared_prefix_chars": 83575,
+          "fresh_chars": 8777,
+          "cumulative_prompt_chars": 533192,
+          "cumulative_fresh_chars": 92362
+        },
+        {
+          "request": 12,
+          "prompt_chars": 6219,
+          "shared_prefix_chars": 4603,
+          "fresh_chars": 1616,
+          "cumulative_prompt_chars": 539411,
+          "cumulative_fresh_chars": 93978
+        },
+        {
+          "request": 13,
+          "prompt_chars": 14999,
+          "shared_prefix_chars": 6218,
+          "fresh_chars": 8781,
+          "cumulative_prompt_chars": 554410,
+          "cumulative_fresh_chars": 102759
+        },
+        {
+          "request": 14,
+          "prompt_chars": 23779,
+          "shared_prefix_chars": 14998,
+          "fresh_chars": 8781,
+          "cumulative_prompt_chars": 578189,
+          "cumulative_fresh_chars": 111540
+        },
+        {
+          "request": 15,
+          "prompt_chars": 32559,
+          "shared_prefix_chars": 23778,
+          "fresh_chars": 8781,
+          "cumulative_prompt_chars": 610748,
+          "cumulative_fresh_chars": 120321
+        },
+        {
+          "request": 16,
+          "prompt_chars": 41339,
+          "shared_prefix_chars": 32558,
+          "fresh_chars": 8781,
+          "cumulative_prompt_chars": 652087,
+          "cumulative_fresh_chars": 129102
+        },
+        {
+          "request": 17,
+          "prompt_chars": 50119,
+          "shared_prefix_chars": 41338,
+          "fresh_chars": 8781,
+          "cumulative_prompt_chars": 702206,
+          "cumulative_fresh_chars": 137883
+        },
+        {
+          "request": 18,
+          "prompt_chars": 58899,
+          "shared_prefix_chars": 50118,
+          "fresh_chars": 8781,
+          "cumulative_prompt_chars": 761105,
+          "cumulative_fresh_chars": 146664
+        },
+        {
+          "request": 19,
+          "prompt_chars": 67679,
+          "shared_prefix_chars": 58898,
+          "fresh_chars": 8781,
+          "cumulative_prompt_chars": 828784,
+          "cumulative_fresh_chars": 155445
+        },
+        {
+          "request": 20,
+          "prompt_chars": 76459,
+          "shared_prefix_chars": 67678,
+          "fresh_chars": 8781,
+          "cumulative_prompt_chars": 905243,
+          "cumulative_fresh_chars": 164226
+        },
+        {
+          "request": 21,
+          "prompt_chars": 85239,
+          "shared_prefix_chars": 76458,
+          "fresh_chars": 8781,
+          "cumulative_prompt_chars": 990482,
+          "cumulative_fresh_chars": 173007
+        }
+      ]
+    },
+    "PR18 integrated": {
+      "source": "6258647",
+      "rounds": 20,
+      "tool_result_chars": 8000,
+      "method": "exact serialized-message prefix versus previous request; offline proxy, not provider cache usage",
+      "samples": [
+        {
+          "request": 1,
+          "prompt_chars": 4804,
+          "shared_prefix_chars": 0,
+          "fresh_chars": 4804,
+          "cumulative_prompt_chars": 4804,
+          "cumulative_fresh_chars": 4804
+        },
+        {
+          "request": 2,
+          "prompt_chars": 13580,
+          "shared_prefix_chars": 4803,
+          "fresh_chars": 8777,
+          "cumulative_prompt_chars": 18384,
+          "cumulative_fresh_chars": 13581
+        },
+        {
+          "request": 3,
+          "prompt_chars": 22356,
+          "shared_prefix_chars": 13579,
+          "fresh_chars": 8777,
+          "cumulative_prompt_chars": 40740,
+          "cumulative_fresh_chars": 22358
+        },
+        {
+          "request": 4,
+          "prompt_chars": 31132,
+          "shared_prefix_chars": 22355,
+          "fresh_chars": 8777,
+          "cumulative_prompt_chars": 71872,
+          "cumulative_fresh_chars": 31135
+        },
+        {
+          "request": 5,
+          "prompt_chars": 39908,
+          "shared_prefix_chars": 31131,
+          "fresh_chars": 8777,
+          "cumulative_prompt_chars": 111780,
+          "cumulative_fresh_chars": 39912
+        },
+        {
+          "request": 6,
+          "prompt_chars": 48684,
+          "shared_prefix_chars": 39907,
+          "fresh_chars": 8777,
+          "cumulative_prompt_chars": 160464,
+          "cumulative_fresh_chars": 48689
+        },
+        {
+          "request": 7,
+          "prompt_chars": 57460,
+          "shared_prefix_chars": 48683,
+          "fresh_chars": 8777,
+          "cumulative_prompt_chars": 217924,
+          "cumulative_fresh_chars": 57466
+        },
+        {
+          "request": 8,
+          "prompt_chars": 66236,
+          "shared_prefix_chars": 57459,
+          "fresh_chars": 8777,
+          "cumulative_prompt_chars": 284160,
+          "cumulative_fresh_chars": 66243
+        },
+        {
+          "request": 9,
+          "prompt_chars": 75012,
+          "shared_prefix_chars": 66235,
+          "fresh_chars": 8777,
+          "cumulative_prompt_chars": 359172,
+          "cumulative_fresh_chars": 75020
+        },
+        {
+          "request": 10,
+          "prompt_chars": 83788,
+          "shared_prefix_chars": 75011,
+          "fresh_chars": 8777,
+          "cumulative_prompt_chars": 442960,
+          "cumulative_fresh_chars": 83797
+        },
+        {
+          "request": 11,
+          "prompt_chars": 92564,
+          "shared_prefix_chars": 83787,
+          "fresh_chars": 8777,
+          "cumulative_prompt_chars": 535524,
+          "cumulative_fresh_chars": 92574
+        },
+        {
+          "request": 12,
+          "prompt_chars": 6431,
+          "shared_prefix_chars": 4815,
+          "fresh_chars": 1616,
+          "cumulative_prompt_chars": 541955,
+          "cumulative_fresh_chars": 94190
+        },
+        {
+          "request": 13,
+          "prompt_chars": 15211,
+          "shared_prefix_chars": 6430,
+          "fresh_chars": 8781,
+          "cumulative_prompt_chars": 557166,
+          "cumulative_fresh_chars": 102971
+        },
+        {
+          "request": 14,
+          "prompt_chars": 23991,
+          "shared_prefix_chars": 15210,
+          "fresh_chars": 8781,
+          "cumulative_prompt_chars": 581157,
+          "cumulative_fresh_chars": 111752
+        },
+        {
+          "request": 15,
+          "prompt_chars": 32771,
+          "shared_prefix_chars": 23990,
+          "fresh_chars": 8781,
+          "cumulative_prompt_chars": 613928,
+          "cumulative_fresh_chars": 120533
+        },
+        {
+          "request": 16,
+          "prompt_chars": 41551,
+          "shared_prefix_chars": 32770,
+          "fresh_chars": 8781,
+          "cumulative_prompt_chars": 655479,
+          "cumulative_fresh_chars": 129314
+        },
+        {
+          "request": 17,
+          "prompt_chars": 50331,
+          "shared_prefix_chars": 41550,
+          "fresh_chars": 8781,
+          "cumulative_prompt_chars": 705810,
+          "cumulative_fresh_chars": 138095
+        },
+        {
+          "request": 18,
+          "prompt_chars": 59111,
+          "shared_prefix_chars": 50330,
+          "fresh_chars": 8781,
+          "cumulative_prompt_chars": 764921,
+          "cumulative_fresh_chars": 146876
+        },
+        {
+          "request": 19,
+          "prompt_chars": 68116,
+          "shared_prefix_chars": 59110,
+          "fresh_chars": 9006,
+          "cumulative_prompt_chars": 833037,
+          "cumulative_fresh_chars": 155882
+        },
+        {
+          "request": 20,
+          "prompt_chars": 76896,
+          "shared_prefix_chars": 68115,
+          "fresh_chars": 8781,
+          "cumulative_prompt_chars": 909933,
+          "cumulative_fresh_chars": 164663
+        },
+        {
+          "request": 21,
+          "prompt_chars": 85676,
+          "shared_prefix_chars": 76895,
+          "fresh_chars": 8781,
+          "cumulative_prompt_chars": 995609,
+          "cumulative_fresh_chars": 173444
+        }
+      ]
+    }
+  }
+}

@@ -345,6 +345,7 @@ class PlanExecutor:
                     plan[index]['status'] = 'running'
                     self.control.plan_progress = dict(
                         revision=len(history), current_step=step.id,
+                        request_ceiling=started + allowance,
                         remaining_steps=len(steps) - index,
                         remaining_requirement_count=len(pending),
                         completed_step_ids=[item['id'] for item in completed],

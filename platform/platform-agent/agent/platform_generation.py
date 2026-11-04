@@ -390,9 +390,11 @@ class PlatformGenerationModel(CompetitionModel):
                 state.update(capacity(kwargs['max_tokens']))
             if control.plan_progress is not None:
                 state['plan_progress'] = control.plan_progress
+                plan_remaining = max(0, control.plan_progress['request_ceiling'] - control.requests)
+                state['plan_requests_remaining_including_this'] = plan_remaining
                 estimate = state.get('affordable_requests_estimate')
-                if estimate is not None:
-                    state['requests_per_remaining_step_estimate'] = max(0, estimate - 2) // control.plan_progress['remaining_steps']
+                available = plan_remaining if estimate is None else min(plan_remaining, estimate)
+                state['requests_per_remaining_step_estimate'] = max(0, available - 2) // control.plan_progress['remaining_steps']
             if decision['mode'] == 'implement':
                 state['instruction'] = (
                     'This is the LAST permitted request. Batch necessary edits, explicit update_coverage claims, '
@@ -408,6 +410,8 @@ class PlatformGenerationModel(CompetitionModel):
                     state['instruction'] += (
                         ' Account for ALL remaining steps in plan_progress. The measured request estimate '
                         'is advisory and can shrink as source grows; preserve room for integration and review. '
+                        'plan_requests_remaining_including_this is the remaining allocation for this entire '
+                        'plan phase, including replanning; a larger global token estimate does not extend it. '
                         'Batch related source edits and coverage updates, avoid cosmetic passes while required '
                         'behavior remains, and close this step once its required behavior is complete. '
                         'Never skip a requirement or report an unimplemented behavior as covered.')

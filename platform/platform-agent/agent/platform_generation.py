@@ -616,7 +616,7 @@ class PlatformGenerationModel(CompetitionModel):
             instructions = behavior_checks.INSTRUCTIONS
             messages = self._messages(packet, 'behavior_diagnostics', instructions)
             messages.append(dict(role='user', content='PUBLIC REQUIREMENT BINDINGS\n' + json.dumps(
-                [{key: row.get(key) for key in ('id', 'name', 'text')} for row in ir.get('work_items', [])],
+                behavior_checks.requirement_bindings(ir),
                 ensure_ascii=False)))
             result = self._run(packet, tools, stage='competition_audit', mode='audit',
                 instructions=instructions, max_tokens=self.output_reserve_tokens,

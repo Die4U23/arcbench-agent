@@ -24,7 +24,7 @@ def generated_artifact(path: Path) -> bool:
 
 
 def verify() -> dict:
-    manifest = json.loads((ROOT / "freeze-v13.json").read_text(encoding="utf-8"))
+    manifest = json.loads((ROOT / "release-v14.json").read_text(encoding="utf-8"))
     expected = manifest["files"]
     paths = {
         path.relative_to(PACKAGE).as_posix(): path

@@ -194,7 +194,7 @@ def ir_coverage_errors(project):
 
 
 def missing_coverage(project, ir, work_ids=None):
-    """Ledger rows that are absent or still status missing. work_ids limits the check to one batch."""
+    """Require covered rows backed by current source files; this is not behavioral acceptance."""
     expected = seed_coverage(ir)['items']
     if work_ids is not None:
         allowed = {str(item) for item in work_ids}
@@ -216,10 +216,13 @@ def missing_coverage(project, ir, work_ids=None):
             if isinstance(item, dict) and isinstance(item.get('kind'), str) and isinstance(item.get('ref'), str):
                 found[(item['kind'], item['ref'])] = item
     missing = []
+    sources = set(snapshot_project(Path(project))) - {'docs/task-ir.json', 'docs/coverage.json'}
     for item in expected:
         current = found.get((item['kind'], item['ref']))
         status = current.get('status') if isinstance(current, dict) else 'missing'
-        if current is None or status == 'missing':
+        files = current.get('files') if isinstance(current, dict) else None
+        backed = isinstance(files, list) and bool(files) and all(isinstance(name, str) and name in sources for name in files)
+        if current is None or status != 'covered' or not backed:
             missing.append({'kind': item['kind'], 'ref': item['ref'], 'status': 'missing'})
     return missing
 

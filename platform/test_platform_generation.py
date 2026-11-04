@@ -7,6 +7,7 @@ sys.path.insert(0,str(root/'platform-agent/arcbench-agent-runtime/src'))
 from agent.competition_model import same_campaign_model
 from agent.platform_generation import PlatformTokenBudget,PlatformGenerationModel,StaticProjectTools
 from agent.campaign_budget import CampaignBudgetStopped
+from agent.platform_settings import PlatformSettings
 
 def write_acceptance_docs(app):
     docs=Path(app)/'docs'
@@ -40,7 +41,8 @@ class PlatformGenerationTests(unittest.TestCase):
         self.assertFalse(same_campaign_model('deepseek-v4-flash', 'deepseek-v4-pro'))
     def test_model_and_usage_bounds_rejected(self):
         with self.assertRaises(ValueError):
-            PlatformTokenBudget(self.path,model='deepseek-v4-pro',endpoint='https://runner.example',limit=2000000)
+            PlatformTokenBudget(self.path,model='deepseek-v4-pro',endpoint='https://runner.example',limit=2000000,
+                settings=PlatformSettings(allowed_models=('deepseek-flash',)))
         budget=self.budget()
         identity=budget.reserve('implement',1048576,16384)
         with self.assertRaises(CampaignBudgetStopped): budget.settle(identity,dict(prompt_tokens=3))
@@ -206,7 +208,8 @@ class PlatformGenerationTests(unittest.TestCase):
         adapter=PlatformGenerationModel(SimpleNamespace(),context_window_tokens=393216)
         adapter._whole_task_visible=True
         names={schema['function']['name'] for schema in adapter._tool_schemas('implement')}
-        self.assertEqual(names,{'write_files','replace_text','validate_source'})
+        self.assertTrue({'write_files','replace_text','validate_source','read_file','read_context'} <= names)
+        self.assertNotIn('run_project_script', names)
 
     def test_static_validation_never_executes_app_and_finds_import_and_syntax_errors(self):
         from agent.platform_static import validate_source

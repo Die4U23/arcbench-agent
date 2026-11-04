@@ -17,6 +17,8 @@ from .campaign_budget import CampaignBudget, CampaignBudgetStopped
 from .model_transport import ModelRequestInterrupted
 from .llm import ModelBudgetExceeded, ModelClient
 from .platform_settings import PlatformSettings, models_equivalent
+from .platform_execution import ExecutionStopped, source_digest, validate_arguments
+from .sandbox_files import snapshot_project
 from .tools import TOOL_SCHEMAS
 
 
@@ -437,9 +439,6 @@ class CompetitionModel:
             self.session.model_requests_used = getattr(self.session, "model_requests_used", 0) + 1
         request_options = {}
         if getattr(self.session, "is_deepseek", False):
-            # Explicit Flash campaign policy: leave the completion budget for
-            # source edits instead of exhausting it on an implicit reasoning mode.
-            request_options["extra_body"] = {"thinking": {"type": "disabled"}}
             request_options["response_format"] = {"type": "json_object"}
         try:
             response = self.session._create_completion(stage, model=model, messages=messages,
@@ -498,6 +497,8 @@ class CompetitionModel:
         turns = 0
         failed_signatures: dict[str, int] = {}
         format_repairs = 0
+        seen_call_ids = set()
+        control = getattr(self, "execution_control", None)
         while turns < allowance:
             try:
                 if self.campaign_budget is None:
@@ -505,6 +506,8 @@ class CompetitionModel:
                 else:
                     self.campaign_budget.check_time(stage)
                 response = self._request(messages, stage=stage, tools=schemas, max_tokens=max_tokens)
+            except ExecutionStopped as exc:
+                return {"status": "stopped", "reason": exc.reason, "turns": turns}
             except CampaignBudgetStopped as exc:
                 self._stopped_reason = exc.reason
                 return {"status": "stopped", "reason": exc.reason, "turns": turns}
@@ -518,6 +521,40 @@ class CompetitionModel:
             turns += 1
             calls = self._tool_calls(response)
             if calls:
+                # Validate the whole response before the first side effect. A
+                # disallowed later call must not partially apply an earlier one.
+                allowed = {item['function']['name'] for item in schemas}
+                parameters = {item['function']['name']: item['function']['parameters'] for item in schemas}
+                try:
+                    if control is not None:
+                        control.batch(calls)
+                    parsed = []
+                    batch_ids = set()
+                    for index, call in enumerate(calls):
+                        if (not isinstance(call.id, str) or not call.id or call.id in seen_call_ids
+                                or call.id in batch_ids or call.function.name not in allowed):
+                            raise ValueError('invalid, repeated or unexposed tool call')
+                        if len(call.function.arguments or '') > 1_000_000:
+                            raise ValueError('tool arguments exceed bounded payload')
+                        arguments = json.loads(call.function.arguments or '{}')
+                        if not isinstance(arguments, dict):
+                            raise ValueError('tool arguments must be a JSON object')
+                        validate_arguments(arguments, parameters[call.function.name])
+                        preflight = getattr(tools, 'preflight', None)
+                        if callable(preflight):
+                            preflight(call.function.name, arguments)
+                        if call.function.name == 'validate_source' and index != len(calls) - 1:
+                            raise ValueError('validation must be the last action in a batch')
+                        parsed.append(arguments)
+                        batch_ids.add(call.id)
+                    seen_call_ids.update(batch_ids)
+                except ExecutionStopped as exc:
+                    return dict(status='stopped', reason=exc.reason, turns=turns)
+                except (ValueError, TypeError, AttributeError, RecursionError) as exc:
+                    return dict(status='stopped', reason='invalid_tool_batch', detail=str(exc), turns=turns)
+                turn_before = (source_digest(snapshot_project(tools.project_dir))
+                               if control is not None and hasattr(tools, 'project_dir') else '')
+                new_evidence = False
                 remaining = self.max_tool_calls - getattr(self.session, "tool_calls_used", 0)
                 if len(calls) > remaining:
                     self._stopped_reason = "tool_call_budget"
@@ -537,18 +574,23 @@ class CompetitionModel:
                     assistant_payload["reasoning_content"] = reasoning
                 messages.append(assistant_payload)
                 results = []
-                for call in calls:
+                for call, args in zip(calls, parsed):
                     name = call.function.name
                     self.session.tool_calls_used = getattr(self.session, "tool_calls_used", 0) + 1
                     try:
-                        args = json.loads(call.function.arguments or "{}")
-                        if not isinstance(args, dict):
-                            raise ValueError("tool arguments must be a JSON object")
                         if mode in {"design", "audit"} and name not in _READ_ONLY_TOOLS | {"read_context", "list_context"}:
                             raise ValueError("this stage is read-only")
                         result = self._call_tool(tools, name, args, packet, stage)
                         self._remember_project_source(name, args, result, packet)
+                        if control is not None:
+                            observed = hashlib.sha256((name + result).encode('utf-8')).hexdigest()
+                            evidence = getattr(self, '_execution_evidence', set())
+                            new_evidence |= name in _READ_ONLY_TOOLS | {'read_context', 'list_context'} and observed not in evidence
+                            evidence.add(observed)
+                            self._execution_evidence = evidence
                         failed_signatures.pop(name + ":" + json.dumps(args, sort_keys=True), None)
+                    except ExecutionStopped as exc:
+                        return dict(status='stopped', reason=exc.reason, turns=turns)
                     except Exception as exc:
                         logging.warning('MODEL_TOOL_ERROR %s',json.dumps({'tool':name,'error_type':type(exc).__name__,'detail':str(exc)[:800]}))
                         signature = name + ":" + str(getattr(call.function, "arguments", ""))
@@ -560,6 +602,12 @@ class CompetitionModel:
                                     "turns": turns, "tool": name}
                     results.append({"role": "tool", "tool_call_id": call.id, "content": result})
                 messages.extend(results)
+                if control is not None:
+                    after = source_digest(snapshot_project(tools.project_dir)) if hasattr(tools, 'project_dir') else ''
+                    try:
+                        control.observe(turn_before, after, new_evidence=new_evidence)
+                    except ExecutionStopped as exc:
+                        return dict(status='stopped', reason=exc.reason, turns=turns)
                 if getattr(self,'_completion_tool_choice',None)=='none':
                     return {'status':'complete','turns':turns,'summary':'Agent requested validation and static checks passed; functional acceptance remains pending.','changed_paths':[]}
                 if not self._check_context(messages, schemas, stage, packet, max_tokens):
@@ -586,6 +634,14 @@ class CompetitionModel:
                         "raw": content[:MAX_TOOL_RESULT_CHARS]}
             if not isinstance(value, dict):
                 return {"status": "stopped", "reason": "invalid_json_shape", "turns": turns}
+            if value.get('status') in {'failed', 'stopped', 'incomplete'}:
+                return dict(status='stopped', reason='model_incomplete', turns=turns)
+            if control is not None and mode == 'implement':
+                state = source_digest(control.source(tools.project_dir)) if hasattr(tools, 'project_dir') else ''
+                try:
+                    control.observe(state, state)
+                except ExecutionStopped as exc:
+                    return dict(status='stopped', reason=exc.reason, turns=turns)
             value["status"] = "complete"
             value["turns"] = turns
             return value

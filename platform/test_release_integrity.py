@@ -16,7 +16,7 @@ class ReleaseIntegrityTests(unittest.TestCase):
         self.package = self.root / "platform-agent"
         shutil.copytree(check_release.PACKAGE, self.package,
                         ignore=shutil.ignore_patterns("__pycache__", "build", "*.egg-info"))
-        shutil.copyfile(check_release.ROOT / "freeze-v13.json", self.root / "freeze-v13.json")
+        shutil.copyfile(check_release.ROOT / "release-v14.json", self.root / "release-v14.json")
         for attribute, value in (("ROOT", self.root), ("PACKAGE", self.package)):
             context = patch.object(check_release, attribute, value)
             context.start()
@@ -28,7 +28,7 @@ class ReleaseIntegrityTests(unittest.TestCase):
             target = self.package / name
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text("installation artifact\n", encoding="utf-8")
-        self.assertEqual(len(check_release.verify()["files"]), 43)
+        self.assertEqual(len(check_release.verify()["files"]), 44)
 
     def test_an_unlisted_application_source_is_still_rejected(self):
         (self.package / "agent" / "unexpected.py").write_text("pass\n", encoding="utf-8")

@@ -6,7 +6,7 @@ Environment knobs (all optional, validated, never read from .env files):
   ARC_MAX_INPUT_TOKENS     per-request input bound reserved before each call (also the context window)
   ARC_REQUEST_LIMIT, ARC_TOOL_LIMIT, ARC_MAX_OUTPUT_TOKENS
   ARC_IMPLEMENT_REQUESTS, ARC_REPAIR_REQUESTS, ARC_REVIEW_REQUESTS, ARC_PACKET_CHARS, ARC_CONTEXT_CHARS
-  ARC_RUNTIME_CHECK (0/1), ARC_RUNTIME_ROUNDS, ARC_RUNTIME_SECONDS, ARC_RUNTIME_TEST_TIMEOUT_MS
+  ARC_RUNTIME_CHECK (0/1), ARC_BEHAVIOR_CHECK (0/1), ARC_RUNTIME_ROUNDS, ARC_RUNTIME_SECONDS, ARC_RUNTIME_TEST_TIMEOUT_MS
 """
 from __future__ import annotations
 
@@ -62,6 +62,7 @@ class PlatformSettings:
     context_chars: int = 48_000
     request_limit: int = 400
     runtime_check: bool = True
+    behavior_check: bool = True
     runtime_rounds: int = 4
     runtime_seconds: int = 3_600
     runtime_test_timeout_ms: int = 10_000
@@ -156,6 +157,8 @@ class PlatformSettings:
             values["context_chars"] = context_chars
         if "ARC_RUNTIME_CHECK" in environ:
             values["runtime_check"] = _parse_flag("ARC_RUNTIME_CHECK", environ["ARC_RUNTIME_CHECK"])
+        if "ARC_BEHAVIOR_CHECK" in environ:
+            values["behavior_check"] = _parse_flag("ARC_BEHAVIOR_CHECK", environ["ARC_BEHAVIOR_CHECK"])
         runtime_rounds = _optional_int(environ, "ARC_RUNTIME_ROUNDS")
         if runtime_rounds is not None:
             values["runtime_rounds"] = runtime_rounds

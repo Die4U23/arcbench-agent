@@ -4,8 +4,8 @@ No application command is executed by the model in the credential-bearing
 generator process. The only editable filesystem is the output application.
 The default requirements-only policy withholds evaluation tests. The explicit
 provided_tests compatibility policy can run supplied tests on a scratch copy
-and return their failures for bounded repair. The program carries no suite of
-its own; the delivered project never receives build output.
+and return their failures for bounded repair. Requirements-only generation can
+freeze its own bounded diagnostics; the delivered project receives no build output.
 """
 from __future__ import annotations
 import argparse
@@ -31,6 +31,7 @@ from .model_transport import ModelRequestInterrupted
 from .competition_context import assemble_context, build_work_plan, global_contract_schema
 from .llm import ModelClient
 from .platform_acceptance import triage
+from . import behavior_checks
 from .platform_inputs import bundle_kwargs, resolve_task_inputs
 from .platform_runtime_check import api_failures, failure_payload, run_runtime_check, runtime_log_fields, safe_rmtree
 from .platform_scaffold import SCAFFOLD_GUIDE, has_full_scaffold, is_scaffold, prepare_scaffold
@@ -411,7 +412,9 @@ class PlatformGenerationModel(CompetitionModel):
                         'behavior remains, and close this step once its required behavior is complete. '
                         'Never skip a requirement or report an unimplemented behavior as covered.')
             else:
-                state['instruction'] = 'Return a valid complete plan within this allowance; use supplied observations before requesting more reads.'
+                state['instruction'] = ('Return the requested read-only diagnostic JSON within this allowance; '
+                    'use supplied observations before requesting more reads.' if decision['mode'] == 'audit' else
+                    'Return a valid complete plan within this allowance; use supplied observations before requesting more reads.')
             messages = args[0] if args else kwargs['messages']
             messages.append(dict(role='user', content=json.dumps(state, ensure_ascii=False)))
             if not self._check_context(messages, kwargs['tools'], kwargs['stage'], decision['packet'], kwargs['max_tokens']):
@@ -583,6 +586,41 @@ class PlatformGenerationModel(CompetitionModel):
             if error.reason in {'rollback_failed', 'concurrent_source_change'}:
                 raise
             return dict(status='stopped', reason=error.reason, turns=self.execution_control.requests - started_requests)
+
+    def author_behavior_checks(self, packet, tools, ir, request_allowance):
+        """Read-only authoring shares all request, token and protocol limits."""
+        started = self.execution_control.requests
+        try:
+            instructions = behavior_checks.INSTRUCTIONS
+            messages = self._messages(packet, 'behavior_diagnostics', instructions)
+            messages.append(dict(role='user', content='PUBLIC REQUIREMENT BINDINGS\n' + json.dumps(
+                [{key: row.get(key) for key in ('id', 'name', 'text')} for row in ir.get('work_items', [])],
+                ensure_ascii=False)))
+            return self._run(packet, tools, stage='competition_audit', mode='audit',
+                instructions=instructions, max_tokens=self.output_reserve_tokens,
+                request_allowance=request_allowance, initial_messages=messages,
+                final_validator=lambda value: behavior_checks.validate_plan(value, ir))
+        except ExecutionStopped as error:
+            if error.reason in {'rollback_failed', 'concurrent_source_change'}:
+                raise
+            return dict(status='stopped', reason=error.reason, turns=self.execution_control.requests - started)
+
+    def reserve_behavior_steps(self, count):
+        """Charge the entire bounded journey before execution; never refund on failure."""
+        if type(count) is not int or not 1 <= count <= behavior_checks.MAX_TOTAL_STEPS:
+            raise ValueError('invalid browser step reservation')
+        control = self.execution_control
+        control.check()
+        if control.tools + count > control.limits.tools:
+            control.stop('execution_tool_limit')
+        used = getattr(self.session, 'tool_calls_used', 0)
+        if used + count > self.max_tool_calls:
+            control.stop('execution_tool_limit')
+        if self.campaign_budget is not None:
+            self.campaign_budget.record_tools('competition_audit', count)
+        control.tools += count
+        self.session.tool_calls_used = used + count
+        self._append_log(dict(event='behavior_step_reservation', count=count, total_tools=control.tools))
 
     def _messages(self, packet, stage, instructions):
         instructions += (
@@ -934,7 +972,9 @@ def verification_summary(project, ir, static, runtime, *, input_policy, source_s
                                     complete=not missing, proves_behavior=False),
         runtime_diagnostics=dict(status=runtime.get('final_status'), skipped=runtime.get('skipped'),
             stopped=runtime.get('stopped'), rounds=len(runtime.get('rounds') or []),
-            scope='build_and_http' if input_policy == 'requirements_only' else 'supplied_tests_and_runtime'),
+            scope=('build_http_and_authored_diagnostics' if runtime.get('authored_checks') else 'build_and_http')
+                if input_policy == 'requirements_only' else 'supplied_tests_and_runtime',
+            authored_checks=runtime.get('authored_checks')),
         formal_behavior=dict(status='UNRUN', evaluated_cases=None, passed_cases=None))
 
 
@@ -1114,14 +1154,12 @@ def walkthrough_feedback(tests_dir):
 
 
 def run_runtime_loop(app, tests_dir, settings, *, model, tools, make_packet, record, validate, task_id, report_path, ir,
-                     model_calls_allowed=lambda: True):
+                     model_calls_allowed=lambda: True, authored_checks=None):
     """Check, repair and re-check the project on a scratch copy.
 
-    The only browser suite is a tests directory supplied with this task.
-    The program does not compile or store a suite. With no supplied tests,
-    the check is HTTP probes. Rank is (checks ran, input passed, compiled
-    passed, authored passed, probe passed, fewer failures); compiled and
-    authored stay at zero unless a supplied suite reports them.
+    An optional controller-frozen authored suite contains public-requirement
+    diagnostics only. Otherwise, without supplied tests this is HTTP probes.
+    Authored failures are fallible observations, never official acceptance.
     A full tie keeps the later round. A worse rank restores the best snapshot. A missing browser does not
     count as skipped: probe failures are repaired, and otherwise one coverage review runs before stopping.
     """
@@ -1137,6 +1175,9 @@ def run_runtime_loop(app, tests_dir, settings, *, model, tools, make_packet, rec
     cache = Path(tempfile.gettempdir())/PLAYWRIGHT_CACHE_NAME
     best = None
     installed_manifests = None
+    if authored_checks:
+        report['authored_checks'] = dict(scope='synthetic_diagnostics_only', hashes=authored_checks['hashes'],
+            cases=authored_checks['cases'], frozen=True)
 
     def write_report():
         if report.get('stopped') == 'unavailable_after_review':
@@ -1169,11 +1210,28 @@ def run_runtime_loop(app, tests_dir, settings, *, model, tools, make_packet, rec
             remaining = deadline - monotonic()
             if remaining < RUNTIME_MIN_SECONDS:
                 report['stopped'] = 'wall_budget'
+                if best is not None:
+                    restore_best(report['rounds'][-1], 'restored_before_unrun_check')
                 break
+            if authored_checks and not behavior_checks.verify_frozen(authored_checks['directory'], authored_checks['hashes']):
+                report['stopped'] = 'authored_suite_changed'
+                report['final_status'] = 'unverified'
+                best = None
+                break
+            if authored_checks and hasattr(model, 'reserve_behavior_steps'):
+                try:
+                    model.reserve_behavior_steps(sum(len(case['steps']) for case in authored_checks['plan']['cases']))
+                except (ExecutionStopped, CampaignBudgetStopped) as stop:
+                    report['stopped'] = stop.reason
+                    if best is not None:
+                        restore_best(report['rounds'][-1], 'restored_before_unrun_check')
+                    break
             try:
                 manifests = manifest_digests(snapshot_project(app))
                 sync_project_copy(app, copy_dir, installed_manifests=installed_manifests)
                 suites = [('input', Path(tests_dir))] if tests_dir is not None else []
+                if authored_checks:
+                    suites.append(('authored', Path(authored_checks['directory'])))
                 result = run_runtime_check(copy_dir, None, suites=suites, work_dir=check_dir, playwright_cache=cache,
                                            deadline=deadline, timeouts=dict(test=settings.runtime_test_timeout_ms / 1000))
             except Exception as error:  # the optional check must never discard a static-valid delivery
@@ -1183,6 +1241,11 @@ def run_runtime_loop(app, tests_dir, settings, *, model, tools, make_packet, rec
                 logging.warning('PLATFORM_RUNTIME_CHECK %s', json.dumps(dict(task_id=task_id, **entry)))
                 restore_best(entry, 'restored_best' if best is not None and number > 1 else 'skipped')
                 report['stopped'] = 'harness_error'
+                break
+            if authored_checks and not behavior_checks.verify_frozen(authored_checks['directory'], authored_checks['hashes']):
+                report['stopped'] = 'authored_suite_changed'
+                report['final_status'] = 'unverified'
+                best = None
                 break
             install_ok = not (result.status == 'install_failed' or (result.status == 'timeout' and result.stage == 'install'))
             installed_manifests = manifests if install_ok else None
@@ -1222,6 +1285,14 @@ def run_runtime_loop(app, tests_dir, settings, *, model, tools, make_packet, rec
                 break
             rank = candidate_rank(result)
             feedback = repair_feedback(result)
+            if authored_checks:
+                feedback += ('\nAUTHOR DIAGNOSTIC BOUNDARY: These frozen journeys were generated from public '
+                    'requirements and may contain wrong selectors or assumptions. Reconcile each failure with '
+                    'its quoted requirement and current source before editing. Fix only independently evidenced '
+                    'requirement violations; do not alter the suite, invent behavior, add test-specific branches '
+                    'or treat a passing journey as full acceptance. If the diagnostic is wrong, leave the '
+                    'application faithful to requirements and report the limitation.\n' +
+                    json.dumps(authored_checks['plan'], ensure_ascii=False))
             if best is None or rank >= best['rank']:
                 best = dict(rank=rank, round=number, status=result.status, files=snapshot_project(app),
                             feedback=feedback)
@@ -1479,12 +1550,16 @@ def generate(args):
         stopped['status'] = 'stopped'
         stopped['reason'] = 'coverage_incomplete'
         return stopped
+    author_allowance = (min(behavior_checks.AUTHOR_REQUESTS, review_request_budget(len(ir.get('work_items') or [])))
+        if settings.behavior_check and settings.runtime_check and not include_tests
+        and hasattr(model, 'author_behavior_checks') else 0)
+
     def review_batches(completed_steps):
         current = load_task_ir(app, ir)
         items = {item['id']: item for item in current.get('work_items') or []
                  if isinstance(item, dict) and isinstance(item.get('id'), str)}
         schedule = review_schedule(current, completed_steps, planning_evidence(app, list(items)),
-                                   review_request_budget(len(items)), settings.review_request_allowance)
+                                   max(0, review_request_budget(len(items)) - author_allowance), settings.review_request_allowance)
         audit = dict(claim_scope='source_review_only', source_claims_are_verified=False,
                      groups=[dict(group, status='pending') for group in schedule],
                      unscheduled_requirement_ids=sorted(set(items) - {
@@ -1564,6 +1639,26 @@ def generate(args):
         review_batches(result.get('completed_steps') or [])
     if result.get('status')!='complete':
         logging.warning('Delivering structurally valid candidate after bounded generation stopped: %s; functional acceptance remains UNVERIFIED',result.get('reason'))
+    authored = None
+    author_audit = dict(status='not_run', scope='synthetic_diagnostics_only', formal_acceptance=False,
+                        request_allowance=author_allowance)
+    if author_allowance and budget_open():
+        public_ir = load_task_ir(app, ir)
+        authored_result = model.author_behavior_checks(packet(all_ids), tools, public_ir, author_allowance)
+        record('behavior_author', 'public-requirements', authored_result, optional=True)
+        author_audit.update(status=authored_result.get('status'), reason=authored_result.get('reason'),
+                            requests_used=authored_result.get('turns', 0))
+        if authored_result.get('status') == 'complete':
+            plan = {'cases': authored_result.get('cases')}
+            directory = reports / 'authored-checks'
+            try:
+                hashes = behavior_checks.freeze_plan(plan, public_ir, directory)
+            except (ValueError, OSError) as error:
+                author_audit.update(status='invalid', reason=str(error)[:500])
+            else:
+                authored = dict(directory=directory, hashes=hashes, plan=plan, cases=len(plan['cases']))
+                author_audit.update(hashes=hashes, cases=len(plan['cases']), status='frozen')
+    (reports/'behavior-author.json').write_text(json.dumps(author_audit, ensure_ascii=False, indent=2), encoding='utf-8')
     runtime_report = dict(task_id=task, enabled=settings.runtime_check, skipped=None, rounds=[], final_status=None)
     if not settings.runtime_check:
         runtime_report['skipped'] = 'disabled_by_settings'
@@ -1580,7 +1675,8 @@ def generate(args):
     else:
         runtime_report = run_runtime_loop(app, inputs.tests_dir, settings, model=model, tools=tools,
             make_packet=lambda: packet(all_ids), record=record, validate=validate, task_id=task,
-            report_path=reports/'runtime-check.json', ir=load_task_ir(app, ir), model_calls_allowed=budget_open)
+            report_path=reports/'runtime-check.json', ir=load_task_ir(app, ir), model_calls_allowed=budget_open,
+            authored_checks=authored)
         final = validate()
         (reports/'static-validation.json').write_text(json.dumps(final,indent=2),encoding='utf-8')
         if not final['passed']:

@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "version": "v14-cohesive-review-candidate",
+  "version": "v14-behavior-diagnostics-candidate",
   "formal_status": "UNRUN",
   "baseline_tag": "platform-v13-20261104",
   "issue": "https://github.com/Die4U23/arcbench-agent/issues/44",
@@ -8,6 +8,10 @@
     "agent/__init__.py": {
       "sha256": "e8ad470aa7495346ede1d0694e1275a0e74140f25d5707f47a77d4f2131f9a09",
       "bytes": 45
+    },
+    "agent/behavior_checks.py": {
+      "sha256": "19a8cdcba1d33355bc8f02605dbc4e6c349d787fe303b17561f19a2e3cf1bace",
+      "bytes": 10774
     },
     "agent/campaign_budget.py": {
       "sha256": "3063ced79a8990ed473011dca417a2339981bd44bba810ccc230901a0c6bcbc2",
@@ -50,8 +54,8 @@
       "bytes": 17986
     },
     "agent/platform_generation.py": {
-      "sha256": "bcca5ba917611ba9ad90a23bec017af89928338f72d99e197529213705d19e55",
-      "bytes": 100416
+      "sha256": "903d546dea4a008c61a795549fadee97dc5e0e72a5bc179141d8737794a8468e",
+      "bytes": 106835
     },
     "agent/platform_inputs.py": {
       "sha256": "234e1c59b6e3f5b6a8ebb0cda3b7abf8639851c158b7105a454ec58d19f89c71",
@@ -70,8 +74,8 @@
       "bytes": 16904
     },
     "agent/platform_settings.py": {
-      "sha256": "db888d45567f917791cb61682a163a7d427570343c23be34b420efc3c756f781",
-      "bytes": 9683
+      "sha256": "b4c3eed5fa46d1f4f1a52a15939b53b867a81fc7f93af8e74c9640df9a6b48f9",
+      "bytes": 9889
     },
     "agent/platform_static.py": {
       "sha256": "f0905a03b0cd0706279cfdbe2522d14807954fe2a1b973f522e1d56c492b0f30",
@@ -109,13 +113,13 @@
       "sha256": "1ab536bfabe0a33a40775704fae6855c9ce0bd0aea1bff51108de6d060870173",
       "bytes": 637
     },
-    "arcbench-agent-runtime/pyproject.toml": {
-      "sha256": "b732703057936e13cec7665ef4249af35cc1315b0951d23ee1009dfe5f8fbdf0",
-      "bytes": 462
-    },
     "arcbench-agent-runtime/README.md": {
       "sha256": "50fc91e6672cd979f9933120d2cffce51bbaaa085b0931ab37d2b358463c4cff",
       "bytes": 1267
+    },
+    "arcbench-agent-runtime/pyproject.toml": {
+      "sha256": "b732703057936e13cec7665ef4249af35cc1315b0951d23ee1009dfe5f8fbdf0",
+      "bytes": 462
     },
     "arcbench-agent-runtime/src/arcbench_agent_runtime/__init__.py": {
       "sha256": "1a2f616e29a143a7f67acbc61029af70225564e9b1067db1f451dc6b879dbaef",
@@ -153,18 +157,6 @@
       "sha256": "cc1c3785dd493e5e363db68f2fa57e532986ceeeb48c736c7990ac9992859f42",
       "bytes": 98
     },
-    "static-tools/babelBundle.cjs": {
-      "sha256": "071434ae2d67478e70fa554d3609f8e1c0a3d23f3477a64a45638f7e4948cd9f",
-      "bytes": 2901525
-    },
-    "static-tools/interaction-scope.cjs": {
-      "sha256": "9aee2e2769509350a33c0a20f5ffdeece4b2d77a2690cf23fb7524c0360962ae",
-      "bytes": 16647
-    },
-    "static-tools/parse-source.cjs": {
-      "sha256": "b700a6cd553de5c55cfae9f790f224bd24f2a12e4686434fb54ec8fa16326f85",
-      "bytes": 3409
-    },
     "static-tools/PLAYWRIGHT-LICENSE": {
       "sha256": "45873d00a0dd243596deb4aa23b2493b3d1f0671921bf2538ea431d7380220eb",
       "bytes": 11601
@@ -176,6 +168,18 @@
     "static-tools/ThirdPartyNotices.txt": {
       "sha256": "b17ac0bd6f4b8207e440639cc8e0ba1bf1d9eaf9b12236764ab93b346c7abd8e",
       "bytes": 705
+    },
+    "static-tools/babelBundle.cjs": {
+      "sha256": "071434ae2d67478e70fa554d3609f8e1c0a3d23f3477a64a45638f7e4948cd9f",
+      "bytes": 2901525
+    },
+    "static-tools/interaction-scope.cjs": {
+      "sha256": "9aee2e2769509350a33c0a20f5ffdeece4b2d77a2690cf23fb7524c0360962ae",
+      "bytes": 16647
+    },
+    "static-tools/parse-source.cjs": {
+      "sha256": "b700a6cd553de5c55cfae9f790f224bd24f2a12e4686434fb54ec8fa16326f85",
+      "bytes": 3409
     },
     "tools/platform_module_closure.py": {
       "sha256": "48b2c42f8bb1b5f6bad3effa526b2c84e3cc4cdfdd0020835069a0d8c53901d8",

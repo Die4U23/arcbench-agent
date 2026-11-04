@@ -113,6 +113,7 @@ class RunControl:
         self.actions = Counter()
         self.states = Counter()
         self.expected_sources = {}
+        self.plan_progress = None
 
     def stop(self, reason):
         if self.stopped is None:
@@ -313,6 +314,7 @@ class PlanExecutor:
 
         try:
             while True:
+                self.control.plan_progress = None
                 self.control.check()
                 if remaining() < 2:
                     return result('stopped', 'request_allowance')
@@ -336,6 +338,14 @@ class PlanExecutor:
                     if remaining() <= 0:
                         return result('stopped', 'request_allowance')
                     plan[index]['status'] = 'running'
+                    self.control.plan_progress = dict(
+                        revision=len(history), current_step=step.id,
+                        remaining_steps=len(steps) - index,
+                        remaining_requirement_count=len(pending),
+                        completed_step_ids=[item['id'] for item in completed],
+                        remaining_steps_summary=[dict(id=item.id,
+                            requirement_ids=list(item.requirement_ids),
+                            depends_on=list(item.depends_on)) for item in steps[index:]])
                     checkpoint = SourceTransaction(self.tools, self.control)
                     try:
                         outcome = self.executor(step, min(self.control.limits.step_requests, remaining()))
@@ -368,3 +378,5 @@ class PlanExecutor:
                 feedback = json.dumps(failed, ensure_ascii=False)
         except ExecutionStopped as error:
             return result('stopped', error.reason)
+        finally:
+            self.control.plan_progress = None

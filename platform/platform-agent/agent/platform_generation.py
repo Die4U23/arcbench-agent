@@ -146,6 +146,18 @@ class PlatformTokenBudget:
                 and self.state['requests'] < self.state['request_limit']
                 and self.state['used'] + self.config.max_input_tokens + max_output <= self.state['limit'])
 
+    def decision_capacity(self, max_output):
+        """Advisory measured runway; admission still reserves the full bound."""
+        reserve = self.config.max_input_tokens + max_output
+        spendable = max(0, self.state['limit'] - self.state['used'] - reserve)
+        peak = self.state.get('peak_request_tokens')
+        estimate = (min(self.state['request_limit'] - self.state['requests'],
+                        1 + spendable // max(1, peak))) if type(peak) is int else None
+        return dict(tokens_after_next_reservation=spendable,
+                    observed_peak_request_tokens=peak,
+                    affordable_requests_estimate=estimate if self.can_request(max_output) else 0,
+                    estimate_is_guarantee=False)
+
     def settle(self, identity, usage):
         pending = self.state['pending']
         if not pending or pending['id'] != identity:
@@ -158,6 +170,7 @@ class PlatformTokenBudget:
             self.freeze(identity, 'usage_unknown_or_out_of_bounds')
             raise CampaignBudgetStopped('usage_unknown_or_out_of_bounds')
         self.state['used'] += prompt + completion
+        self.state['peak_request_tokens'] = max(self.state.get('peak_request_tokens', 0), prompt + completion)
         self.state['pending'] = None
         self._save()
         logging.info('PLATFORM_TOKEN_BUDGET %s', json.dumps(self.state, sort_keys=True))
@@ -371,6 +384,14 @@ class PlatformGenerationModel(CompetitionModel):
             if isinstance(ledger, dict):
                 state.update(tokens_remaining=ledger['limit']-ledger['used'],
                              next_request_reserve=self.campaign_budget.config.max_input_tokens+kwargs['max_tokens'])
+            capacity = getattr(self.campaign_budget, 'decision_capacity', None)
+            if capacity is not None:
+                state.update(capacity(kwargs['max_tokens']))
+            if control.plan_progress is not None:
+                state['plan_progress'] = control.plan_progress
+                estimate = state.get('affordable_requests_estimate')
+                if estimate is not None:
+                    state['requests_per_remaining_step_estimate'] = max(0, estimate - 2) // control.plan_progress['remaining_steps']
             if decision['mode'] == 'implement':
                 state['instruction'] = (
                     'This is the LAST permitted request. Batch necessary edits, explicit update_coverage claims, '
@@ -382,6 +403,13 @@ class PlatformGenerationModel(CompetitionModel):
                     'Complete the current step within this allowance. Batch independent edits, reuse supplied '
                     'source, and reserve the final requests for coverage and validation. Establish a runnable '
                     'checkpoint early; do not polish before completing required behavior.')
+                if control.plan_progress is not None:
+                    state['instruction'] += (
+                        ' Account for ALL remaining steps in plan_progress. The measured request estimate '
+                        'is advisory and can shrink as source grows; preserve room for integration and review. '
+                        'Batch related source edits and coverage updates, avoid cosmetic passes while required '
+                        'behavior remains, and close this step once its required behavior is complete. '
+                        'Never skip a requirement or report an unimplemented behavior as covered.')
             else:
                 state['instruction'] = 'Return a valid complete plan within this allowance; use supplied observations before requesting more reads.'
             messages = args[0] if args else kwargs['messages']

@@ -26,7 +26,7 @@ FORBIDDEN_IMPORTS = (
 class PlatformSettingsTests(unittest.TestCase):
     def test_defaults_match_current_platform_constants(self):
         settings = PlatformSettings()
-        self.assertEqual(settings.allowed_models, ("deepseek-flash", "deepseek-v4-flash"))
+        self.assertIsNone(settings.allowed_models)
         self.assertEqual(
             settings.model_aliases,
             (frozenset({"deepseek-flash", "deepseek-v4-flash", "deepseek-v4.1-flash-1017"}),),
@@ -49,7 +49,9 @@ class PlatformSettingsTests(unittest.TestCase):
         self.assertIsNone(settings.token_limit)
         self.assertTrue(model_allowed(settings, "deepseek-flash"))
         self.assertTrue(model_allowed(settings, "deepseek-v4-flash"))
-        self.assertFalse(model_allowed(settings, "deepseek-v4-pro"))
+        self.assertTrue(model_allowed(settings, "deepseek-v4-pro"))
+        self.assertTrue(model_allowed(settings, "unfamiliar-model"))
+        self.assertFalse(model_allowed(settings, ""))
 
     def test_from_env_overrides(self):
         settings = PlatformSettings.from_env({

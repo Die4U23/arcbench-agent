@@ -25,6 +25,9 @@ from uuid import uuid4
 
 from .campaign_budget import CampaignBudgetStopped
 from .competition_model import CompetitionModel
+from .platform_execution import (ExecutionLimits, ExecutionStopped, PlanExecutor, ProjectLease, RunControl,
+                                 SourceTransaction, source_digest)
+from .model_transport import ModelRequestInterrupted
 from .competition_context import assemble_context, build_work_plan, global_contract_schema
 from .llm import ModelClient
 from .platform_acceptance import triage
@@ -41,8 +44,11 @@ from .tools import ProjectTools
 
 WHOLE_TASK_PREFIX = 'SOURCE_COMPLETENESS: ALL_TEXT_SOURCES_INCLUDED\n'
 PARTIAL_TASK_PREFIX = 'SOURCE_COMPLETENESS: PARTIAL_READ_OMITTED_RANGES\n'
-BUDGET_STOP_REASONS = {'platform_token_allocation', 'platform_request_allocation', 'request_allowance', 'context_limit'}
-ALLOCATION_STOP_REASONS = {'platform_token_allocation', 'platform_request_allocation'}
+EXECUTION_STOP_REASONS = {'execution_deadline', 'execution_request_limit', 'execution_tool_limit',
+    'tool_batch_limit', 'repeated_action', 'source_oscillation', 'no_progress', 'replan_limit',
+    'request_interrupted_usage_unknown', 'model_request_failed'}
+BUDGET_STOP_REASONS = EXECUTION_STOP_REASONS | {'platform_token_allocation', 'platform_request_allocation', 'request_allowance', 'context_limit'}
+ALLOCATION_STOP_REASONS = EXECUTION_STOP_REASONS | {'platform_token_allocation', 'platform_request_allocation'}
 MIN_BATCH_REQUESTS = 4
 RUNTIME_MIN_SECONDS = 60
 RUNTIME_REPAIR_MIN_SECONDS = 300
@@ -57,7 +63,7 @@ WALKTHROUGH_INSTRUCTIONS = (
     'unique, an unscoped page.getByRole, page.getByText, or page.getByLabel matches one element at that moment, '
     'so do not repeat a navigation name in the page body; '
     'contained, if a helper filters a navigation or region with .filter({ has: ... }), the target is inside that container; '
-    'anonymous, if the test never calls a sign-in helper, the page and the API must allow the action with no session; '
+    'authentication, infer session requirements from the supplied specification and setup evidence; missing sign-in calls alone do not prove anonymous access; '
     'after the action, the heading, list, or region the test expects is visible, and it is still visible after reload. '
     'Apply source edits for every miss. If nothing is wrong, list each checked file and write "no change".'
 )
@@ -171,7 +177,19 @@ class StaticProjectTools(ProjectTools):
         """Reopen edits for the next batch or repair round after a passing static check sealed them."""
         self._sealed=False
 
+    def preflight(self, name, arguments):
+        if name in {'write_files', 'replace_text'}:
+            paths = ([item['path'] for item in arguments['files']] if name == 'write_files' else [arguments['path']])
+            for path in paths:
+                target = self._resolve(path)
+                relative = target.relative_to(self.project_dir).as_posix()
+                if (relative == 'docs/task-ir.json' or relative.split('/')[0] in {'requirements', 'tests'}
+                        or target.name in {'package-lock.json', 'pnpm-lock.yaml', 'yarn.lock'}
+                        or (self._fixed_deploy and relative == 'deploy.sh')):
+                    raise ValueError('Protected input or launcher is immutable')
+
     def call(self, name, arguments):
+        self.preflight(name, arguments)
         if name in {'write_files','replace_text'} and getattr(self,'_sealed',False):
             raise ValueError('Source validation passed; this stage is sealed and further edits are forbidden')
         logging.info('PLATFORM_TOOL %s',json.dumps(dict(name=name,paths=[item.get('path') for item in arguments.get('files',[]) if isinstance(item,dict)] or [arguments.get('path') or arguments.get('resource')]),ensure_ascii=False))
@@ -187,76 +205,174 @@ class StaticProjectTools(ProjectTools):
             return json.dumps(self._validation_result)
         if name in {'run_project_script', 'run_project_scripts'}:
             raise ValueError('The official platform owns build/test execution after source generation')
-        paths = ([item.get('path','') for item in arguments.get('files',[]) if isinstance(item,dict)]
-                 if name=='write_files' else [arguments.get('path','')] if name=='replace_text' else [])
-        if self._fixed_deploy and any(self._resolve(path)==self.project_dir/'deploy.sh' for path in paths):
-            raise ValueError('Generic deploy.sh is already provided and immutable; implement package build/start scripts and initialize declared seed data during server startup')
-        if any(Path(path).name in {'package-lock.json','pnpm-lock.yaml','yarn.lock'} for path in paths):
-            raise ValueError('Dependency lockfiles are retained unchanged; use existing dependencies')
-        if any(Path(path).parts and Path(path).parts[0]=='requirements' for path in paths):
-            raise ValueError('The platform requirement mirror is immutable')
         return super().call(name, arguments)
 
 
 class PlatformGenerationModel(CompetitionModel):
-    def implement(self, packet, tools, **kwargs):
-        # Every implement call (batch, static repair, runtime repair) starts with
-        # an open tool choice; a passing validate_source closes only that call.
-        self._completion_tool_choice='auto'
-        self._whole_task_visible = packet.text.startswith(WHOLE_TASK_PREFIX)
+    def __init__(self, *args, execution_mode='react', execution_limits=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        if execution_mode not in {'react', 'plan_execute'}:
+            raise ValueError('execution_mode must be react or plan_execute')
+        self.execution_mode = execution_mode
+        self.execution_control = RunControl(execution_limits, emit=self._append_log)
+
+    def _request(self, *args, **kwargs):
+        control = self.execution_control
+        control.request()
+        client = getattr(self.session, 'client', None)
+        deadline = getattr(client, 'deadline_seconds', None)
+        bounded = isinstance(deadline, (int, float))
+        if bounded:
+            client.deadline_seconds = min(deadline, max(0.001, control.deadline - control.clock()))
         try:
-            return super().implement(packet,tools,**kwargs)
+            response = super()._request(*args, **kwargs)
+            control.check()
+            if response is None:
+                control.stop(self._stopped_reason or 'invalid_response')
+            return response
+        except ModelRequestInterrupted:
+            control.stop('request_interrupted_usage_unknown')
+        except (CampaignBudgetStopped, ExecutionStopped):
+            raise
+        except Exception:
+            control.stop('model_request_failed')
         finally:
-            self._completion_tool_choice='auto'
+            if bounded:
+                client.deadline_seconds = deadline
+
+    def _react(self, packet, tools, **kwargs):
+        self.execution_control.check()
+        checkpoint = SourceTransaction(tools, self.execution_control)
+        started_requests = self.execution_control.requests
+        self._completion_tool_choice = 'auto'
+        if hasattr(tools, 'unseal'):
+            tools.unseal()
+        try:
+            result = super().implement(packet, tools, **kwargs)
+            result['turns'] = self.execution_control.requests - started_requests
+            self.execution_control.check()
+            if result.get('status') == 'complete':
+                validation = json.loads(tools.call('validate_source', {}))
+                result['validation'] = validation
+                if not validation.get('passed'):
+                    result.update(status='stopped', reason='static_validation_failed')
+            if result.get('status') == 'complete':
+                checkpoint.commit()
+            else:
+                checkpoint.rollback()
+            return result
+        except BaseException:
+            checkpoint.rollback()
+            raise
+        finally:
+            self._completion_tool_choice = 'auto'
+
+    def implement(self, packet, tools, *, feedback=None, request_allowance=None):
+        allowance = self.request_allowance if request_allowance is None else request_allowance
+        if type(allowance) is not int or allowance < 0:
+            raise ValueError('request allowance must be a nonnegative integer')
+        control = self.execution_control
+        started_requests = control.requests
+        try:
+            control.check()
+            if self.execution_mode == 'react':
+                return self._react(packet, tools, feedback=feedback, request_allowance=allowance)
+            requirements = list(self._manifest(packet).get('requirement_ids', []))
+
+            def planner(pending, completed, failure, budget):
+                instructions = (
+                    'Plan the supplied task from its actual requirements and current project. '
+                    'Inspect as needed using read-only tools. Return JSON with steps: each step has '
+                    'id, goal, requirement_ids, depends_on, acceptance. IDs must be unique; dependencies '
+                    'must form a DAG. Cover every pending requirement using only its supplied ID. '
+                    'Each step must leave structurally valid source. Acceptance is a proposed condition, '
+                    'not a claim that a behavior has passed. Do not invent business workflows, accounts '
+                    'or routes. Respect successful earlier work. Return only the bounded plan.')
+                context = json.dumps(dict(pending_requirement_ids=pending, completed_steps=completed,
+                                          feedback=failure, max_steps=control.limits.plan_steps), ensure_ascii=False)
+                messages = self._messages(packet, 'plan', instructions)
+                messages.append(dict(role='user', content=context))
+                return self._run(packet, tools, stage='competition_implementation', mode='design',
+                    instructions=instructions, max_tokens=self.output_reserve_tokens,
+                    request_allowance=budget, initial_messages=messages)
+
+            def execute(step, budget):
+                current = source_digest(snapshot_project(tools.project_dir))
+                instruction = json.dumps(dict(step=vars(step), current_source_sha256=current,
+                    controller_feedback=feedback, note='Execute this step; read current files before relying on stale source from the original packet. Preserve completed steps.'), ensure_ascii=False)
+                return self._react(packet, tools, feedback=instruction, request_allowance=budget)
+
+            runner = PlanExecutor(control, tools, planner, execute,
+                                  lambda: json.loads(tools.call('validate_source', {})))
+            result = runner.run(requirements, allowance, feedback)
+            if result.get('reason') in {'rollback_failed', 'concurrent_source_change'}:
+                raise ExecutionStopped(result['reason'])
+            return result
+        except ExecutionStopped as error:
+            if error.reason in {'rollback_failed', 'concurrent_source_change'}:
+                raise
+            return dict(status='stopped', reason=error.reason, turns=control.requests - started_requests)
 
     def review_sources(self, packet, tools, **kwargs):
-        return self.implement(packet, tools, **kwargs)
+        # A review is a bounded ReAct pass, not another nested planning tree.
+        started_requests = self.execution_control.requests
+        try:
+            return self._react(packet, tools, **kwargs)
+        except ExecutionStopped as error:
+            if error.reason in {'rollback_failed', 'concurrent_source_change'}:
+                raise
+            return dict(status='stopped', reason=error.reason, turns=self.execution_control.requests - started_requests)
 
     def _messages(self, packet, stage, instructions):
-        if getattr(self,'_whole_task_visible',False):
-            instructions=instructions.replace('Inspect before editing. ','').replace('Use list_context to discover omitted source. ','')
-        instructions += ('\nComplete source contents supplied in the initial message count as inspection. '
-                         'SOURCE application/ is a display namespace, not a directory inside the project. '
-                         'All edit-tool paths are project-relative: SOURCE application/src/App.jsx means path src/App.jsx. '
-                         'When all text sources are included, only edit tools are exposed: use that source '
-                         'and the exact contents of your own previous edits. Do not request repeated reads. '
-                         'Write 4-8 complete related files per write_files batch when possible, within the output limit. '
-                         'For existing files prefer replace_text using the shortest unique old_text span; batch independent edits in the same request. '
-                         'Avoid a separate model request for each small file; include its related modules in one batch. '
-                         'Before validate_source, walk every supplied requirement and its tests and confirm each one is covered: '
-                         'the quoted locator, the container a helper filters, whether the test signs in, and the state after the action. '
-                         'A passing static check only means syntax and imports. Do not return completion JSON until that walk is done. '
-                         'Then call validate_source once. Fix only its concrete errors if any. '
-                         'The orchestrator then builds, starts and runs the public tests on a copy and returns '
-                         'concrete failures if a repair round is needed. Do not continue speculative polishing.')
-        return super()._messages(packet,stage,instructions)
+        instructions += (
+            '\nSOURCE application/ is a display namespace; edit paths are project-relative. '
+            'Supplied source is an initial observation and may be stale after prior steps. '
+            'Read current files when necessary. Choose edit scope from dependencies and output limits. '
+            'Use observed tool results to decide the next action. Repeating unchanged reads, identical '
+            'failures or oscillating edits will stop execution. Preserve requirements and tests. '
+            'A passing static check establishes structural validity only; behavioral acceptance is separate.')
+        return super()._messages(packet, stage, instructions)
 
     def _tool_schemas(self, mode):
-        schemas=[item for item in super()._tool_schemas(mode)
-                 if item['function']['name'] not in {'run_project_script', 'run_project_scripts'}]
-        if mode=='implement' and getattr(self,'_whole_task_visible',False):
-            schemas=[item for item in schemas if item['function']['name'] in {'write_files','replace_text'}]
-        if mode=='implement':
-            schemas.append({'type':'function','function':{'name':'validate_source','description':'After completing all required implementation, check syntax, relative imports and seed files without executing application code. When this passes, deliver immediately; it is not a behavioral test.','parameters':{'type':'object','properties':{},'additionalProperties':False}}})
+        schemas = [item for item in super()._tool_schemas(mode)
+                   if item['function']['name'] not in {'run_project_script', 'run_project_scripts'}]
+        if mode == 'implement':
+            schemas.append({'type': 'function', 'function': {'name': 'validate_source',
+                'description': 'Check source structure without executing the application. This ends the current implementation step when successful, not formal acceptance.',
+                'parameters': {'type': 'object', 'properties': {}, 'additionalProperties': False}}})
         return schemas
 
     def _call_tool(self, tools, name, arguments, packet, stage):
+        control = self.execution_control
+        state = source_digest(control.source(tools.project_dir)) if hasattr(tools, 'project_dir') else ''
+        control.action(name, arguments, state)
+        checkpoint = SourceTransaction(tools, control) if name in {'write_files', 'replace_text'} else None
         try:
-            if getattr(self,'_whole_task_visible',False) and name not in {'write_files','replace_text','validate_source'}:
-                raise ValueError('All editable source is already supplied; use write_files, replace_text or validate_source only')
-            result=tools.call(name,arguments) if name=='validate_source' else super()._call_tool(tools,name,arguments,packet,stage)
-        except Exception as error:
-            logging.warning('PLATFORM_TOOL_FAILURE %s',json.dumps(dict(name=name,error_type=type(error).__name__,detail=str(error)[:800])))
+            result = (tools.call(name, arguments) if name == 'validate_source'
+                      else super()._call_tool(tools, name, arguments, packet, stage))
+            if checkpoint:
+                control.source(tools.project_dir, changed_by_controller=True)
+            control.check()
+            if checkpoint:
+                checkpoint.commit()
+        except BaseException:
+            if checkpoint:
+                # A tool may have failed after writing only part of its batch.
+                # The controller owns that batch; restore it before any next action.
+                control.source(tools.project_dir, changed_by_controller=True)
+                checkpoint.rollback()
             raise
-        if name=='validate_source' and json.loads(result).get('passed'):
-            self._completion_tool_choice='none'
+        self._append_log(dict(event='react_observation', tool=name, source_sha256=state,
+                              result_sha256=hashlib.sha256(result.encode('utf-8')).hexdigest()))
+        if name == 'validate_source' and json.loads(result).get('passed'):
+            self._completion_tool_choice = 'none'
         return result
 
 
 PLATFORM_CONTRACT = {
     'delivery': 'Generate a complete runnable application. The official platform builds and evaluates it after this process exits. No local test pass is claimed.',
     'workspace': 'Inspect the actual supplied project layout and retain its conventions. A root package with src/server is valid, as are frontend/backend packages. Backend must serve the built frontend and bind 0.0.0.0 at process.env.PORT or 3000. Preserve working package locks and dependencies.',
-    'commands': 'Provide build/start package scripts. The platform is fresh: node_modules are NOT preinstalled. A root deploy.sh must install declared dependencies including build-time devDependencies before building, initialize declared SEED once per fresh storage, and exec the server honoring HOST/PORT. Do not require Docker. Prefer standard Vite/React build tooling; every ES module must declare/import its own identifiers. A const in another file is not a shared global.',
+    'commands': 'Provide build/start package scripts. The platform is fresh: node_modules are NOT preinstalled. A root deploy.sh must install declared dependencies including build-time devDependencies before building, initialize declared SEED once per fresh storage, and exec the server honoring HOST/PORT. Do not require Docker. Use the supplied project toolchain; every ES module must declare/import its own identifiers. A const in another file is not a shared global.',
     'scaffold': ('If the generic scaffold is already supplied (root package.json with build/start scripts, deploy.sh, '
                  'server/index.js, server/store.js, server/seed.js, server/routes/index.js, seed/README.md, index.html, '
                  'vite.config.js, src/main.jsx, src/App.jsx, src/api.js), retain deploy.sh byte-for-byte and do not write it: '
@@ -275,7 +391,7 @@ PLATFORM_CONTRACT = {
                         'parsed UI elements, or scenarios. Mark an item covered or partial only by editing '
                         'docs/coverage.json. A completion message does not mark coverage. GET /api/health stays '
                         'available and returns 200.'),
-    'interaction_review': 'Review exact accessible names and locator scopes from the supplied tests AND shared helpers before delivery. For a strict single-element action/assertion, ensure exactly one matching element in its actual scope: page-level locators search the combined shared header/navigation and current route, while region/dialog locators search that region/dialog. A link-or-button union must also identify one target in that scope. Retain required accessible names and distinguish optional secondary controls semantically when the task allows it; do not change tests or add first/nth selection to hide ambiguity. The same name in separate routes or separately scoped regions is not automatically a conflict. Check prerequisite navigation and login before downstream task flows. Icon-only controls keep their names when labels are hidden. Prefer accessible in-page confirmation over native confirm. Preserve navigation/filter state across reload where required; restore it before the first render and do not overwrite it with defaults in a startup effect. These are general interaction constraints, not permission to seed CREATED records.',
+    'interaction_review': 'Review exact accessible names and locator scopes from the supplied tests AND shared helpers before delivery. For a strict single-element action/assertion, ensure exactly one matching element in its actual scope: page-level locators search the combined shared header/navigation and current route, while region/dialog locators search that region/dialog. A link-or-button union must also identify one target in that scope. Retain required accessible names and distinguish optional secondary controls semantically when the task allows it; do not change tests or add first/nth selection to hide ambiguity. The same name in separate routes or separately scoped regions is not automatically a conflict. Check prerequisite navigation and login before downstream task flows. Icon-only controls keep their names when labels are hidden. Follow the specified confirmation behavior. Preserve navigation/filter state across reload where required; restore it before the first render and do not overwrite it with defaults in a startup effect. These are general interaction constraints, not permission to seed CREATED records.',
     'generation': ('Application commands are unavailable to the model: write complete source and perform code review. '
                    'After each delivery the orchestrator independently installs, builds and starts a copy of the project. '
                    'When this task supplies tests, it runs those tests and returns concrete failures for a bounded repair round. '
@@ -584,6 +700,9 @@ def run_runtime_loop(app, tests_dir, settings, *, model, tools, make_packet, rec
                   best_round=None, stopped=None, wall_budget_seconds=settings.runtime_seconds, max_rounds=settings.runtime_rounds,
                   repair_minimum_seconds=repair_minimum_seconds(settings))
     deadline = monotonic() + settings.runtime_seconds
+    control = getattr(model, 'execution_control', None)
+    if control is not None:
+        deadline = min(deadline, control.deadline)
     work_root = Path(tempfile.mkdtemp(prefix='arc-runtime-'))
     copy_dir, check_dir = work_root/'project', work_root/'check'
     cache = Path(tempfile.gettempdir())/PLAYWRIGHT_CACHE_NAME
@@ -607,11 +726,14 @@ def run_runtime_loop(app, tests_dir, settings, *, model, tools, make_packet, rec
             if best is not None and restore_snapshot(app, best['files']):
                 tools.source_revision += 1
                 tools.unseal()
+                if control is not None:
+                    control.source(app, changed_by_controller=True)
             entry['action'] = action
         except Exception as error:  # delivery continues; main() re-validates the project afterwards
             entry['action'] = 'restore_failed'
             entry['restore_error'] = f'{type(error).__name__}: {str(error)[:300]}'
             logging.warning('PLATFORM_RUNTIME_RESTORE_FAILED %s', json.dumps(dict(task_id=task_id, **entry), ensure_ascii=False))
+            raise RuntimeError('Rollback failed; refusing further edits or delivery') from error
 
     try:
         for number in range(1, settings.runtime_rounds + 1):
@@ -724,6 +846,13 @@ def main():
     app = Path(args.output_dir).resolve()
     if root == app or root in app.parents or app in root.parents:
         raise ValueError('submission and editable project must be separate')
+    with ProjectLease(app):
+        return generate(args)
+
+
+def generate(args):
+    from arcbench_agent_runtime import AgentRuntime
+    app = Path(args.output_dir).resolve()
     settings = PlatformSettings.from_env()
     inputs = resolve_task_inputs(Path(args.requirements).resolve())
     task, req = inputs.task_id, inputs.requirement_dir
@@ -749,7 +878,7 @@ def main():
     reports = app/'.arc'/'platform-budget'/task
     reports.mkdir(parents=True, exist_ok=True)
     if not os.environ.get('MODEL', '').strip():
-        os.environ['MODEL'] = 'deepseek-flash'
+        raise ValueError('MODEL must be supplied explicitly by the runner')
     endpoint = os.environ.get('OPENAI_BASE_URL', '').strip()
     if endpoint and '://' not in endpoint:
         endpoint = 'https://' + endpoint.lstrip('/')
@@ -760,7 +889,8 @@ def main():
     session = ModelClient(max_tool_calls=settings.max_tool_calls)
     model = PlatformGenerationModel(session, context_window_tokens=settings.context_window_tokens,
         output_reserve_tokens=settings.max_output_tokens, request_allowance=settings.request_allowance,
-        audit_log=lambda row: append_jsonl(reports/'context.jsonl',row), campaign_budget=budget)
+        audit_log=lambda row: append_jsonl(reports/'context.jsonl',row), campaign_budget=budget,
+        execution_mode=settings.execution_mode, execution_limits=settings.execution_limits())
     tools = StaticProjectTools(app)
     tools.public_tests = inputs.tests_dir
     runtime = AgentRuntime.from_env(project_dir=str(app))
@@ -851,6 +981,12 @@ def main():
     def validate():
         return json.loads(tools.call('validate_source', {}))
     def budget_open():
+        control = getattr(model, 'execution_control', None)
+        if control is not None:
+            try:
+                control.check()
+            except ExecutionStopped:
+                return False
         return budget.state.get('stopped') is None
     def implement_until_covered(selection, identity, allowance, scope_ids):
         remaining = allowance
@@ -964,6 +1100,13 @@ def main():
         (reports/'static-validation.json').write_text(json.dumps(final,indent=2),encoding='utf-8')
         if not final['passed']:
             raise RuntimeError('Source is not ready for platform build after runtime repair: '+json.dumps(final['errors']))
+    control = getattr(model, 'execution_control', None)
+    if control is not None and control.stopped in {'rollback_failed', 'concurrent_source_change'}:
+        raise ExecutionStopped(control.stopped)
+    final = validate()
+    (reports/'static-validation.json').write_text(json.dumps(final, indent=2), encoding='utf-8')
+    if not final.get('passed'):
+        raise RuntimeError('Final delivery source is invalid after review or rollback')
     for item in work:
         for req_id in item.requirement_ids:
             if completed.get(item.id):

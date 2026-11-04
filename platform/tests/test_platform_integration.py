@@ -150,7 +150,10 @@ class ScriptedModel:
         for item in document.get("items") or []:
             if isinstance(item, dict) and item.get("status") == "missing":
                 item["status"] = "covered"
-                item["files"] = item.get("files") or ["src/App.jsx"]
+                sources = snapshot_project(Path(tools.project_dir))
+                item["files"] = item.get("files") or [
+                    next(name for name in sources if name.endswith((".jsx", ".js", ".html")))
+                ]
                 changed = True
         if changed:
             tools.call("write_files", {"files": [{"path": "docs/coverage.json", "content": json.dumps(document, indent=2) + "\n"}]})
@@ -446,6 +449,15 @@ class PlatformIntegrationTests(unittest.TestCase):
         report = self.read_report()
         self.assertEqual(report["rounds"][1]["action"], "restored_round_1")
         self.assertEqual(report["best_round"], 1)
+
+    def test_invalid_review_is_not_delivered_when_runtime_is_disabled(self):
+        model = ScriptedModel()
+        def invalid_review(packet, tools, **kwargs):
+            tools.call('write_files', {'files': [{'path': 'src/App.jsx', 'content': 'export const = ;'}]})
+            return dict(status='complete', turns=1)
+        model.review_sources = invalid_review
+        with self.assertRaisesRegex(RuntimeError, 'Interaction scope parser failed|Final delivery source is invalid'):
+            self.run_main(model, env={'ARC_RUNTIME_CHECK': '0'})
 
     def test_runtime_check_disabled_by_environment(self):
         model = ScriptedModel()

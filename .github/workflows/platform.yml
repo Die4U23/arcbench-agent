@@ -1,4 +1,4 @@
-name: Platform v13
+name: Platform generator
 
 on:
   pull_request:
@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   platform-regression:
-    name: Platform v13 frozen source and browser regression
+    name: Platform generator frozen source and browser regression
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
@@ -36,15 +36,15 @@ jobs:
           npm install --prefix "$cache_dir" --no-audit --no-fund --ignore-scripts @playwright/test@1.64.1
           node "$cache_dir/node_modules/@playwright/test/cli.js" install --with-deps chromium
       - name: Verify frozen source and round-trip package
-        run: python platform/check_release.py --output "${{ runner.temp }}/platform-agent-v13.zip"
+        run: python platform/check_release.py --output "${{ runner.temp }}/platform-agent-v14.zip"
       - name: Run full regression including required runtime checks
         run: python platform/run_tests.py --require-runtime
       - name: Archive package and test summary
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: platform-v13-${{ github.sha }}
+          name: platform-${{ github.sha }}
           path: |
-            ${{ runner.temp }}/platform-agent-v13.zip
+            ${{ runner.temp }}/platform-agent-v14.zip
             platform/test-results/summary.json
           if-no-files-found: error

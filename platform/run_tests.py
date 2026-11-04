@@ -1,4 +1,4 @@
-"""Run the complete v13 regression and report unexpected skipped checks."""
+"""Run the complete platform regression and report unexpected skipped checks."""
 from __future__ import annotations
 
 import argparse
@@ -34,8 +34,8 @@ def main() -> int:
     suite.addTests(loader.loadTestsFromName("test_platform_generation"))
     suite.addTests(loader.loadTestsFromName("test_release_integrity"))
     count = suite.countTestCases()
-    if count < 145:
-        raise RuntimeError(f"Incomplete release test collection: {count} < 145")
+    if count < 173:
+        raise RuntimeError(f"Incomplete release test collection: {count} < 173")
     with patch("openai.AsyncOpenAI", side_effect=forbidden_model_client), patch(
         "openai.OpenAI", side_effect=forbidden_model_client
     ):

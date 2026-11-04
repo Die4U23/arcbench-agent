@@ -1,45 +1,36 @@
-# v13 平台生成器冻结基线
+# 通用平台生成器 v14
 
-2026-11-04 冻结的开发基线。入口为 `platform-agent/main.py`，本目录包含完整源码、合成回归夹具和打包校验工具。正式平台状态为 **UNRUN**；该名称不表示 v13 已获得平台通过成绩。
+当前开发版本实现 ReAct 与 Plan-and-Execute、步骤回滚和跨阶段共享的执行限制，跟踪 [issue #44](https://github.com/Die4U23/arcbench-agent/issues/44)。正式平台状态仍为 **UNRUN**；离线脚本化模型与浏览器夹具不能替代真实模型效果或平台成绩。
 
-源码来自交接指定的 `platform-source-agent-v13.zip`，原 ZIP SHA-256 为 `4b21eec9d88c08ca69813125092dafdcfdb8aa3f1615784fabdcf033fd78fe45`，668,904 字节、43 个成员。Linux CI 发现浏览器扫描访问不可读的 `/root/.cache/ms-playwright` 会失败，因此冻结基线包含一项权限兼容修复：跳过不可访问的候选目录，继续发现可用浏览器。42 个成员与原包逐字节一致，唯一变化为 `agent/platform_runtime_check.py`。`freeze-v13.json` 记录当前哈希、该文件的原始哈希及修复原因；原始源码另以 `platform-v13-original-20261104` 标签存档。Git 属性关闭源码目录的换行转换。
+已验证的 v13 基线保留在标签 `platform-v13-20261104`，交接原包在 `platform-v13-original-20261104`。本目录继续开发 v14；历史 `freeze-v13.json` 不改写，当前发布校验使用 `release-v14.json`。两个版本的包不能混用。
 
-## 执行行为
+## 运行方式
 
-- 任务输入来自本次需求目录及其附带的 `tests/`，没有附带测试时只做 HTTP 探测。发布包不包含任务注册表或公开任务测试集。
-- 空应用目录才写通用脚手架；已有应用保持原布局。生成器写入 `docs/task-ir.json` 和 `docs/coverage.json`，覆盖缺项回送实现阶段。
-- token 默认额度根据场景、工作项、实体数计算，限制在 150 万到 600 万之间，`ARC_TOKEN_LIMIT` 可覆盖。预算账本保留独占创建，位于生成应用 `.arc/platform-budget/`。
-- 默认每批审核 4 次，所有批次合计 `min(64, 8 + 工作项数)`。运行时检查在临时副本执行，退化候选恢复为已保留的较好快照。
-- `compile_checks` 和 `author_tests` 虽作为兼容模块存在，但不接入生成交付循环。合成回归会单独测试这些组件，不能把它们当成本次任务的验收套件。
-- Python 依赖不固定 Playwright，避免替换 Runner 镜像里的版本。测试 CI 单独安装匹配的 Node Playwright/Chromium，它们不进入发布包。
+入口为 `platform-agent/main.py`。Runner 必须显式提供 `MODEL`、`OPENAI_BASE_URL` 和 `OPENAI_API_KEY`；默认不限制具体模型名称，部署方可设置 `ARC_ALLOWED_MODELS`。额度、HTTPS 端点约束、未知 usage 停止以及预算账本独占创建继续生效。
 
-## 复现离线回归
+`ARC_EXECUTION_MODE=plan_execute` 为默认模式：只读规划、校验依赖、按步骤运行 ReAct、验证后提交步骤、失败回滚并有限重规划。设置 `ARC_EXECUTION_MODE=react` 可直接使用行动—观察循环。源码阅读按需要开放，动作和下一步由本次需求及观察结果决定。
 
-在仓库根目录准备 Python 3.12.6 和 `.nvmrc` 指定的 Node，然后在 `platform/platform-agent` 中安装 `requirements.txt`，以正确解析本地 Runtime SDK 路径。之后返回仓库根目录：
+计划、实现、覆盖复查、运行时修复共享同一 RunControl，不能通过换阶段或回滚重置资源限制。源码回滚不退还 token、请求、工具次数或时间。执行状态与必要的计划/观察摘要写入 `.arc/platform-budget/<task>/context.jsonl` 和 `actions.json`；不依赖模型自述推断通过。
+
+模型只能操作允许的源码工具。原始需求、附带测试及控制器创建的任务 IR 不可写。只有输入任务附带测试时才运行那些测试；没有测试时只做 HTTP 探测。兼容的测试编译模块不接入生成交付路径。
+
+详细状态、预算和回滚边界见 [EXECUTION.md](EXECUTION.md)。
+
+## 离线验证与打包
+
+准备仓库指定的 Python/Node，在 `platform/platform-agent` 安装 `requirements.txt`，再回到仓库根目录：
 
 ```text
 python platform/check_release.py
 python platform/run_tests.py --require-runtime
 ```
 
-测试工具需要匹配的 `@playwright/test` 与 Chromium。CI 将 `@playwright/test@1.64.1` 装到系统临时目录的 `arc-runtime-check-playwright-cache`，再运行它的 `cli.js install --with-deps chromium`。本地若浏览器路径环境变量指向不存在的目录，先清除该变量。
-
-完整集合至少 145 项：原始回归 139 项，另有冻结完整性回归 3 项和浏览器目录权限回归 3 项。测试入口禁止构造外部模型客户端，写出 `test-results/summary.json`；`--require-runtime` 使浏览器、Node 或安装失败引起的跳过变成非零退出。唯一允许的跳过是没有随包携带的公开任务输入检查。合成应用启动、npm 公共依赖准备和 localhost 浏览器测试不会调用付费模型。
-
-本地冻结验证统计与 CI 证据说明见 [版本记录](../docs/releases/platform-v13-20261104.md)。
-
-## 重建与完整性
+浏览器夹具使用临时目录的 `arc-runtime-check-playwright-cache`，安装 `@playwright/test@1.64.1` 及其匹配 Chromium。Linux CI 还安装系统浏览器依赖。统一测试入口禁止外部模型客户端，检查实际收集数量，并拒绝除 `no public inputs in working copy` 之外的任何跳过。报告在 `platform/test-results/summary.json`。
 
 ```text
-python platform/check_release.py --output /absolute/new/path/platform-agent-v13.zip
+python platform/check_release.py --output /absolute/new/path/platform-agent-v14.zip
 ```
 
-工具先检查成员集合和逐文件哈希，再扫描任务知识泄漏，最后生成并回读 ZIP。SDK 安装生成的 `arcbench-agent-runtime/build/`、其 `src/arcbench_agent_runtime.egg-info/` 及 Python 字节码缓存不属于发布内容；其他新增源码仍会被拒绝。输出路径必须不存在。重建 ZIP 使用固定时间和 STORE 压缩策略，成员字节以当前冻结 manifest 为准。修复版 ZIP SHA-256 为 `7901dae71ab8051a8f9d802493e6fb78b68b982d362a4fb2cfd3918c22478557`，不可将它与原始 v13 包混用。
+该工具按当前 manifest 验证成员集合、文件大小与哈希，扫描任务专用内容，再生成并回读规范化 ZIP。SDK 安装生成的 build/、egg-info 和 Python 缓存不属于发布输入，其他未列出的源码会被拒绝。修改源码后应审查变更并更新 v14 manifest；不得移动历史冻结标签。
 
-后续大改应从本次合并与 `platform-v13-20261104` 标签建立新分支。改源码后冻结校验会失败，这是预期行为；新版本应更新自己的 manifest、版本记录和 CI 名称，保留该标签用于回退。根目录的历史 Agent 与旧测试继续由原 CI 验证。
-
-## 已知边界
-
-v12 的 17/35 是另一次平台运行，不能归给 v13。当前没有 v13 的正式成绩，Runner 对生成阶段安装、联网、浏览器和时限的支持仍需正式环境确认。IR 只解析认识的需求字段；未识别结构降级到原始需求。旧 `ModelClient.implement` 保留了入口不走的潜伏引用，本冻结未清扫或重新启用该路径。真实平台调用和上传仍需单独安排。
-
-第三方 Runtime SDK、Playwright 静态工具的来源及许可证保留在源码对应目录。项目提交以维护者个人身份记录。
+根目录历史 Agent 仍使用独立 Python/Docker CI，不能用其通过结果宣称新执行器或正式平台验收通过。第三方来源及许可证保留。

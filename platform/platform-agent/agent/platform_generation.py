@@ -1233,6 +1233,8 @@ def run_runtime_loop(app, tests_dir, settings, *, model, tools, make_packet, rec
 
     def restore_best(entry, action):
         nonlocal checked_source
+        if control is not None:
+            control.source(app)  # Detect external edits before any restoration write.
         try:
             if best is not None and restore_snapshot(app, best['files']):
                 # Restoration requires a fresh check; historical success is not
@@ -1278,7 +1280,7 @@ def run_runtime_loop(app, tests_dir, settings, *, model, tools, make_packet, rec
                         restore_best(report['rounds'][-1], 'restored_before_unrun_check')
                     break
             try:
-                checking_files = snapshot_project(app)
+                checking_files = control.source(app) if control is not None else snapshot_project(app)
                 checking_source = source_digest(checking_files)
                 manifests = manifest_digests(checking_files)
                 del checking_files
@@ -1288,6 +1290,10 @@ def run_runtime_loop(app, tests_dir, settings, *, model, tools, make_packet, rec
                     suites.append(('authored', Path(authored_checks['directory'])))
                 result = run_runtime_check(copy_dir, None, suites=suites, work_dir=check_dir, playwright_cache=cache,
                                            deadline=deadline, timeouts=dict(test=settings.runtime_test_timeout_ms / 1000))
+                if control is not None:
+                    control.source(app)
+            except ExecutionStopped:
+                raise  # Safety stops must never become a harness error followed by rollback.
             except Exception as error:  # the optional check must never discard a static-valid delivery
                 entry = dict(round=number, status='harness_error', error=f'{type(error).__name__}: {str(error)[:300]}',
                              signals={}, diagnostics={})
@@ -1348,9 +1354,11 @@ def run_runtime_loop(app, tests_dir, settings, *, model, tools, make_packet, rec
                     'or treat a passing journey as full acceptance. If the diagnostic is wrong, leave the '
                     'application faithful to requirements and report the limitation.\n' +
                     json.dumps(authored_checks['plan'], ensure_ascii=False))
-            if best is None or rank >= best['rank']:
+            if best is None or checking_source == best['source_sha256'] or rank >= best['rank']:
+                # A fresh observation of the same candidate supersedes its
+                # historical rank, including a previously passing result.
                 best = dict(rank=rank, round=number, status=result.status, files=snapshot_project(app),
-                            feedback=feedback)
+                            feedback=feedback, source_sha256=checking_source)
             else:
                 restore_best(entry, f"restored_round_{best['round']}")
                 if checked_source is None:
@@ -1368,8 +1376,15 @@ def run_runtime_loop(app, tests_dir, settings, *, model, tools, make_packet, rec
                     review_attempted = True
                     entry['source_review'] = 'started_after_runtime_pass'
                     write_report()
-                    review_after_pass()
-                    current_source = source_digest(snapshot_project(app))
+                    original_deadline = control.deadline if control is not None else None
+                    try:
+                        if control is not None:
+                            control.deadline = min(control.deadline, deadline)
+                        review_after_pass()
+                    finally:
+                        if control is not None:
+                            control.deadline = original_deadline
+                    current_source = source_digest(control.source(app) if control is not None else snapshot_project(app))
                     changed = current_source != checked_source
                     entry['source_review'] = 'changed_recheck_required' if changed else 'unchanged'
                     write_report(current_source)

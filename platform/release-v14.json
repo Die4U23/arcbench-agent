@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "version": "v14-bounded-diagnostic-repair-candidate",
+  "version": "v14-anchored-disappearance-candidate",
   "formal_status": "UNRUN",
   "baseline_tag": "platform-v13-20261104",
   "issue": "https://github.com/Die4U23/arcbench-agent/issues/44",
@@ -10,8 +10,8 @@
       "bytes": 45
     },
     "agent/behavior_checks.py": {
-      "sha256": "8f1463b781581bc1ecc06044b9024e86204411e826e918ce26c8aec56bdf861e",
-      "bytes": 12686
+      "sha256": "be0852da22a50a92ae454436437e4b3a38c535990f77eb4130e1f6da316c0515",
+      "bytes": 13779
     },
     "agent/campaign_budget.py": {
       "sha256": "3063ced79a8990ed473011dca417a2339981bd44bba810ccc230901a0c6bcbc2",

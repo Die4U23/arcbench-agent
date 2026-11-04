@@ -15,14 +15,21 @@ ROOT = Path(__file__).resolve().parent
 PACKAGE = ROOT / "platform-agent"
 
 
+def generated_artifact(path: Path) -> bool:
+    relative = path.relative_to(PACKAGE)
+    return ("__pycache__" in relative.parts or path.suffix in {".pyc", ".pyo"}
+            or relative.as_posix().startswith((
+                "arcbench-agent-runtime/build/",
+                "arcbench-agent-runtime/src/arcbench_agent_runtime.egg-info/")))
+
+
 def verify() -> dict:
     manifest = json.loads((ROOT / "freeze-v13.json").read_text(encoding="utf-8"))
     expected = manifest["files"]
     paths = {
         path.relative_to(PACKAGE).as_posix(): path
         for path in PACKAGE.rglob("*")
-        if path.is_file() and "__pycache__" not in path.parts
-        and path.suffix not in {".pyc", ".pyo"}
+        if path.is_file() and not generated_artifact(path)
     }
     if set(paths) != set(expected):
         raise ValueError(f"Package members changed: {sorted(set(paths) ^ set(expected))}")

@@ -32,9 +32,10 @@ def main() -> int:
     loader = unittest.TestLoader()
     suite = loader.discover(str(ROOT / "tests"), pattern="test_platform_*.py")
     suite.addTests(loader.loadTestsFromName("test_platform_generation"))
+    suite.addTests(loader.loadTestsFromName("test_release_integrity"))
     count = suite.countTestCases()
-    if count < 139:
-        raise RuntimeError(f"Incomplete release test collection: {count} < 139")
+    if count < 142:
+        raise RuntimeError(f"Incomplete release test collection: {count} < 142")
     with patch("openai.AsyncOpenAI", side_effect=forbidden_model_client), patch(
         "openai.OpenAI", side_effect=forbidden_model_client
     ):

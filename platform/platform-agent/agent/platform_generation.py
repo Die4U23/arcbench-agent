@@ -378,8 +378,12 @@ class PlatformGenerationModel(CompetitionModel):
         decision = getattr(self, '_decision_stage', None)
         if decision:
             remaining = max(0, decision['allowance'] - (control.requests - decision['started_requests']))
+            tool_remaining = max(0, min(control.limits.tools - control.tools,
+                self.max_tool_calls - getattr(self.session, 'tool_calls_used', 0)))
             state = dict(kind='controller_decision_state', requests_remaining_including_this=remaining,
                          total_requests=control.requests, total_tools=control.tools,
+                         tool_calls_remaining=tool_remaining,
+                         tool_calls_per_response_limit=min(control.limits.batch_tools, tool_remaining),
                          phase='finish' if decision['mode'] == 'implement' and remaining <= 3 else 'execute')
             ledger = getattr(self.campaign_budget, 'state', None)
             if isinstance(ledger, dict):
@@ -422,6 +426,10 @@ class PlatformGenerationModel(CompetitionModel):
                 state['instruction'] = ('Return the requested read-only diagnostic JSON within this allowance; '
                     'use supplied observations before requesting more reads.' if decision['mode'] == 'audit' else
                     'Return a valid complete plan within this allowance; use supplied observations before requesting more reads.')
+            state['instruction'] += (
+                ' Each response must stay within tool_calls_per_response_limit, including the final '
+                'request; group related edits using the tools within their individual schemas. '
+                'All other shared budgets still apply. Do not assume a final request permits an oversized batch.')
             messages = args[0] if args else kwargs['messages']
             messages.append(dict(role='user', content=json.dumps(state, ensure_ascii=False)))
             if not self._check_context(messages, kwargs['tools'], kwargs['stage'], decision['packet'], kwargs['max_tokens']):

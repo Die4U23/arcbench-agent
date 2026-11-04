@@ -1,0 +1,201 @@
+{
+  "method": "offline repeated successful list_files calls without writes; no provider request",
+  "scenarios": {
+    "run_cap_only": {
+      "idle_limit": 50,
+      "requests": 24,
+      "cumulative_prompt_chars": 181209,
+      "stop_reason": "model_request_budget",
+      "samples": [
+        {
+          "request": 1,
+          "prompt_chars": 4811,
+          "cumulative_prompt_chars": 4811
+        },
+        {
+          "request": 2,
+          "prompt_chars": 5046,
+          "cumulative_prompt_chars": 9857
+        },
+        {
+          "request": 3,
+          "prompt_chars": 5281,
+          "cumulative_prompt_chars": 15138
+        },
+        {
+          "request": 4,
+          "prompt_chars": 5516,
+          "cumulative_prompt_chars": 20654
+        },
+        {
+          "request": 5,
+          "prompt_chars": 5751,
+          "cumulative_prompt_chars": 26405
+        },
+        {
+          "request": 6,
+          "prompt_chars": 5986,
+          "cumulative_prompt_chars": 32391
+        },
+        {
+          "request": 7,
+          "prompt_chars": 6221,
+          "cumulative_prompt_chars": 38612
+        },
+        {
+          "request": 8,
+          "prompt_chars": 6456,
+          "cumulative_prompt_chars": 45068
+        },
+        {
+          "request": 9,
+          "prompt_chars": 6691,
+          "cumulative_prompt_chars": 51759
+        },
+        {
+          "request": 10,
+          "prompt_chars": 6926,
+          "cumulative_prompt_chars": 58685
+        },
+        {
+          "request": 11,
+          "prompt_chars": 7163,
+          "cumulative_prompt_chars": 65848
+        },
+        {
+          "request": 12,
+          "prompt_chars": 7400,
+          "cumulative_prompt_chars": 73248
+        },
+        {
+          "request": 13,
+          "prompt_chars": 7637,
+          "cumulative_prompt_chars": 80885
+        },
+        {
+          "request": 14,
+          "prompt_chars": 7874,
+          "cumulative_prompt_chars": 88759
+        },
+        {
+          "request": 15,
+          "prompt_chars": 8111,
+          "cumulative_prompt_chars": 96870
+        },
+        {
+          "request": 16,
+          "prompt_chars": 8348,
+          "cumulative_prompt_chars": 105218
+        },
+        {
+          "request": 17,
+          "prompt_chars": 8585,
+          "cumulative_prompt_chars": 113803
+        },
+        {
+          "request": 18,
+          "prompt_chars": 8822,
+          "cumulative_prompt_chars": 122625
+        },
+        {
+          "request": 19,
+          "prompt_chars": 9059,
+          "cumulative_prompt_chars": 131684
+        },
+        {
+          "request": 20,
+          "prompt_chars": 9296,
+          "cumulative_prompt_chars": 140980
+        },
+        {
+          "request": 21,
+          "prompt_chars": 9533,
+          "cumulative_prompt_chars": 150513
+        },
+        {
+          "request": 22,
+          "prompt_chars": 9995,
+          "cumulative_prompt_chars": 160508
+        },
+        {
+          "request": 23,
+          "prompt_chars": 10232,
+          "cumulative_prompt_chars": 170740
+        },
+        {
+          "request": 24,
+          "prompt_chars": 10469,
+          "cumulative_prompt_chars": 181209
+        }
+      ]
+    },
+    "idle_guard": {
+      "idle_limit": 12,
+      "requests": 12,
+      "cumulative_prompt_chars": 74604,
+      "stop_reason": "no_progress_tool_turn_limit",
+      "samples": [
+        {
+          "request": 1,
+          "prompt_chars": 4811,
+          "cumulative_prompt_chars": 4811
+        },
+        {
+          "request": 2,
+          "prompt_chars": 5046,
+          "cumulative_prompt_chars": 9857
+        },
+        {
+          "request": 3,
+          "prompt_chars": 5281,
+          "cumulative_prompt_chars": 15138
+        },
+        {
+          "request": 4,
+          "prompt_chars": 5516,
+          "cumulative_prompt_chars": 20654
+        },
+        {
+          "request": 5,
+          "prompt_chars": 5751,
+          "cumulative_prompt_chars": 26405
+        },
+        {
+          "request": 6,
+          "prompt_chars": 5986,
+          "cumulative_prompt_chars": 32391
+        },
+        {
+          "request": 7,
+          "prompt_chars": 6447,
+          "cumulative_prompt_chars": 38838
+        },
+        {
+          "request": 8,
+          "prompt_chars": 6682,
+          "cumulative_prompt_chars": 45520
+        },
+        {
+          "request": 9,
+          "prompt_chars": 6917,
+          "cumulative_prompt_chars": 52437
+        },
+        {
+          "request": 10,
+          "prompt_chars": 7152,
+          "cumulative_prompt_chars": 59589
+        },
+        {
+          "request": 11,
+          "prompt_chars": 7389,
+          "cumulative_prompt_chars": 66978
+        },
+        {
+          "request": 12,
+          "prompt_chars": 7626,
+          "cumulative_prompt_chars": 74604
+        }
+      ]
+    }
+  }
+}

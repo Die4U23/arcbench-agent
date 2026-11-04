@@ -19,7 +19,7 @@
 - **可观察的上下文复用**：稳定消息前缀、连续工具轮次、有界历史压缩，以及服务商返回的缓存命中/未命中计数。不保证缓存命中。
 - **隔离生成代码执行**：生成的脚本与浏览器在短生命周期的离线 Linux 容器中运行，使用经审查的依赖缓存，不静默回退到宿主机。
 
-设计背景：[需求文档](docs/PRD.md) · [技术选型](docs/TECH_SELECTION.md)。
+设计背景：[需求文档](docs/PRD.md) · [技术选型](docs/TECH_SELECTION.md) · [性能方法](docs/PERFORMANCE_REPORT.md)。
 
 ## 架构
 
@@ -115,6 +115,19 @@ Railway Ticket Booking Demo 在 [提交 35128ac54f45](https://arc-bench.com/play
 
 这是一次冻结提交的成功记录，**不是当前 main 的重跑成绩，也不是通用任务完成率**。交付前本地自测仍有失败，恢复可交付候选后才通过正式验收；冻结包中的需求节点追踪也未完整回填。后续追踪、隔离和其他修复不能直接继承这次成绩。归档中的 99.44% 仅代表稳定请求片段，不是整轮缓存命中率。
 
+### 历史离线回放：停止重复失败的工具调用
+
+2026-09-28 的确定性归档实验持续返回相同的文件缺失错误。旧流程耗尽 24 次请求额度；重复失败保护在第 3 次请求后停止。
+
+| 回放 | 模拟请求数 | 累计序列化提示字符 |
+| --- | ---: | ---: |
+| 加入保护前 | 24 | 185,070 |
+| 重复失败保护 | 3 | 14,758 |
+
+[![重复工具失败的历史离线回放：旧流程达到 24 次模拟请求和 185070 个累计提示字符；保护流程在 3 次请求、14758 个字符后停止。](docs/performance/stalled-tool-curve.svg)](docs/performance/stalled-tool-data.json)
+
+折线图使用**假模型响应和序列化字符数，不是服务商 token**。它展示停止策略，不代表任务成功、实测 API 节省、耗时或缓存命中率。基线标为 `pre-stall-70b3c36.zip`，保护版本仅标为 `arc_agent`，没有固定提交号。这是历史证据，不是当前 main 基准。[原始数据](docs/performance/stalled-tool-data.json) · [方法与其他曲线](docs/PERFORMANCE_REPORT.md)。
+
 ## 快速开始
 
 ### 1. 准备控制端
@@ -184,6 +197,7 @@ CI 为可信测试样例安装 Chromium；独立 Docker 任务设置 `ARCBENCH_R
 ## 当前边界
 
 - 正式归档成绩覆盖一个任务的特定冻结包，尚无已建立的多任务完成率或受控 Claude Code 对照。
+- 离线字符曲线不能证明真实 token、缓存、耗时或成本提升。
 - 离线 npm 缓存只支持经审查的精确版本，不支持任意联网安装依赖。
 - Docker 是实用隔离边界，不是绝对安全证明。引擎与镜像必须可信；任意宿主机或控制器崩溃后可能仍需人工清理遗留容器。
 - 生成代码能破坏其获准访问的项目文件。本地测试与报告不是防篡改证明。
@@ -203,6 +217,7 @@ sandbox/                   可信离线镜像、worker、依赖缓存
 arcbench-agent-runtime/    随仓库提供的 ARC-Bench Runtime SDK
 tests/                     Python 回归与 Docker 集成
 docs/releases/             冻结提交证据
+docs/performance/          历史回放数据与曲线
 ```
 
 ## 后续方向
@@ -215,4 +230,4 @@ docs/releases/             冻结提交证据
 
 本项目用于 **CS3604**。ARC-Bench 提供任务与评测环境，starter 提供随仓库分发的 Runtime SDK；本仓库实现 Agent 的编排与验证流程。
 
-进一步阅读：[PRD](docs/PRD.md) · [技术选型](docs/TECH_SELECTION.md) · [执行安全](docs/dev/docker-execution.md)。
+进一步阅读：[PRD](docs/PRD.md) · [技术选型](docs/TECH_SELECTION.md) · [性能报告](docs/PERFORMANCE_REPORT.md) · [执行安全](docs/dev/docker-execution.md)。

@@ -227,7 +227,7 @@ def missing_coverage(project, ir, work_ids=None):
     return missing
 
 
-def validate_source(project, tests=None):
+def validate_source(project, tests=None, *, include_test_evidence=True):
     files=snapshot_project(Path(project))
     errors=[]
     manifests=[]
@@ -278,7 +278,8 @@ def validate_source(project, tests=None):
                     if base.endswith(emitted): candidates.append(base[:-len(emitted)]+source)
             if not any(candidate in files for candidate in candidates):
                 errors.append(dict(path=row['path'],error='Missing relative import '+reference))
-    errors.extend(_interaction_errors(sources, _test_sources(project, tests)))
+    if include_test_evidence:
+        errors.extend(_interaction_errors(sources, _test_sources(project, tests)))
     errors.extend(ir_coverage_errors(project))
     if has_scaffold_seed_loader(project):
         errors.extend(validate_seeds(Path(project)))

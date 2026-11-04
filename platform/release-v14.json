@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "version": "v14-react-plan-execute",
+  "version": "v14-dependency-verification-candidate",
   "formal_status": "UNRUN",
   "baseline_tag": "platform-v13-20261104",
   "issue": "https://github.com/Die4U23/arcbench-agent/issues/44",
@@ -22,8 +22,8 @@
       "bytes": 39051
     },
     "agent/competition_model.py": {
-      "sha256": "00f88aeae7e138ed5ea4b50a68b3263ec94f07fd3c1ac9360dbe0b4dccbdbc87",
-      "bytes": 47681
+      "sha256": "c48af25d79f2f35e7eb17358ed2f9e70071d0efc08298e042fd3288bb7722ac5",
+      "bytes": 50239
     },
     "agent/execution_policy.py": {
       "sha256": "2c878bdf8766e3bcd29a1988bf29bcbcacd207c267225c95cc89f19936956e23",
@@ -46,16 +46,16 @@
       "bytes": 8946
     },
     "agent/platform_execution.py": {
-      "sha256": "27928c533990d202d5837d8fb899dfabe17563e3b19e510f76d0fa4bfd0978dc",
-      "bytes": 15049
+      "sha256": "e8e65b758b4cc2cb7e431f7f53784958fa8ce6b190965265b1ce24bd68337c57",
+      "bytes": 16695
     },
     "agent/platform_generation.py": {
-      "sha256": "8e16bb37ac362da7bc8b528d3d1ded232619479e84676a2cb3ebed8663e6b48a",
-      "bytes": 66229
+      "sha256": "628a6e7e45234405363aa7391203879304068077a3d54b73e6ee7f841bd6d920",
+      "bytes": 93599
     },
     "agent/platform_inputs.py": {
-      "sha256": "f4146b3baf1fbd77481309f18b0e3ab0df4eaba50ecc52d9d6b8f5308632667a",
-      "bytes": 7831
+      "sha256": "234e1c59b6e3f5b6a8ebb0cda3b7abf8639851c158b7105a454ec58d19f89c71",
+      "bytes": 7926
     },
     "agent/platform_runtime_check.py": {
       "sha256": "ac490dd3e14ad396cc3c30101766809ab571977a3ab6d94a91fdce161b5046aa",
@@ -70,12 +70,12 @@
       "bytes": 16904
     },
     "agent/platform_settings.py": {
-      "sha256": "a2c7e3a74319f8ec49908eab7650cc44f020a7d70ff7d50ecc54d3a69f337b93",
-      "bytes": 8748
+      "sha256": "db888d45567f917791cb61682a163a7d427570343c23be34b420efc3c756f781",
+      "bytes": 9683
     },
     "agent/platform_static.py": {
-      "sha256": "f3eeb8a60aeebc2576111f33ea5b7b92e853761e97567dad71c77cb3e3a7bef1",
-      "bytes": 14392
+      "sha256": "f0905a03b0cd0706279cfdbe2522d14807954fe2a1b973f522e1d56c492b0f30",
+      "bytes": 14457
     },
     "agent/platform_task_ir.py": {
       "sha256": "f43b69cc999f5cfa82edbe777c9fbdb539a3714c57d8e04991d98c9a5858bbe1",
@@ -98,8 +98,8 @@
       "bytes": 3319
     },
     "agent/task_bundle.py": {
-      "sha256": "b75806212247852786d0d25e18edb28915b9759c432a689329c86fc895224f78",
-      "bytes": 29401
+      "sha256": "818ba79470f22f5058a1e513a1a640e921d18d3ce7d580a7513904647c55a159",
+      "bytes": 30233
     },
     "agent/tools.py": {
       "sha256": "5c0b8f104cb05772029924c77eaf2184a6b2c4e5dbd4ff5659b9c89dd0060ce7",

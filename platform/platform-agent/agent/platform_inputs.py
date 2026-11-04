@@ -169,6 +169,7 @@ def resolve_task_inputs(
     registry: list[dict] | None = None,
     packaged_root: Path | None = None,
     default_token_limit: int | None = None,
+    include_tests: bool = True,
 ) -> TaskInputs:
     """Resolve generic platform inputs. Registry and packaged tests are ignored."""
     del registry, packaged_root
@@ -179,8 +180,8 @@ def resolve_task_inputs(
     task_name = task_name.strip() if isinstance(task_name, str) and task_name.strip() else None
     task_id = _slug(task_name or "") or "task"
 
-    tests_dir = _input_tests(requirement_dir)
-    tests_source = "input" if tests_dir is not None else "none"
+    tests_dir = _input_tests(requirement_dir) if include_tests else None
+    tests_source = ("input" if tests_dir is not None else "none") if include_tests else "withheld"
     scenario_count = _scenario_count(loaded)
     work_item_count = _work_item_count(loaded)
     entity_count = _entity_count(loaded)

@@ -27,6 +27,8 @@ _INT_BOUNDS = {
     'ARC_PLAN_REQUESTS': (1, 100),
     'ARC_STEP_REQUESTS': (1, 100),
     'ARC_REPLAN_LIMIT': (0, 10),
+    'ARC_PROTOCOL_REPAIRS': (0, 10),
+    'ARC_WORKSPACE_CONTEXT_BYTES': (0, 1000000),
     "ARC_TOKEN_LIMIT": (1, 100_000_000),
     "ARC_MAX_INPUT_TOKENS": (1, 100_000_000),
     "ARC_REQUEST_LIMIT": (1, 1_000_000),
@@ -65,6 +67,8 @@ class PlatformSettings:
     runtime_test_timeout_ms: int = 10_000
     token_limit: int | None = None
     execution_mode: str = 'plan_execute'
+    input_policy: str = 'requirements_only'
+    reasoning_effort: str | None = None
     execution_seconds: int = 3600
     tool_batch_limit: int = 16
     repeated_action_limit: int = 3
@@ -73,6 +77,8 @@ class PlatformSettings:
     plan_request_allowance: int = 4
     step_request_allowance: int = 12
     replan_limit: int = 1
+    protocol_repair_limit: int = 2
+    workspace_context_bytes: int = 200000
 
     def execution_limits(self):
         from .platform_execution import ExecutionLimits
@@ -80,11 +86,21 @@ class PlatformSettings:
             seconds=self.execution_seconds, batch_tools=self.tool_batch_limit,
             repeated_actions=self.repeated_action_limit, idle_turns=self.idle_turn_limit,
             plan_steps=self.plan_step_limit, plan_requests=self.plan_request_allowance,
-            step_requests=self.step_request_allowance, replans=self.replan_limit)
+            step_requests=self.step_request_allowance, replans=self.replan_limit,
+            protocol_repairs=self.protocol_repair_limit)
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] = os.environ) -> PlatformSettings:
         values: dict[str, object] = {}
+        policy = environ.get('ARC_INPUT_POLICY', 'requirements_only')
+        if policy not in {'requirements_only', 'provided_tests'}:
+            raise ValueError('ARC_INPUT_POLICY')
+        values['input_policy'] = policy
+        if 'ARC_REASONING_EFFORT' in environ:
+            effort = environ['ARC_REASONING_EFFORT']
+            if effort not in {'none', 'low', 'medium', 'high', 'max'}:
+                raise ValueError('ARC_REASONING_EFFORT')
+            values['reasoning_effort'] = effort
         mode = environ.get('ARC_EXECUTION_MODE', 'plan_execute')
         if mode not in {'react', 'plan_execute'}:
             raise ValueError('ARC_EXECUTION_MODE')
@@ -98,6 +114,8 @@ class PlatformSettings:
             'ARC_PLAN_REQUESTS': 'plan_request_allowance',
             'ARC_STEP_REQUESTS': 'step_request_allowance',
             'ARC_REPLAN_LIMIT': 'replan_limit',
+            'ARC_PROTOCOL_REPAIRS': 'protocol_repair_limit',
+            'ARC_WORKSPACE_CONTEXT_BYTES': 'workspace_context_bytes',
         }.items():
             value = _optional_int(environ, name)
             if value is not None:

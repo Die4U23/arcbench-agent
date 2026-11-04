@@ -33,6 +33,11 @@ Every case starts with exactly one goto; goto is forbidden at all later position
 Navigate thereafter through source-observed UI controls using click or other supported interactions.
 Use reload to check persistence at the current URL. Each case must include an interaction followed by
 a positive assertion of its result; a url step asserts the current location and does not navigate.
+For disappearance, use hidden, never count=0. The identical TARGET must first pass visible,
+then an interaction must occur before hidden. Also assert a positive resulting state after the
+interaction (for example a requirement-supported confirmation or remaining container); hidden alone
+cannot establish success. A reload clears prior presence evidence: assert visible again if needed.
+Do not invent a confirmation or expected business state.
 No assumptions about unspecified business behavior, no API shortcut for UI actions, no external URLs.
 An unsupported flow should be omitted rather than inventing an oracle. These are fallible development
 diagnostics, NOT formal acceptance or complete requirement coverage.
@@ -41,11 +46,12 @@ Step schemas (no extra fields):
 {"op":"goto","value":"/relative/path"}, {"op":"reload"},
 {"op":"click|check|uncheck","target":TARGET},
 {"op":"fill|select|press","target":TARGET,"value":"string"},
-{"op":"visible","target":TARGET},
+{"op":"visible|hidden","target":TARGET},
 {"op":"text|value","target":TARGET,"value":"expected string"},
 {"op":"count","target":TARGET,"value":positive_integer},
 {"op":"url","value":"/exact/relative/path"}.
 text uses contains-text; value uses exact input value; url checks exact relative path including query/hash.
+hidden checks that the previously visible target is now hidden or removed.
 press supports only Enter, Tab, Escape, ArrowDown, ArrowUp, Space.
 TARGET is exactly one of {"role":"role","name":"exact accessible name"}, {"label":"exact label"},
 {"text":"exact text"}, {"placeholder":"exact placeholder"}, {"css":"source-observed CSS selector"}.
@@ -152,24 +158,33 @@ def validate_plan(value, ir):
             raise ValueError('step count outside bounds')
         total += len(steps)
         last_action, last_assertion = -1, -1
+        visible_targets = {}
         for index, step in enumerate(steps):
             if not isinstance(step, dict) or not isinstance(step.get('op'), str):
                 raise ValueError('invalid step')
             op = step['op']
             keys = {'op'}
-            if op in actions | (assertions - {'url'}):
+            if op in actions | (assertions - {'url'}) | {'hidden'}:
                 keys.add('target')
             if op in {'goto', 'url', 'fill', 'select', 'press', 'text', 'value', 'count'}:
                 keys.add('value')
-            if op not in actions | assertions | {'goto', 'reload'}:
+            if op not in actions | assertions | {'goto', 'reload', 'hidden'}:
                 raise ValueError('unsupported browser operation')
             _fields(step, keys)
             if index == 0 and op != 'goto':
                 raise ValueError('journey must start with goto')
             if op == 'goto' and index:
                 raise ValueError('navigate through controls after the initial goto')
+            if op == 'reload':
+                visible_targets.clear()
             if 'target' in keys:
                 _target(step['target'])
+            if op in {'visible', 'hidden'}:
+                target = json.dumps(step['target'], sort_keys=True, ensure_ascii=False)
+                if op == 'visible':
+                    visible_targets[target] = index
+                elif not 0 <= visible_targets.get(target, -1) < last_action:
+                    raise ValueError('hidden requires the same target visible before a subsequent interaction')
             if op in {'goto', 'url'}:
                 _path(step['value'])
             elif op == 'count':
@@ -226,8 +241,8 @@ def compile_plan(plan, ir):
             elif op == 'url':
                 line = f'await expect(page).toHaveURL(new URL({arg},baseURL).href);'
             else:
-                method = {'visible': 'toBeVisible', 'text': 'toContainText', 'value': 'toHaveValue', 'count': 'toHaveCount'}[op]
-                line = f'await expect({loc}).{method}({"" if op == "visible" else arg});'
+                method = {'visible': 'toBeVisible', 'hidden': 'toBeHidden', 'text': 'toContainText', 'value': 'toHaveValue', 'count': 'toHaveCount'}[op]
+                line = f'await expect({loc}).{method}({"" if op in {"visible", "hidden"} else arg});'
             lines.append(line)
         lines.append('});')
     return '\n'.join(lines) + '\n'

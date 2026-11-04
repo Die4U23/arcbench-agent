@@ -358,7 +358,11 @@ class PlanExecutor:
                     try:
                         outcome = self.executor(step, min(self.control.limits.step_requests, remaining()))
                         self.control.check()
-                        checked = self.validator() if outcome.get('status') == 'complete' else {'passed': False}
+                        checked = {'passed': False}
+                        if outcome.get('status') == 'complete':
+                            checked = self.validator()
+                        elif isinstance(outcome.get('validation'), dict):
+                            checked = outcome['validation']
                         if outcome.get('status') != 'complete' or not checked.get('passed'):
                             checkpoint.rollback()
                             failed = dict(step=step.id, reason=outcome.get('reason') or 'static_validation_failed',

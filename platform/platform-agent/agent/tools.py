@@ -97,6 +97,8 @@ TOOL_SCHEMAS = [
             "name": "write_files",
             "description": (
                 "Write several complete related UTF-8 project files in one call. "
+                f"Each call accepts 1..{MAX_BATCH_FILES} files and at most {MAX_BATCH_CONTENT_CHARS} content characters total. "
+                "Split larger changes into multiple bounded calls; validate after the related writes. "
                 "Prefer replace_text with a small unique span for edits to existing files to avoid repeating unchanged source. "
                 "All paths and size limits are checked before writing. "
                 "Existing package.json dependencies are retained unless replaced with a newer version."

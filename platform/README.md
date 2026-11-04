@@ -2,7 +2,7 @@
 
 2026-11-04 冻结的开发基线。入口为 `platform-agent/main.py`，本目录包含完整源码、合成回归夹具和打包校验工具。正式平台状态为 **UNRUN**；该名称不表示 v13 已获得平台通过成绩。
 
-源码来自交接指定的 `platform-source-agent-v13.zip`，原 ZIP SHA-256 为 `4b21eec9d88c08ca69813125092dafdcfdb8aa3f1615784fabdcf033fd78fe45`，668,904 字节、43 个成员。`freeze-v13.json` 记录每个成员的大小和 SHA-256，`platform-agent/` 的 43 个文件与原包逐字节一致。Git 属性关闭该目录的换行转换，Windows 和 Linux 检出保持相同字节。
+源码来自交接指定的 `platform-source-agent-v13.zip`，原 ZIP SHA-256 为 `4b21eec9d88c08ca69813125092dafdcfdb8aa3f1615784fabdcf033fd78fe45`，668,904 字节、43 个成员。Linux CI 发现浏览器扫描访问不可读的 `/root/.cache/ms-playwright` 会失败，因此冻结基线包含一项权限兼容修复：跳过不可访问的候选目录，继续发现可用浏览器。42 个成员与原包逐字节一致，唯一变化为 `agent/platform_runtime_check.py`。`freeze-v13.json` 记录当前哈希、该文件的原始哈希及修复原因；原始源码另以 `platform-v13-original-20261104` 标签存档。Git 属性关闭源码目录的换行转换。
 
 ## 执行行为
 
@@ -24,7 +24,7 @@ python platform/run_tests.py --require-runtime
 
 测试工具需要匹配的 `@playwright/test` 与 Chromium。CI 将 `@playwright/test@1.64.1` 装到系统临时目录的 `arc-runtime-check-playwright-cache`，再运行它的 `cli.js install --with-deps chromium`。本地若浏览器路径环境变量指向不存在的目录，先清除该变量。
 
-完整集合至少 142 项：原始回归 139 项，另有冻结完整性回归 3 项。测试入口禁止构造外部模型客户端，写出 `test-results/summary.json`；`--require-runtime` 使浏览器、Node 或安装失败引起的跳过变成非零退出。唯一允许的跳过是没有随包携带的公开任务输入检查。合成应用启动、npm 公共依赖准备和 localhost 浏览器测试不会调用付费模型。
+完整集合至少 145 项：原始回归 139 项，另有冻结完整性回归 3 项和浏览器目录权限回归 3 项。测试入口禁止构造外部模型客户端，写出 `test-results/summary.json`；`--require-runtime` 使浏览器、Node 或安装失败引起的跳过变成非零退出。唯一允许的跳过是没有随包携带的公开任务输入检查。合成应用启动、npm 公共依赖准备和 localhost 浏览器测试不会调用付费模型。
 
 本地冻结验证统计与 CI 证据说明见 [版本记录](../docs/releases/platform-v13-20261104.md)。
 
@@ -34,7 +34,7 @@ python platform/run_tests.py --require-runtime
 python platform/check_release.py --output /absolute/new/path/platform-agent-v13.zip
 ```
 
-工具先检查成员集合和逐文件哈希，再扫描任务知识泄漏，最后生成并回读 ZIP。SDK 安装生成的 `arcbench-agent-runtime/build/`、其 `src/arcbench_agent_runtime.egg-info/` 及 Python 字节码缓存不属于发布内容；其他新增源码仍会被拒绝。输出路径必须不存在。重建 ZIP 使用固定时间和 STORE 压缩策略，所以其容器哈希与原始压缩 ZIP 不同，但 43 个成员的字节完全相同。
+工具先检查成员集合和逐文件哈希，再扫描任务知识泄漏，最后生成并回读 ZIP。SDK 安装生成的 `arcbench-agent-runtime/build/`、其 `src/arcbench_agent_runtime.egg-info/` 及 Python 字节码缓存不属于发布内容；其他新增源码仍会被拒绝。输出路径必须不存在。重建 ZIP 使用固定时间和 STORE 压缩策略，成员字节以当前冻结 manifest 为准。修复版 ZIP SHA-256 为 `70922856d82ec8f6ca310966db9e4e5e40cac5bc6e9e3753525559b6c6df94fc`，不可将它与原始 v13 包混用。
 
 后续大改应从本次合并与 `platform-v13-20261104` 标签建立新分支。改源码后冻结校验会失败，这是预期行为；新版本应更新自己的 manifest、版本记录和 CI 名称，保留该标签用于回退。根目录的历史 Agent 与旧测试继续由原 CI 验证。
 

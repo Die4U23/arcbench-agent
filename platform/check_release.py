@@ -58,7 +58,7 @@ def main() -> int:
               "source_verified": True, "formal_status": manifest["formal_status"]}
     if args.output:
         # STORE removes compression-library variation; member bytes equal the
-        # original archive, while ZIP timestamps and compression are canonical.
+        # frozen manifest, while ZIP timestamps and compression are canonical.
         with zipfile.ZipFile(args.output, "x", compression=zipfile.ZIP_STORED) as archive:
             for name in sorted(manifest["files"]):
                 item = zipfile.ZipInfo(name, date_time=(2026, 11, 4, 0, 0, 0))

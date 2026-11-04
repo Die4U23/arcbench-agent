@@ -1,13 +1,14 @@
 {
   "schema_version": 1,
-  "version": "v13",
+  "version": "v13-linux-cache-fix",
   "frozen_on": "2026-11-04",
   "formal_status": "UNRUN",
   "source_archive": {
     "name": "platform-source-agent-v13.zip",
     "sha256": "4b21eec9d88c08ca69813125092dafdcfdb8aa3f1615784fabdcf033fd78fe45",
     "bytes": 668904,
-    "members": 43
+    "members": 43,
+    "original_source_tag": "platform-v13-original-20261104"
   },
   "files": {
     "agent/__init__.py": {
@@ -59,8 +60,8 @@
       "bytes": 7831
     },
     "agent/platform_runtime_check.py": {
-      "sha256": "38942c8e34c448e3457f9ea2ed237f507bf5138fdf2ee1fd7ce8c92b5c35cbda",
-      "bytes": 60513
+      "sha256": "792d9a6c929329ae66c9ad0df0adc5d160968885cb25d66ceba833f1fb607388",
+      "bytes": 60811
     },
     "agent/platform_scaffold.py": {
       "sha256": "bd875cc50c99689c6e53e5e396bc1848a2fe285fd2c6efebda62d461b54efcc0",
@@ -182,5 +183,15 @@
       "sha256": "48b2c42f8bb1b5f6bad3effa526b2c84e3cc4cdfdd0020835069a0d8c53901d8",
       "bytes": 4982
     }
-  }
+  },
+  "patches": [
+    {
+      "path": "agent/platform_runtime_check.py",
+      "original": {
+        "sha256": "38942c8e34c448e3457f9ea2ed237f507bf5138fdf2ee1fd7ce8c92b5c35cbda",
+        "bytes": 60513
+      },
+      "reason": "Skip inaccessible optional browser cache directories on non-root Linux; retain discovery of accessible Chromium revisions."
+    }
+  ]
 }

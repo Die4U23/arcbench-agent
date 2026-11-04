@@ -165,6 +165,14 @@ def random_run_id(length: int = 12) -> str:
     return secrets.choice(string.ascii_lowercase) + ''.join(secrets.choice(alphabet) for _ in range(length - 1))
 
 
+def browser_directory_exists(path: Path) -> bool:
+    """Inaccessible optional browser caches are not usable candidates."""
+    try:
+        return path.is_dir()
+    except OSError:
+        return False
+
+
 def default_browsers_path() -> Path | None:
     """Playwright's default browser cache for this user, so an empty HOME does not hide installed browsers."""
     if sys.platform == 'win32':
@@ -175,7 +183,7 @@ def default_browsers_path() -> Path | None:
     else:
         cache = os.environ.get('XDG_CACHE_HOME')
         candidate = (Path(cache) if cache else Path.home() / '.cache') / 'ms-playwright'
-    return candidate if candidate is not None and candidate.is_dir() else None
+    return candidate if candidate is not None and browser_directory_exists(candidate) else None
 
 
 def browser_cache_dirs() -> list[Path]:
@@ -205,14 +213,14 @@ def browser_cache_dirs() -> list[Path]:
 def revisions_in(directories: list[Path]) -> set[str]:
     found: set[str] = set()
     for directory in directories:
-        if not directory.is_dir():
+        if not browser_directory_exists(directory):
             continue
         try:
             children = list(directory.iterdir())
         except OSError:
             continue
         for child in children:
-            if not child.is_dir():
+            if not browser_directory_exists(child):
                 continue
             for prefix in ('chromium-', 'chromium_headless_shell-'):
                 if child.name.startswith(prefix):
@@ -222,7 +230,7 @@ def revisions_in(directories: list[Path]) -> set[str]:
 
 def preferred_browser_dir() -> Path | None:
     """A browser directory that exists, preferring one that already contains Chromium."""
-    existing = [path for path in browser_cache_dirs() if path.is_dir()]
+    existing = [path for path in browser_cache_dirs() if browser_directory_exists(path)]
     populated = [path for path in existing if revisions_in([path])]
     return (populated or existing or [None])[0]
 
@@ -237,7 +245,7 @@ def clean_env(extra: dict[str, str] | None = None, *, home: Path | None = None, 
     for name, value in os.environ.items():
         upper = name.upper()
         forwarded = upper in wanted or upper.startswith('NPM_CONFIG_')
-        if upper == 'PLAYWRIGHT_BROWSERS_PATH' and value != '0' and not Path(value).is_dir():
+        if upper == 'PLAYWRIGHT_BROWSERS_PATH' and value != '0' and not browser_directory_exists(Path(value)):
             continue
         if URL_CREDENTIALS.search(value):
             continue

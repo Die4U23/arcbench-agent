@@ -48,6 +48,54 @@ class TempCase(unittest.TestCase):
 
 
 class PlaywrightResolutionTests(TempCase):
+    def test_unreadable_cache_does_not_hide_accessible_browser(self):
+        blocked = self.dir / 'restricted' / 'ms-playwright'
+        available = browser_dir(self.dir, 'chromium-100')
+        original = Path.is_dir
+
+        def check(path):
+            if path == blocked:
+                raise PermissionError('restricted cache')
+            return original(path)
+
+        with patch.object(rc, 'browser_cache_dirs', return_value=[blocked, available]), \
+             patch.object(Path, 'is_dir', check):
+            self.assertEqual(rc.preferred_browser_dir(), available)
+            self.assertEqual(rc.revisions_in([blocked, available]), {'100'})
+
+    def test_unreadable_revision_and_directory_listing_are_skipped(self):
+        available = browser_dir(self.dir, 'chromium-100')
+        blocked_child = available / 'chromium-200'
+        blocked_child.mkdir()
+        original = Path.is_dir
+
+        def check(path):
+            if path == blocked_child:
+                raise PermissionError('restricted revision')
+            return original(path)
+
+        with patch.object(Path, 'is_dir', check):
+            self.assertEqual(rc.revisions_in([available]), {'100'})
+        with patch.object(Path, 'iterdir', side_effect=PermissionError('restricted listing')):
+            self.assertEqual(rc.revisions_in([available]), set())
+
+    def test_inaccessible_explicit_browser_path_falls_back_before_home_changes(self):
+        blocked = self.dir / 'restricted' / 'ms-playwright'
+        available = browser_dir(self.dir, 'chromium-100')
+        original = Path.is_dir
+
+        def check(path):
+            if path == blocked:
+                raise PermissionError('restricted cache')
+            return original(path)
+
+        with patch.dict(os.environ, {'PLAYWRIGHT_BROWSERS_PATH': str(blocked)}), \
+             patch.object(rc, 'browser_cache_dirs', return_value=[blocked, available]), \
+             patch.object(Path, 'is_dir', check):
+            env = rc.clean_env(home=self.dir / 'isolated-home')
+        self.assertEqual(env['PLAYWRIGHT_BROWSERS_PATH'], str(available))
+        self.assertEqual(env['HOME'], str(self.dir / 'isolated-home'))
+
     def test_revision_match_selects_preinstalled_package(self):
         browsers = browser_dir(self.dir, 'chromium-100')
         pre = make_package(self.dir / 'pre', '100', '1.1.1', cli=True)

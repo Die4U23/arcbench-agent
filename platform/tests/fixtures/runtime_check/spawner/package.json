@@ -1,0 +1,8 @@
+{
+  "name": "runtime-check-spawner",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "start": "node parent.js"
+  }
+}

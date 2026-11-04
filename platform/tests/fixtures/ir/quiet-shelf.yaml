@@ -1,0 +1,32 @@
+title: Quiet shelf hours
+summary: Missing the usual requirement keys.
+requirements:
+  - heading: Evening quiet
+    detail: Wheels stay covered.
+    depends: REQ-MISSING
+data:
+  - title: Clay batch
+    columns:
+      - color
+    lifecycle: CREATED
+  - not-an-entity
+pages: not-a-list
+references:
+  - image: refs/quiet-shelf.png
+    title: Quiet shelf
+images:
+  - just a caption
+children:
+  - heading: Evening quiet
+    detail: Wheels stay covered.
+    depends: REQ-MISSING
+    scenarios:
+      - title: Look
+        steps:
+          - 7
+          - The reader looks around.
+          - keyword: THEN
+          - Given: []
+          - When:
+              nested: true
+          - Then: A result is shown.

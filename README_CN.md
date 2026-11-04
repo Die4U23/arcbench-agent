@@ -4,6 +4,8 @@
 
 [![CI](https://github.com/Die4U23/arcbench-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/Die4U23/arcbench-agent/actions/workflows/ci.yml)
 
+**v13 冻结基线（2026-11-04）：** 平台生成器、完整回归测试与逐字节校验清单已收录到 [platform/](platform/README.md)，后续平台改造从该目录开始。v13 尚未正式上平台；下文成绩与架构描述对应原有根目录 Agent。详见[冻结记录](docs/releases/platform-v13-20261104.md)。
+
 面向**需求驱动 Web 应用开发**的 Python Agent：读取需求文档，通过显式规划、工具驱动实现、验证、有界修复和候选交付，把需求转为可运行应用。
 
 项目目标是跨业务复用同一套开发流程，ARC-Bench 提供任务与评测环境。订票网站是首个取得正式平台验收结果的样例，跨任务自主完成仍是持续验证的工程目标。项目起源于 **CS3604**。

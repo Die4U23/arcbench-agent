@@ -1,0 +1,186 @@
+{
+  "schema_version": 1,
+  "version": "v13",
+  "frozen_on": "2026-11-04",
+  "formal_status": "UNRUN",
+  "source_archive": {
+    "name": "platform-source-agent-v13.zip",
+    "sha256": "4b21eec9d88c08ca69813125092dafdcfdb8aa3f1615784fabdcf033fd78fe45",
+    "bytes": 668904,
+    "members": 43
+  },
+  "files": {
+    "agent/__init__.py": {
+      "sha256": "e8ad470aa7495346ede1d0694e1275a0e74140f25d5707f47a77d4f2131f9a09",
+      "bytes": 45
+    },
+    "agent/campaign_budget.py": {
+      "sha256": "3063ced79a8990ed473011dca417a2339981bd44bba810ccc230901a0c6bcbc2",
+      "bytes": 20894
+    },
+    "agent/command_output.py": {
+      "sha256": "1351c6d3ed25f1cac407103a12421794f129fcfdfc346e841fc395fa73d6ea81",
+      "bytes": 3104
+    },
+    "agent/competition_context.py": {
+      "sha256": "4a65e9ad7c9a14b24288ecaa380525f94df872afbdfd617d4629934859445d23",
+      "bytes": 39051
+    },
+    "agent/competition_model.py": {
+      "sha256": "a1f477cab3a4d935dd92ddc586ca9d92b8ca3405d700d8ad9bcdb8b871430b58",
+      "bytes": 43811
+    },
+    "agent/execution_policy.py": {
+      "sha256": "2c878bdf8766e3bcd29a1988bf29bcbcacd207c267225c95cc89f19936956e23",
+      "bytes": 563
+    },
+    "agent/llm.py": {
+      "sha256": "1f0070263a223db1c4c5d76187ff8fd7f53dbffe66f38bc8e6d936c3068e034c",
+      "bytes": 117672
+    },
+    "agent/model_transport.py": {
+      "sha256": "39579a0fa6b9d2771e269f254949efc560917b6e3aaea3199ac373d13ac6839a",
+      "bytes": 9737
+    },
+    "agent/platform_acceptance.py": {
+      "sha256": "661af73949fc3dc23fbacb208346e4a85c17a5ca4bbfe641da58bad44059f591",
+      "bytes": 23730
+    },
+    "agent/platform_contract.py": {
+      "sha256": "2808251c166b445ba2a76e7cab3294fd13be66a70dcf371feafc4815cf7befe9",
+      "bytes": 8946
+    },
+    "agent/platform_generation.py": {
+      "sha256": "f13254982536a13e426284a1927dd4fbe2f41030f72840f31694d7fea0605a08",
+      "bytes": 59571
+    },
+    "agent/platform_inputs.py": {
+      "sha256": "f4146b3baf1fbd77481309f18b0e3ab0df4eaba50ecc52d9d6b8f5308632667a",
+      "bytes": 7831
+    },
+    "agent/platform_runtime_check.py": {
+      "sha256": "38942c8e34c448e3457f9ea2ed237f507bf5138fdf2ee1fd7ce8c92b5c35cbda",
+      "bytes": 60513
+    },
+    "agent/platform_scaffold.py": {
+      "sha256": "bd875cc50c99689c6e53e5e396bc1848a2fe285fd2c6efebda62d461b54efcc0",
+      "bytes": 19040
+    },
+    "agent/platform_seed.py": {
+      "sha256": "167fe0966e071a0b995f1f52b4bf10c652226139936a7cea2994ef23103afebe",
+      "bytes": 16904
+    },
+    "agent/platform_settings.py": {
+      "sha256": "13280848b234bf3758d26116ac464e854ed3e9d233b8d91d3b81cb7e847e1e69",
+      "bytes": 6859
+    },
+    "agent/platform_static.py": {
+      "sha256": "6fdc7748dd85b61c9d2412218566bc640a9f22a4a37511db3d89a16998d7138a",
+      "bytes": 14084
+    },
+    "agent/platform_task_ir.py": {
+      "sha256": "f43b69cc999f5cfa82edbe777c9fbdb539a3714c57d8e04991d98c9a5858bbe1",
+      "bytes": 47460
+    },
+    "agent/request_metrics.py": {
+      "sha256": "0bfb8fffb844719b286a44acbe4103fccb925daf64afcbff66eb3c97cdc1fde2",
+      "bytes": 4024
+    },
+    "agent/requirements.py": {
+      "sha256": "fb48c6bb6902bd26e868752923bd61ef19caf3fbf03901e8f88e6fde3c606e6a",
+      "bytes": 15177
+    },
+    "agent/sandbox_files.py": {
+      "sha256": "96ee07da72eb27a7021be3f7aaadfb00e70e49fd51d58bff8233eb2f975f0df5",
+      "bytes": 8659
+    },
+    "agent/sandbox_process.py": {
+      "sha256": "d9d6e8e4a1121e8da1e0d8b958705df121b6df9e063fb257b6b6bf491637f768",
+      "bytes": 3319
+    },
+    "agent/task_bundle.py": {
+      "sha256": "b75806212247852786d0d25e18edb28915b9759c432a689329c86fc895224f78",
+      "bytes": 29401
+    },
+    "agent/tools.py": {
+      "sha256": "5c0b8f104cb05772029924c77eaf2184a6b2c4e5dbd4ff5659b9c89dd0060ce7",
+      "bytes": 30699
+    },
+    "agent/world_clock.cjs": {
+      "sha256": "1ab536bfabe0a33a40775704fae6855c9ce0bd0aea1bff51108de6d060870173",
+      "bytes": 637
+    },
+    "arcbench-agent-runtime/pyproject.toml": {
+      "sha256": "b732703057936e13cec7665ef4249af35cc1315b0951d23ee1009dfe5f8fbdf0",
+      "bytes": 462
+    },
+    "arcbench-agent-runtime/README.md": {
+      "sha256": "50fc91e6672cd979f9933120d2cffce51bbaaa085b0931ab37d2b358463c4cff",
+      "bytes": 1267
+    },
+    "arcbench-agent-runtime/src/arcbench_agent_runtime/__init__.py": {
+      "sha256": "1a2f616e29a143a7f67acbc61029af70225564e9b1067db1f451dc6b879dbaef",
+      "bytes": 338
+    },
+    "arcbench-agent-runtime/src/arcbench_agent_runtime/context.py": {
+      "sha256": "509cda880e266b1dd00fef4c8d890f37be574dafe248475ff7f6b48049c80ed2",
+      "bytes": 2089
+    },
+    "arcbench-agent-runtime/src/arcbench_agent_runtime/events.py": {
+      "sha256": "90f5d19785a9ac2392bb4ecec4c0556a7632aa45b3dabead49526a53e2dbaf5a",
+      "bytes": 7024
+    },
+    "arcbench-agent-runtime/src/arcbench_agent_runtime/gitops.py": {
+      "sha256": "3e6c4daa3466dd4be6388d4e5d9c6f3f86339bb71f5db7647f952dff215e4ce1",
+      "bytes": 8485
+    },
+    "arcbench-agent-runtime/src/arcbench_agent_runtime/jsonio.py": {
+      "sha256": "2285dc2cf81a0f5c0f1c2387ed970a82c24f1d317c45293f85fba875c57618e9",
+      "bytes": 1053
+    },
+    "arcbench-agent-runtime/src/arcbench_agent_runtime/runtime.py": {
+      "sha256": "054c879143ddc81b9729bfbdd3e17f310df66daa6a6ddf9c83b3add962373d1a",
+      "bytes": 1173
+    },
+    "arcbench-agent-runtime/src/arcbench_agent_runtime/traceability.py": {
+      "sha256": "33e7fab2f7cfd12bd0c222740cd2d5be428da80f0bb7c6c4ebd7fe73a758c1e2",
+      "bytes": 28788
+    },
+    "main.py": {
+      "sha256": "9876482c59367b3147339a5655dcd11ecc0e61564e6feaef5a152f5f5a86a707",
+      "bytes": 612
+    },
+    "requirements.txt": {
+      "sha256": "cc1c3785dd493e5e363db68f2fa57e532986ceeeb48c736c7990ac9992859f42",
+      "bytes": 98
+    },
+    "static-tools/babelBundle.cjs": {
+      "sha256": "071434ae2d67478e70fa554d3609f8e1c0a3d23f3477a64a45638f7e4948cd9f",
+      "bytes": 2901525
+    },
+    "static-tools/interaction-scope.cjs": {
+      "sha256": "9aee2e2769509350a33c0a20f5ffdeece4b2d77a2690cf23fb7524c0360962ae",
+      "bytes": 16647
+    },
+    "static-tools/parse-source.cjs": {
+      "sha256": "b700a6cd553de5c55cfae9f790f224bd24f2a12e4686434fb54ec8fa16326f85",
+      "bytes": 3409
+    },
+    "static-tools/PLAYWRIGHT-LICENSE": {
+      "sha256": "45873d00a0dd243596deb4aa23b2493b3d1f0671921bf2538ea431d7380220eb",
+      "bytes": 11601
+    },
+    "static-tools/PLAYWRIGHT-NOTICE": {
+      "sha256": "6d602191187b35b9b01d2cffa01c8469c2c8d9de8a96f1bf868e0f264f51c81d",
+      "bytes": 254
+    },
+    "static-tools/ThirdPartyNotices.txt": {
+      "sha256": "b17ac0bd6f4b8207e440639cc8e0ba1bf1d9eaf9b12236764ab93b346c7abd8e",
+      "bytes": 705
+    },
+    "tools/platform_module_closure.py": {
+      "sha256": "48b2c42f8bb1b5f6bad3effa526b2c84e3cc4cdfdd0020835069a0d8c53901d8",
+      "bytes": 4982
+    }
+  }
+}

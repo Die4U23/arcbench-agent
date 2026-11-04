@@ -521,6 +521,8 @@ class PlatformGenerationModel(CompetitionModel):
                     'step ID strings), acceptance (nonempty string, max 2000). No extra step fields, '
                     'including file lists or status. IDs must be unique; dependencies '
                     'must form a DAG. Cover every pending requirement using only its supplied ID. '
+                    'Every step, including foundation, integration and verification, must have nonempty '
+                    'requirement_ids linking it to the pending requirements it implements or checks. '
                     'Each step must fit the supplied request/output limits and leave structurally valid source. '
                     'For an unimplemented project, the first step must establish a runnable foundation; '
                     'do not allocate a code-free analysis step that cannot pass source validation. '

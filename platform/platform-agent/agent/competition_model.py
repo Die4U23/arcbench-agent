@@ -546,7 +546,7 @@ class CompetitionModel:
                         arguments = json.loads(call.function.arguments or '{}')
                         if not isinstance(arguments, dict):
                             raise ValueError('tool arguments must be a JSON object')
-                        validate_arguments(arguments, parameters[call.function.name])
+                        validate_arguments(arguments, parameters[call.function.name], call.function.name)
                         preflight = getattr(tools, 'preflight', None)
                         if callable(preflight):
                             preflight(call.function.name, arguments)

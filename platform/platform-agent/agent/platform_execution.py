@@ -75,31 +75,36 @@ def source_digest(files):
     return digest.hexdigest()
 
 
-def validate_arguments(value, schema):
+def validate_arguments(value, schema, path='$'):
     """Validate the JSON-schema subset used by the exposed local tools."""
     kind = schema.get('type')
     types = {'object': dict, 'array': list, 'string': str, 'integer': int, 'boolean': bool}
     if kind in types and type(value) is not types[kind]:
-        raise ValueError(f'tool argument must be {kind}')
+        raise ValueError(f'{path}: tool argument must be {kind}')
     if 'enum' in schema and value not in schema['enum']:
-        raise ValueError('tool argument is outside enum')
+        raise ValueError(f'{path}: tool argument is outside enum')
     if kind == 'object':
         properties = schema.get('properties', {})
         if not set(schema.get('required', [])) <= value.keys():
-            raise ValueError('required tool argument is absent')
+            missing = sorted(set(schema.get('required', [])) - value.keys())
+            raise ValueError(f'{path}: required tool argument is absent: {", ".join(missing)}')
         if schema.get('additionalProperties') is False and not value.keys() <= properties.keys():
-            raise ValueError('unexpected tool argument')
+            raise ValueError(f'{path}: unexpected tool argument; use only declared properties')
         for key, item in value.items():
             if key in properties:
-                validate_arguments(item, properties[key])
+                validate_arguments(item, properties[key], f'{path}.{key}')
     elif kind == 'array':
-        if not schema.get('minItems', 0) <= len(value) <= schema.get('maxItems', 1000000):
-            raise ValueError('tool array size is outside bounds')
-        for item in value:
-            validate_arguments(item, schema.get('items', {}))
+        minimum, maximum = schema.get('minItems', 0), schema.get('maxItems', 1000000)
+        if not minimum <= len(value) <= maximum:
+            raise ValueError(f'{path}: tool array size is outside bounds; received {len(value)} items, '
+                             f'allowed {minimum}..{maximum}. Split oversized work into bounded calls.')
+        for index, item in enumerate(value):
+            validate_arguments(item, schema.get('items', {}), f'{path}[{index}]')
     elif kind == 'integer':
         if value < schema.get('minimum', value) or value > schema.get('maximum', value):
-            raise ValueError('tool integer is outside bounds')
+            raise ValueError(f'{path}: tool integer is outside bounds; '
+                             f'minimum={schema.get("minimum", "unspecified")}, '
+                             f'maximum={schema.get("maximum", "unspecified")}')
 
 
 class RunControl:

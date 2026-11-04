@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "version": "v14-protocol-feedback-candidate",
+  "version": "v14-stream-transport-candidate",
   "formal_status": "UNRUN",
   "baseline_tag": "platform-v13-20261104",
   "issue": "https://github.com/Die4U23/arcbench-agent/issues/44",
@@ -30,8 +30,8 @@
       "bytes": 563
     },
     "agent/llm.py": {
-      "sha256": "96ac76e740f02976b7479c6221756ea2308c10a2d4e7b444b4afee4850456567",
-      "bytes": 12423
+      "sha256": "180436d5f91d635ba37a9f10df75cfac71e77379bbfee21ba099ed93febc39d1",
+      "bytes": 12899
     },
     "agent/model_transport.py": {
       "sha256": "39579a0fa6b9d2771e269f254949efc560917b6e3aaea3199ac373d13ac6839a",

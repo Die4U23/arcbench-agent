@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+import json
 import math
 from typing import Any
 from urllib.parse import urlsplit
@@ -24,17 +25,25 @@ def default_model_deadline(model: str, base_url: str) -> float:
 class ModelRequestInterrupted(RuntimeError):
     def __init__(self, *, reason: str, deadline_seconds: float,
                  stage: str = "unknown", request: int = 0,
-                 cause_types: tuple[str, ...] = ()) -> None:
+                 cause_types: tuple[str, ...] = (), stream_state: dict[str, Any] | None = None) -> None:
         self.reason = reason
         self.deadline_seconds = deadline_seconds
         self.stage = stage
         self.request = request
         self.cause_types = cause_types
+        # Only bounded counters/flags may reach logs, never response fragments.
+        raw = stream_state if isinstance(stream_state, dict) else {}
+        self.stream_state = {key: raw[key] for key in
+            ('chunks_received', 'choices_received', 'unfinished_choices')
+            if type(raw.get(key)) is int and 0 <= raw[key] <= 2**31 - 1}
+        if type(raw.get('usage_received')) is bool:
+            self.stream_state['usage_received'] = raw['usage_received']
         super().__init__(
             f"Model request interrupted: stage={stage} request={request} reason={reason} "
             f"deadline_seconds={deadline_seconds:g}; response and usage incomplete; "
             "generation stopped, no automatic resend" +
-            ("; cause_types=" + ",".join(cause_types) if cause_types else "")
+            ("; cause_types=" + ",".join(cause_types) if cause_types else "") +
+            ('; stream_state=' + json.dumps(self.stream_state, sort_keys=True) if self.stream_state else '')
         )
 
     def report(self) -> dict[str, Any]:
@@ -42,6 +51,8 @@ class ModelRequestInterrupted(RuntimeError):
                       deadline_seconds=self.deadline_seconds, usage_complete=False)
         if self.cause_types:
             result['cause_types'] = list(self.cause_types)
+        if self.stream_state:
+            result['stream_state'] = dict(self.stream_state)
         return result
 
 
@@ -119,8 +130,10 @@ class CompletionClient:
             **(kwargs.get('stream_options') or {}), 'include_usage': True})
         stream = await client.chat.completions.create(**options)
         metadata, choices, usage = {}, {}, None
+        chunks_received = 0
         async with stream:
             async for chunk in stream:
+                chunks_received += 1
                 if metadata and chunk.id != metadata['id']:
                     raise ModelRequestInterrupted(reason='inconsistent_stream',
                                                   deadline_seconds=self.deadline_seconds)
@@ -160,7 +173,10 @@ class CompletionClient:
         # HTTP 200, partial arguments, a finish marker alone or EOF alone do
         # not establish a complete response. Require the final provider usage.
         if not choices or usage is None or any(part['finish_reason'] is None for part in choices.values()):
-            raise ModelRequestInterrupted(reason='incomplete_stream', deadline_seconds=self.deadline_seconds)
+            raise ModelRequestInterrupted(reason='incomplete_stream', deadline_seconds=self.deadline_seconds,
+                stream_state=dict(chunks_received=chunks_received, choices_received=len(choices),
+                    unfinished_choices=sum(part['finish_reason'] is None for part in choices.values()),
+                    usage_received=usage is not None))
         complete = []
         for index in sorted(choices):
             part = choices[index]

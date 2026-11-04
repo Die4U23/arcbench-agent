@@ -91,7 +91,8 @@ class ModelClient:
             return response
         except ModelRequestInterrupted as exc:
             stopped = ModelRequestInterrupted(reason=exc.reason, deadline_seconds=exc.deadline_seconds,
-                stage=stage, request=self.model_requests_used, cause_types=exc.cause_types)
+                stage=stage, request=self.model_requests_used, cause_types=exc.cause_types,
+                stream_state=exc.stream_state)
             self.last_request_interruption = stopped
             LOGGER.warning("%s", stopped)
             LOGGER.info("Model request: stage=%s request=%d context_chars=%d token_counts=unavailable",

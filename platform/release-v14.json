@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "version": "v14-anchored-disappearance-candidate",
+  "version": "v14-stream-completion-diagnostics-candidate",
   "formal_status": "UNRUN",
   "baseline_tag": "platform-v13-20261104",
   "issue": "https://github.com/Die4U23/arcbench-agent/issues/44",
@@ -34,12 +34,12 @@
       "bytes": 563
     },
     "agent/llm.py": {
-      "sha256": "180436d5f91d635ba37a9f10df75cfac71e77379bbfee21ba099ed93febc39d1",
-      "bytes": 12899
+      "sha256": "0e367c105eca76f8f7d4cca89300ba0cbcfdc8f70e5b9dfdfc8a1de8ea0a6fec",
+      "bytes": 12946
     },
     "agent/model_transport.py": {
-      "sha256": "39579a0fa6b9d2771e269f254949efc560917b6e3aaea3199ac373d13ac6839a",
-      "bytes": 9737
+      "sha256": "5beecb02039b8de887f385d12d60094b026271f81c1c7fa5edbb103c88e236f2",
+      "bytes": 10807
     },
     "agent/platform_acceptance.py": {
       "sha256": "661af73949fc3dc23fbacb208346e4a85c17a5ca4bbfe641da58bad44059f591",

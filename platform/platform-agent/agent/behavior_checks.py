@@ -27,7 +27,10 @@ Select distinct end-to-end transitions across shared modules, including state pe
 Avoid redundant presence-only checks. Use unique synthetic input values compatible with public data shapes;
 reuse an account only if explicitly provided by the public requirements. Each case has a new browser context
 but shares the scratch application database: make fixtures independent and avoid destructive seed changes.
-Every case starts with goto and has an interaction followed by a positive assertion of its result.
+Every case starts with exactly one goto; goto is forbidden at all later positions.
+Navigate thereafter through source-observed UI controls using click or other supported interactions.
+Use reload to check persistence at the current URL. Each case must include an interaction followed by
+a positive assertion of its result; a url step asserts the current location and does not navigate.
 No assumptions about unspecified business behavior, no API shortcut for UI actions, no external URLs.
 An unsupported flow should be omitted rather than inventing an oracle. These are fallible development
 diagnostics, NOT formal acceptance or complete requirement coverage.

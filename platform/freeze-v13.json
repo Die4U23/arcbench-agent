@@ -60,8 +60,8 @@
       "bytes": 7831
     },
     "agent/platform_runtime_check.py": {
-      "sha256": "792d9a6c929329ae66c9ad0df0adc5d160968885cb25d66ceba833f1fb607388",
-      "bytes": 60811
+      "sha256": "ac490dd3e14ad396cc3c30101766809ab571977a3ab6d94a91fdce161b5046aa",
+      "bytes": 60828
     },
     "agent/platform_scaffold.py": {
       "sha256": "bd875cc50c99689c6e53e5e396bc1848a2fe285fd2c6efebda62d461b54efcc0",

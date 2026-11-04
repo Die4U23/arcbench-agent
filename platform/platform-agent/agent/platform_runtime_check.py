@@ -826,7 +826,7 @@ def resolve_playwright(project_dir: Path, cache_dir: Path, env: dict[str, str], 
         discovered_preinstalled, discovered_project = discover_playwright_packages(project_dir, env)
         preinstalled = discovered_preinstalled if preinstalled is None else preinstalled
         project = discovered_project if project is None else project
-    dirs = browser_dirs if browser_dirs is not None else [path for path in browser_cache_dirs() if path.is_dir()]
+    dirs = browser_dirs if browser_dirs is not None else [path for path in browser_cache_dirs() if browser_directory_exists(path)]
     cached = cache_dir / 'node_modules' / '@playwright' / 'test'
     chosen, notes = choose_playwright_package([*preinstalled, cached], project, dirs)
     if chosen is not None:

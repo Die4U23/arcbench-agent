@@ -51,6 +51,7 @@ class PlaywrightResolutionTests(TempCase):
     def test_unreadable_cache_does_not_hide_accessible_browser(self):
         blocked = self.dir / 'restricted' / 'ms-playwright'
         available = browser_dir(self.dir, 'chromium-100')
+        package = make_package(self.dir / 'pre', '100', '1.1.1', cli=True)
         original = Path.is_dir
 
         def check(path):
@@ -62,6 +63,12 @@ class PlaywrightResolutionTests(TempCase):
              patch.object(Path, 'is_dir', check):
             self.assertEqual(rc.preferred_browser_dir(), available)
             self.assertEqual(rc.revisions_in([blocked, available]), {'100'})
+            chosen, how, notes = rc.resolve_playwright(
+                self.dir / 'app', self.dir / 'cache', {}, self.dir / 'resolve.log', 1,
+                preinstalled=[package], project=[])
+            self.assertEqual(chosen, package.resolve())
+            self.assertTrue(how.startswith('preinstalled'))
+            self.assertEqual(notes['chromium_revision'], '100')
 
     def test_unreadable_revision_and_directory_listing_are_skipped(self):
         available = browser_dir(self.dir, 'chromium-100')

@@ -34,7 +34,7 @@ python platform/run_tests.py --require-runtime
 python platform/check_release.py --output /absolute/new/path/platform-agent-v13.zip
 ```
 
-工具先检查成员集合和逐文件哈希，再扫描任务知识泄漏，最后生成并回读 ZIP。SDK 安装生成的 `arcbench-agent-runtime/build/`、其 `src/arcbench_agent_runtime.egg-info/` 及 Python 字节码缓存不属于发布内容；其他新增源码仍会被拒绝。输出路径必须不存在。重建 ZIP 使用固定时间和 STORE 压缩策略，成员字节以当前冻结 manifest 为准。修复版 ZIP SHA-256 为 `70922856d82ec8f6ca310966db9e4e5e40cac5bc6e9e3753525559b6c6df94fc`，不可将它与原始 v13 包混用。
+工具先检查成员集合和逐文件哈希，再扫描任务知识泄漏，最后生成并回读 ZIP。SDK 安装生成的 `arcbench-agent-runtime/build/`、其 `src/arcbench_agent_runtime.egg-info/` 及 Python 字节码缓存不属于发布内容；其他新增源码仍会被拒绝。输出路径必须不存在。重建 ZIP 使用固定时间和 STORE 压缩策略，成员字节以当前冻结 manifest 为准。修复版 ZIP SHA-256 为 `7901dae71ab8051a8f9d802493e6fb78b68b982d362a4fb2cfd3918c22478557`，不可将它与原始 v13 包混用。
 
 后续大改应从本次合并与 `platform-v13-20261104` 标签建立新分支。改源码后冻结校验会失败，这是预期行为；新版本应更新自己的 manifest、版本记录和 CI 名称，保留该标签用于回退。根目录的历史 Agent 与旧测试继续由原 CI 验证。
 

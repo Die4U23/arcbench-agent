@@ -578,7 +578,7 @@ class PlatformGenerationModel(CompetitionModel):
         # A review is a bounded ReAct pass, not another nested planning tree.
         started_requests = self.execution_control.requests
         try:
-            return self._react(packet, tools, **kwargs)
+            return self._react(packet, tools, review=True, **kwargs)
         except ExecutionStopped as error:
             if error.reason in {'rollback_failed', 'concurrent_source_change'}:
                 raise
@@ -829,6 +829,60 @@ def review_request_budget(work_item_count):
     return min(64, 8 + max(0, int(work_item_count)))
 
 
+def review_schedule(ir, completed_steps, evidence, request_budget, batch_limit):
+    """Cover each item once, grouping by completed work and structural hints."""
+    items = {row['id']: row for row in ir.get('work_items', [])
+             if isinstance(row, dict) and isinstance(row.get('id'), str)}
+    if not items or request_budget <= 0 or batch_limit <= 0:
+        return []
+    groups, assigned = [], set()
+    for step in completed_steps:
+        refs = list(dict.fromkeys(ref for ref in step.get('requirement_ids', [])
+                                 if isinstance(ref, str) and ref in items and ref not in assigned))
+        if refs:
+            groups.append(refs)
+            assigned.update(refs)
+    groups.extend([ref] for ref in items if ref not in assigned)
+    files = {ref: set() for ref in items}
+    related = {}
+    for ref, row in items.items():
+        related[ref] = {dep for dep in row.get('depends_on', []) if isinstance(dep, str)}
+        if isinstance(row.get('parent'), str):
+            related[ref].add(row['parent'])
+    for claim in evidence.get('shared_source_claims', []):
+        for ref in claim['requirement_ids']:
+            if ref in files:
+                files[ref].add(claim['path'])
+    maximum = min(len(groups), math.ceil(request_budget / batch_limit))
+    buckets = []
+    for refs in groups:
+        ref_set = set(refs)
+        owned = set().union(*(files[ref] for ref in refs))
+        links = set().union(*(related[ref] for ref in refs))
+        if len(buckets) < maximum:
+            buckets.append(dict(refs=list(refs), ids=ref_set, files=owned, related=links))
+            continue
+        # Direct dependencies/parents take precedence over broad shared files.
+        # Balance ties so a common entrypoint does not absorb every later item.
+        def affinity(index):
+            bucket = buckets[index]
+            shared = owned & bucket['files']
+            return (bool(ref_set & bucket['related'] or links & bucket['ids']),
+                    bool(shared), -len(bucket['refs']), len(shared), -index)
+        target = buckets[max(range(len(buckets)), key=affinity)]
+        target['refs'].extend(refs)
+        target['ids'].update(refs)
+        target['files'].update(owned)
+        target['related'].update(links)
+    remaining = min(request_budget, len(buckets) * batch_limit)
+    schedule = []
+    for index, bucket in enumerate(buckets):
+        share = min(batch_limit, math.ceil(remaining / (len(buckets) - index)))
+        schedule.append(dict(requirement_ids=bucket['refs'], request_allowance=share))
+        remaining -= share
+    return schedule
+
+
 def provenance_counts(items):
     parsed = inferred = 0
     for item in items or []:
@@ -935,8 +989,8 @@ def ir_prompt_summary(ir, starter_layout):
     return '\n'.join(lines) + '\n'
 
 
-def review_feedback(ir, work_item):
-    """Conventions plus the IR slice for one work item."""
+def review_slice(ir, work_item):
+    """Public IR evidence for one source-review target."""
     document = ir if isinstance(ir, dict) else {}
     work_id = work_item.get('id')
     elements = [
@@ -965,7 +1019,15 @@ def review_feedback(ir, work_item):
         'scenarios': scenarios,
         'auth': document.get('auth'),
     }
-    return INTERACTION_CONVENTIONS + 'IR SLICE\n' + json.dumps(payload, ensure_ascii=False)
+    return payload
+
+
+def review_group_feedback(ir, items):
+    return (INTERACTION_CONVENTIONS + 'Review these related requirements together against the current source. '
+            'Trace shared state and dependent behaviors end to end; batch related fixes and validate once. '
+            'Inspect every supplied review target within the allowance; source review is not behavioral acceptance. '
+            'Do not redo unchanged source reads or turn this review into a new implementation plan. '
+            'IR SLICES\n' + json.dumps([review_slice(ir, item) for item in items], ensure_ascii=False))
 
 
 def coverage_feedback(missing):
@@ -1417,21 +1479,42 @@ def generate(args):
         stopped['status'] = 'stopped'
         stopped['reason'] = 'coverage_incomplete'
         return stopped
-    def review_batches():
+    def review_batches(completed_steps):
         current = load_task_ir(app, ir)
-        items = [item for item in current.get('work_items') or [] if isinstance(item, dict) and item.get('id') is not None]
-        remaining = review_request_budget(len(items))
-        for item in items:
-            if remaining <= 0 or not budget_open():
-                break
-            share = min(settings.review_request_allowance, remaining)
-            tools.unseal()
-            reviewed = model.review_sources(packet(all_ids), tools, request_allowance=share,
-                                            feedback=review_feedback(current, item))
-            record('locator_review', str(item.get('id')), reviewed, allow_delivery=True, optional=True)
-            remaining -= share
-            if reviewed.get('reason') in ALLOCATION_STOP_REASONS:
-                break
+        items = {item['id']: item for item in current.get('work_items') or []
+                 if isinstance(item, dict) and isinstance(item.get('id'), str)}
+        schedule = review_schedule(current, completed_steps, planning_evidence(app, list(items)),
+                                   review_request_budget(len(items)), settings.review_request_allowance)
+        audit = dict(claim_scope='source_review_only', source_claims_are_verified=False,
+                     groups=[dict(group, status='pending') for group in schedule],
+                     unscheduled_requirement_ids=sorted(set(items) - {
+                         ref for group in schedule for ref in group['requirement_ids']}))
+        def save_review():
+            (reports/'review-schedule.json').write_text(json.dumps(audit, ensure_ascii=False, indent=2), encoding='utf-8')
+        save_review()
+        try:
+            for group in audit['groups']:
+                if not budget_open():
+                    break
+                refs = group['requirement_ids']
+                group['status'] = 'running'
+                save_review()
+                tools.unseal()
+                reviewed = model.review_sources(packet(all_ids), tools, request_allowance=group['request_allowance'],
+                    feedback=review_group_feedback(current, [items[ref] for ref in refs]))
+                group.update(status=reviewed.get('status', 'unknown'), reason=reviewed.get('reason'),
+                             requests_used=reviewed.get('turns'))
+                record('locator_review', ','.join(refs), dict(reviewed, review_requirement_ids=refs,
+                       claim_scope='source_review_only'), allow_delivery=True, optional=True)
+                save_review()
+                if reviewed.get('reason') in ALLOCATION_STOP_REASONS:
+                    break
+        finally:
+            for group in audit['groups']:
+                if group['status'] in {'pending', 'running'}:
+                    group.update(status='skipped' if group['status'] == 'pending' else 'interrupted',
+                                 reason='review_budget_or_execution_stopped')
+            save_review()
     for item in work:
         for req_id in item.requirement_ids:
             runtime.events.mark_implementation_started(req_id,'Implement requirement in shared application')
@@ -1478,7 +1561,7 @@ def generate(args):
     (reports/'static-validation.json').write_text(json.dumps(checked,indent=2),encoding='utf-8')
     if not checked['passed']: raise RuntimeError('Source is not ready for platform build: '+json.dumps(checked['errors']))
     if budget_open() and result.get('reason') not in ALLOCATION_STOP_REASONS:
-        review_batches()
+        review_batches(result.get('completed_steps') or [])
     if result.get('status')!='complete':
         logging.warning('Delivering structurally valid candidate after bounded generation stopped: %s; functional acceptance remains UNVERIFIED',result.get('reason'))
     runtime_report = dict(task_id=task, enabled=settings.runtime_check, skipped=None, rounds=[], final_status=None)

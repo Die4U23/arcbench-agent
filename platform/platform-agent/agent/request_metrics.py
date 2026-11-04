@@ -93,8 +93,13 @@ class RequestObservation:
         emit("model_request_started", **self.fields)
 
     def finish(self, *, response: Any, elapsed: float, error: BaseException | None) -> None:
+        # Status is useful for distinguishing proxy availability from protocol
+        # failures. Never persist exception text, response bodies or headers.
+        status = getattr(error, 'status_code', None)
+        status = status if type(status) is int and 100 <= status <= 599 else None
         emit("model_request_finished", **self.fields,
              seconds=elapsed, status="returned" if error is None else "error",
              error_type=type(error).__name__ if error is not None else None,
+             http_status=status,
              actual_model=identifier(getattr(response, "model", None)),
              **usage_fields(response))

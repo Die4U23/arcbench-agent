@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "version": "v14-dependency-verification-candidate",
+  "version": "v14-decision-runway-candidate",
   "formal_status": "UNRUN",
   "baseline_tag": "platform-v13-20261104",
   "issue": "https://github.com/Die4U23/arcbench-agent/issues/44",
@@ -46,12 +46,12 @@
       "bytes": 8946
     },
     "agent/platform_execution.py": {
-      "sha256": "e8e65b758b4cc2cb7e431f7f53784958fa8ce6b190965265b1ce24bd68337c57",
-      "bytes": 16695
+      "sha256": "c6f3fef34339e74ea8267613adbcf2223ad1637e6cd431d84fdfbe71551ce17e",
+      "bytes": 17399
     },
     "agent/platform_generation.py": {
-      "sha256": "628a6e7e45234405363aa7391203879304068077a3d54b73e6ee7f841bd6d920",
-      "bytes": 93599
+      "sha256": "e17c01c9607b2182c89c517cb21b390cd39537340604e975634a3fde13eb0357",
+      "bytes": 95630
     },
     "agent/platform_inputs.py": {
       "sha256": "234e1c59b6e3f5b6a8ebb0cda3b7abf8639851c158b7105a454ec58d19f89c71",
@@ -82,8 +82,8 @@
       "bytes": 47460
     },
     "agent/request_metrics.py": {
-      "sha256": "0bfb8fffb844719b286a44acbe4103fccb925daf64afcbff66eb3c97cdc1fde2",
-      "bytes": 4024
+      "sha256": "2c9f4e597db7f2f8515836b8378cea7a9d1ef270b1f9922664629e85ab5878d5",
+      "bytes": 4349
     },
     "agent/requirements.py": {
       "sha256": "fb48c6bb6902bd26e868752923bd61ef19caf3fbf03901e8f88e6fde3c606e6a",

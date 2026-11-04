@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "version": "v14-author-accounting-candidate",
+  "version": "v14-phase-budget-view-candidate",
   "formal_status": "UNRUN",
   "baseline_tag": "platform-v13-20261104",
   "issue": "https://github.com/Die4U23/arcbench-agent/issues/44",
@@ -50,12 +50,12 @@
       "bytes": 8946
     },
     "agent/platform_execution.py": {
-      "sha256": "d2975fd087677091b36603e7123a504ec97614fdbca9bd090906c1f3e655a118",
-      "bytes": 17986
+      "sha256": "b65ea3c528fcad410c32a2118e4ea5f5624dd75ad9a2c416a8a55feecb157551",
+      "bytes": 18047
     },
     "agent/platform_generation.py": {
-      "sha256": "a96b88af78d788a57a1cc3d0f7a98fb37b0580503fa3dbc05a1c80f3f8e0e7b9",
-      "bytes": 106935
+      "sha256": "064449a665fb29c1098bc4db3c7c0b43ea9651909b5138e288a39aa6f939c449",
+      "bytes": 107393
     },
     "agent/platform_inputs.py": {
       "sha256": "234e1c59b6e3f5b6a8ebb0cda3b7abf8639851c158b7105a454ec58d19f89c71",

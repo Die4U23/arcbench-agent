@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "version": "v14-decision-boundary-feedback-candidate",
+  "version": "v14-public-scenario-bindings-candidate",
   "formal_status": "UNRUN",
   "baseline_tag": "platform-v13-20261104",
   "issue": "https://github.com/Die4U23/arcbench-agent/issues/44",
@@ -10,8 +10,8 @@
       "bytes": 45
     },
     "agent/behavior_checks.py": {
-      "sha256": "f33b545d922e6dae439c68b21934fe938175801d240fc4a13e4a723ffc571b58",
-      "bytes": 11060
+      "sha256": "8f1463b781581bc1ecc06044b9024e86204411e826e918ce26c8aec56bdf861e",
+      "bytes": 12686
     },
     "agent/campaign_budget.py": {
       "sha256": "3063ced79a8990ed473011dca417a2339981bd44bba810ccc230901a0c6bcbc2",
@@ -54,8 +54,8 @@
       "bytes": 18341
     },
     "agent/platform_generation.py": {
-      "sha256": "fbed8e3c9b50cea0d63365a7e728a20a7045b87f7debb6fc12aa00f9c51ab2b4",
-      "bytes": 108833
+      "sha256": "6b743dc8d5b2a1a8357f2076fc376f9018e1be65c338a873ec21def09c1c9308",
+      "bytes": 108782
     },
     "agent/platform_inputs.py": {
       "sha256": "234e1c59b6e3f5b6a8ebb0cda3b7abf8639851c158b7105a454ec58d19f89c71",

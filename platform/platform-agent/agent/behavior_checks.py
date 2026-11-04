@@ -20,7 +20,9 @@ INSTRUCTIONS = '''Design a small set of executable browser journeys from PUBLIC 
 You have read-only tools. Do not implement or edit application files. Do not read scoring tests or feedback.
 Return exactly {"cases": [...]} with at most 12 cases, 24 steps per case, 192 total steps.
 Each case has exactly: name (unique, <=120 chars), requirement_id (a supplied work item ID),
-requirement_quote (8..500 exact characters copied from that item's text or name), steps (array).
+requirement_quote (8..500 exact characters copied from one quote_sources entry in that ID's
+PUBLIC REQUIREMENT BINDINGS), steps (array). These bindings include the requirement description
+and its explicitly parsed public scenarios; do not quote another requirement or inferred behavior.
 Derive expected behavior from the quoted requirement, not from what the implementation currently does.
 Use source only to locate controls and establish actual routes; prefer accessible names and labels.
 Select distinct end-to-end transitions across shared modules, including state persistence when required.
@@ -94,13 +96,43 @@ def _target(value, depth=0):
         _target(value['within'], depth + 1)
 
 
+def requirement_bindings(ir):
+    """Exact public citation sources, grouped by their existing requirement identity."""
+    bindings = {}
+    for item in ir.get('work_items') or []:
+        if isinstance(item, dict) and isinstance(item.get('id'), str):
+            bindings[item['id']] = dict(id=item['id'], name=item.get('name'),
+                quote_sources=[item[key] for key in ('name', 'text')
+                               if isinstance(item.get(key), str) and item[key].strip()])
+    for scenario in ir.get('scenarios') or []:
+        if not isinstance(scenario, dict) or scenario.get('source') != 'parsed':
+            continue
+        ref = scenario.get('work_item')
+        binding = bindings.get(ref) if isinstance(ref, str) else None
+        if binding is None:
+            continue
+        # Scenario names can be generated IDs; only parsed statements are quotes.
+        pieces = []
+        given = scenario.get('given')
+        if isinstance(given, dict):
+            pieces.append(given.get('text'))
+        for phase in ('when', 'then'):
+            steps = scenario.get(phase)
+            if isinstance(steps, list):
+                pieces.extend(step.get('text') for step in steps if isinstance(step, dict))
+        binding['quote_sources'].extend(piece for piece in pieces
+            if isinstance(piece, str) and piece.strip())
+    for binding in bindings.values():
+        binding['quote_sources'] = list(dict.fromkeys(binding['quote_sources']))
+    return list(bindings.values())
+
+
 def validate_plan(value, ir):
     _fields(value, {'cases'})
     cases = value['cases']
     if not isinstance(cases, list) or not 1 <= len(cases) <= MAX_CASES:
         raise ValueError('cases count outside bounds')
-    items = {row['id']: row for row in ir.get('work_items', [])
-             if isinstance(row, dict) and isinstance(row.get('id'), str)}
+    items = {row['id']: row for row in requirement_bindings(ir)}
     names, total = set(), 0
     actions = {'click', 'fill', 'select', 'check', 'uncheck', 'press'}
     assertions = {'visible', 'text', 'value', 'count', 'url'}
@@ -113,7 +145,7 @@ def validate_plan(value, ir):
         ref = _text(case['requirement_id'], 200)
         quote = _text(case['requirement_quote'], 500)
         item = items.get(ref, {})
-        if len(quote) < 8 or not any(quote in str(item.get(k) or '') for k in ('text', 'name')):
+        if len(quote) < 8 or not any(quote in source for source in item.get('quote_sources', [])):
             raise ValueError('quote is not bound to the referenced public requirement')
         steps = case['steps']
         if not isinstance(steps, list) or not 3 <= len(steps) <= MAX_STEPS:

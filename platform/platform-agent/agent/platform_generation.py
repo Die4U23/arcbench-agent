@@ -609,6 +609,16 @@ class PlatformGenerationModel(CompetitionModel):
                 raise
             return dict(status='stopped', reason=error.reason, turns=self.execution_control.requests - started_requests)
 
+    def repair_sources(self, packet, tools, *, feedback, request_allowance):
+        """Repair observed development defects without rebuilding the task's plan."""
+        if type(request_allowance) is not int or request_allowance < 0:
+            raise ValueError('request allowance must be a nonnegative integer')
+        return self.review_sources(packet, tools, request_allowance=request_allowance,
+            feedback=('Repair only requirement violations supported by this development diagnostic '
+                      'and current source. Trace affected dependencies and preserve other behavior. '
+                      'The controller will revalidate the resulting source; a static check is not '
+                      'proof that the reported behavior is fixed.\n' + feedback))
+
     def author_behavior_checks(self, packet, tools, ir, request_allowance):
         """Read-only authoring shares all request, token and protocol limits."""
         started = self.execution_control.requests
@@ -1339,7 +1349,7 @@ def run_runtime_loop(app, tests_dir, settings, *, model, tools, make_packet, rec
                 break
             try:
                 tools.unseal()
-                repair = model.implement(make_packet(), tools, request_allowance=settings.repair_request_allowance,
+                repair = model.repair_sources(make_packet(), tools, request_allowance=settings.repair_request_allowance,
                                          feedback=best['feedback'])
                 record('runtime_repair', f'round-{number}', repair, allow_delivery=True, optional=True)
                 checked = validate()
@@ -1653,7 +1663,7 @@ def generate(args):
     checked = validate()
     if not checked['passed'] and budget_open() and result.get('reason') not in ALLOCATION_STOP_REASONS:
         tools.unseal()
-        result = model.implement(packet(all_ids),tools,request_allowance=settings.repair_request_allowance,
+        result = model.repair_sources(packet(all_ids),tools,request_allowance=settings.repair_request_allowance,
             feedback=STATIC_REPAIR_FEEDBACK+json.dumps(checked))
         record('static_repair','all-atomic-requirements',result,allow_delivery=True)
         checked = validate()

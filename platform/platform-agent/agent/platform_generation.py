@@ -596,10 +596,12 @@ class PlatformGenerationModel(CompetitionModel):
             messages.append(dict(role='user', content='PUBLIC REQUIREMENT BINDINGS\n' + json.dumps(
                 [{key: row.get(key) for key in ('id', 'name', 'text')} for row in ir.get('work_items', [])],
                 ensure_ascii=False)))
-            return self._run(packet, tools, stage='competition_audit', mode='audit',
+            result = self._run(packet, tools, stage='competition_audit', mode='audit',
                 instructions=instructions, max_tokens=self.output_reserve_tokens,
                 request_allowance=request_allowance, initial_messages=messages,
                 final_validator=lambda value: behavior_checks.validate_plan(value, ir))
+            result['turns'] = self.execution_control.requests - started
+            return result
         except ExecutionStopped as error:
             if error.reason in {'rollback_failed', 'concurrent_source_change'}:
                 raise

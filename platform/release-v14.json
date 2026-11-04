@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "version": "v14-behavior-diagnostics-candidate",
+  "version": "v14-author-accounting-candidate",
   "formal_status": "UNRUN",
   "baseline_tag": "platform-v13-20261104",
   "issue": "https://github.com/Die4U23/arcbench-agent/issues/44",
@@ -54,8 +54,8 @@
       "bytes": 17986
     },
     "agent/platform_generation.py": {
-      "sha256": "903d546dea4a008c61a795549fadee97dc5e0e72a5bc179141d8737794a8468e",
-      "bytes": 106835
+      "sha256": "a96b88af78d788a57a1cc3d0f7a98fb37b0580503fa3dbc05a1c80f3f8e0e7b9",
+      "bytes": 106935
     },
     "agent/platform_inputs.py": {
       "sha256": "234e1c59b6e3f5b6a8ebb0cda3b7abf8639851c158b7105a454ec58d19f89c71",

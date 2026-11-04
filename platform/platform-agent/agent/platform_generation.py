@@ -412,6 +412,9 @@ class PlatformGenerationModel(CompetitionModel):
                         'is advisory and can shrink as source grows; preserve room for integration and review. '
                         'plan_requests_remaining_including_this is the remaining allocation for this entire '
                         'plan phase, including replanning; a larger global token estimate does not extend it. '
+                        'The final step must integrate and validate source-backed claims for ALL original '
+                        'phase_requirement_ids, preserving earlier work. For a whole-task plan, this includes '
+                        'public scenarios and UI elements without a work-item association. '
                         'Batch related source edits and coverage updates, avoid cosmetic passes while required '
                         'behavior remains, and close this step once its required behavior is complete. '
                         'Never skip a requirement or report an unimplemented behavior as covered.')
@@ -498,11 +501,18 @@ class PlatformGenerationModel(CompetitionModel):
         refs = getattr(self, '_active_step_refs', None)
         ir_path = Path(tools.project_dir) / 'docs/task-ir.json' if refs and hasattr(tools, 'project_dir') else None
         if checked.get('passed') and ir_path is not None and ir_path.is_file():
-            missing = missing_coverage(tools.project_dir, json.loads(ir_path.read_text(encoding='utf-8')), refs)
+            ir = json.loads(ir_path.read_text(encoding='utf-8'))
+            progress = self.execution_control.plan_progress
+            if progress is not None and progress['remaining_steps'] == 1:
+                refs = progress['phase_requirement_ids']
+                if set(refs) == {str(item['id']) for item in ir.get('work_items', [])
+                                 if isinstance(item, dict) and item.get('id') is not None}:
+                    refs = None
+            missing = missing_coverage(tools.project_dir, ir, refs)
             if missing:
                 tools.unseal()
                 checked = dict(checked, passed=False, errors=[dict(path='docs/coverage.json',
-                    error='Current step has missing source-backed claims', missing=missing)])
+                    error='Current step or final plan integration has missing source-backed claims', missing=missing)])
         return checked
 
     def implement(self, packet, tools, *, feedback=None, request_allowance=None):

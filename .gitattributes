@@ -1,0 +1,7 @@
+# Frozen package bytes must survive Windows and Linux checkouts unchanged.
+platform/platform-agent/** -text -whitespace
+platform/platform-agent/static-tools/babelBundle.cjs linguist-vendored
+platform/*.py text eol=lf
+platform/*.json text eol=lf
+platform/*.md text eol=lf
+platform/tests/** text eol=lf

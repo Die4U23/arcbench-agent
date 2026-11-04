@@ -4,6 +4,8 @@
 
 [![CI](https://github.com/Die4U23/arcbench-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/Die4U23/arcbench-agent/actions/workflows/ci.yml)
 
+**Frozen v13 baseline (2026-11-04):** the platform generator, its complete regression suite, and a byte-verified package manifest are now in [platform/](platform/README.md). Start future platform changes there. v13 has not run formal platform evaluation; the results and architecture below describe the existing root Agent. [Freeze record](docs/releases/platform-v13-20261104.md).
+
 A **requirement-driven Web development Agent** in Python. It turns requirement documents into applications through explicit planning, tool-driven implementation, verification, bounded repair, and candidate delivery.
 
 Designed as a reusable workflow across business domains, with ARC-Bench providing the task and evaluation environment. Railway Ticket Booking is the first formally validated example; broader autonomous task completion remains an engineering goal under evaluation. Developed for **CS3604**.

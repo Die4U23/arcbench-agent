@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "version": "v14-stream-transport-candidate",
+  "version": "v14-cohesive-review-candidate",
   "formal_status": "UNRUN",
   "baseline_tag": "platform-v13-20261104",
   "issue": "https://github.com/Die4U23/arcbench-agent/issues/44",
@@ -22,8 +22,8 @@
       "bytes": 39051
     },
     "agent/competition_model.py": {
-      "sha256": "92dae22ad3ee92ac31de27c0422e79b6370f2c53bc311071b9c76ee053003cf7",
-      "bytes": 50259
+      "sha256": "9f551ef6c8c82f15f2b3ae4a6a275a4bd08bb00284461e0670d2daf279b96262",
+      "bytes": 50760
     },
     "agent/execution_policy.py": {
       "sha256": "2c878bdf8766e3bcd29a1988bf29bcbcacd207c267225c95cc89f19936956e23",
@@ -50,8 +50,8 @@
       "bytes": 17986
     },
     "agent/platform_generation.py": {
-      "sha256": "cc829175fd09e795ff0f4cdcd9030fb7d58f1acdd196fdf98f5225039dd59abd",
-      "bytes": 95839
+      "sha256": "bcca5ba917611ba9ad90a23bec017af89928338f72d99e197529213705d19e55",
+      "bytes": 100416
     },
     "agent/platform_inputs.py": {
       "sha256": "234e1c59b6e3f5b6a8ebb0cda3b7abf8639851c158b7105a454ec58d19f89c71",

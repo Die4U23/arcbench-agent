@@ -718,10 +718,18 @@ class CompetitionModel:
         return result
 
     def implement(self, packet: Any, tools: Any, *, feedback: str | None = None,
-                  request_allowance: int | None = None) -> dict[str, Any]:
-        instructions = (
+                  request_allowance: int | None = None, review: bool = False) -> dict[str, Any]:
+        scope = (
+            "Perform a bounded source review of the controller's supplied review targets. "
+            "The whole-task packet is requirements reference, not an instruction to reimplement the application. "
+            "Trace the targets through their shared modules, fix evidenced gaps, and preserve other completed work. "
+            "Do not create a new plan or expand into unrelated polishing. "
+        ) if review else (
             "You are implementing a generic software task in the supplied application project. Follow "
-            "the task packet exactly and preserve existing work. Inspect before editing. Use only the "
+            "the task packet exactly and preserve existing work. "
+        )
+        instructions = scope + (
+            "Inspect before editing. Use only the "
             "provided project tools; never access paths outside their contract. Do not weaken or edit "
             "protected requirements or tests. Use list_context to discover omitted source. "
             "Return a JSON object when finished with keys summary and changed_paths. A model completion "

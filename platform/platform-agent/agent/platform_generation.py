@@ -487,9 +487,11 @@ class PlatformGenerationModel(CompetitionModel):
                     'budget; split large changes across tool turns instead of emitting the entire application '
                     'in one response. Leave structurally valid source and call validate_source. '
                     'Finish with JSON containing summary and changed_paths. Static validity is not '
-                    'behavioral acceptance. Current step:\n' + json.dumps(vars(step), ensure_ascii=False))
+                    'behavioral acceptance. The controller supplies current_plan_step after the task context.')
                 messages = self._messages(packet, 'competition_implementation', instructions)
-                messages.append(dict(role='user', content=kwargs.get('feedback') or 'Execute the current step.'))
+                messages.append(dict(role='user', content=json.dumps(dict(
+                    kind='current_plan_step', step=vars(step),
+                    controller_feedback=kwargs.get('feedback') or 'Execute the current step.'), ensure_ascii=False)))
                 result = self._run(packet, tools, stage='competition_implementation', mode='implement',
                     instructions=instructions, max_tokens=self.output_reserve_tokens,
                     request_allowance=kwargs.get('request_allowance'), initial_messages=messages)
@@ -591,7 +593,7 @@ class PlatformGenerationModel(CompetitionModel):
 
             def execute(step, budget):
                 current = source_digest(snapshot_project(tools.project_dir))
-                instruction = json.dumps(dict(step=vars(step), current_source_sha256=current,
+                instruction = json.dumps(dict(current_source_sha256=current,
                     step_requests_remaining=budget, controller_feedback=feedback,
                     note='Execute this step using the current workspace snapshot. Read omitted or changed files as needed. Preserve completed steps.'), ensure_ascii=False)
                 return self._react(packet, tools, step=step, feedback=instruction, request_allowance=budget)

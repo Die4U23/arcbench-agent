@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "version": "v14-explicit-plan-coverage-scope-candidate",
+  "version": "v14-stable-step-context-prefix-candidate",
   "formal_status": "UNRUN",
   "baseline_tag": "platform-v13-20261104",
   "issue": "https://github.com/Die4U23/arcbench-agent/issues/44",
@@ -54,8 +54,8 @@
       "bytes": 18417
     },
     "agent/platform_generation.py": {
-      "sha256": "0421c58ccaef4046355b88497aa56d6d5c6363b45e0287c978db789a9916397a",
-      "bytes": 114800
+      "sha256": "8c9a4c675794a8324c8158fb20a912646b038692740f449bf80ab78785a3bbbd",
+      "bytes": 114930
     },
     "agent/platform_inputs.py": {
       "sha256": "234e1c59b6e3f5b6a8ebb0cda3b7abf8639851c158b7105a454ec58d19f89c71",

@@ -47,7 +47,7 @@ WHOLE_TASK_PREFIX = 'SOURCE_COMPLETENESS: ALL_TEXT_SOURCES_INCLUDED\n'
 PARTIAL_TASK_PREFIX = 'SOURCE_COMPLETENESS: PARTIAL_READ_OMITTED_RANGES\n'
 EXECUTION_STOP_REASONS = {'execution_deadline', 'execution_request_limit', 'execution_tool_limit',
     'tool_batch_limit', 'repeated_action', 'source_oscillation', 'no_progress', 'replan_limit',
-    'request_interrupted_usage_unknown', 'model_request_failed'}
+    'request_interrupted_usage_unknown', 'model_request_failed', 'model_terminated'}
 BUDGET_STOP_REASONS = EXECUTION_STOP_REASONS | {'platform_token_allocation', 'platform_request_allocation', 'request_allowance', 'context_limit'}
 ALLOCATION_STOP_REASONS = EXECUTION_STOP_REASONS | {'platform_token_allocation', 'platform_request_allocation'}
 MIN_BATCH_REQUESTS = 4

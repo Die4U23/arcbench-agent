@@ -483,6 +483,12 @@ class CompetitionModel:
             self._stopped_reason = "truncated"
             self._append_log({"stage": stage, "status": "stopped", "reason": "truncated"})
             return None
+        if self._finish_reason(response) not in ("stop", "tool_calls"):
+            self._stopped_reason = "model_terminated"
+            if self.campaign_budget is not None:
+                self.campaign_budget.stop(self._stopped_reason)
+            self._append_log({"stage": stage, "status": "stopped", "reason": self._stopped_reason})
+            return None
         return response
 
     def _run(self, packet: Any, tools: Any, *, stage: str, mode: str,

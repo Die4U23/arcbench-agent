@@ -9,10 +9,21 @@ from typing import Any
 from urllib.parse import urlsplit
 
 import httpx
+from openai.types.chat.chat_completion import ChatCompletion, Choice
 
 
 DEFAULT_MODEL_DEADLINE_SECONDS = 300.0
 MAX_MODEL_DEADLINE_SECONDS = 900.0
+
+
+class _ProviderChoice(Choice):
+    # Compatible providers may report additional terminal reasons. Preserve
+    # them for the controller to reject after accounting for complete usage.
+    finish_reason: str
+
+
+class _ProviderCompletion(ChatCompletion):
+    choices: list[_ProviderChoice]
 
 
 def default_model_deadline(model: str, base_url: str) -> float:
@@ -124,8 +135,6 @@ class CompletionClient:
     async def _request(self, client, kwargs):
         if not self.assemble_stream:
             return await client.chat.completions.create(**kwargs)
-        from openai.types.chat import ChatCompletion
-
         options = dict(kwargs, stream=True, stream_options={
             **(kwargs.get('stream_options') or {}), 'include_usage': True})
         stream = await client.chat.completions.create(**options)
@@ -181,14 +190,19 @@ class CompletionClient:
         for index in sorted(choices):
             part = choices[index]
             tools = part.pop('tools')
-            if tools:
+            if part['finish_reason'] not in ('stop', 'tool_calls'):
+                # Failed/truncated generations can end in a partial tool. Only
+                # the terminal status and validated usage may reach control.
+                part['message'] = dict(role='assistant', content=None)
+                part['logprobs'] = None
+            elif tools:
                 if any(not tool['id'] or not tool['function']['name'] for tool in tools.values()):
                     raise ModelRequestInterrupted(reason='incomplete_stream_tool',
                                                   deadline_seconds=self.deadline_seconds)
                 part['message']['tool_calls'] = [tools[key] for key in sorted(tools)]
             complete.append(part)
         try:
-            return ChatCompletion.model_validate(dict(metadata, choices=complete, usage=usage))
+            return _ProviderCompletion.model_validate(dict(metadata, choices=complete, usage=usage), strict=True)
         except ValueError as exc:
             raise ModelRequestInterrupted(reason='invalid_stream_response',
                                           deadline_seconds=self.deadline_seconds,

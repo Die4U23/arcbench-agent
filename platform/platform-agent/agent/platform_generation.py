@@ -70,8 +70,9 @@ WALKTHROUGH_INSTRUCTIONS = (
 )
 MANIFEST_NAMES = {'package.json', 'package-lock.json', 'npm-shrinkwrap.json', 'pnpm-lock.yaml', 'yarn.lock'}
 PLAYWRIGHT_CACHE_NAME = 'arc-runtime-check-playwright-cache'
-STATIC_REPAIR_FEEDBACK = ('Repair only these observed static errors, then validate and finish. A page-level exact link or '
-                          'button name must occur once across the shared layout and current route. Do not redesign '
+STATIC_REPAIR_FEEDBACK = ('Repair only these observed static errors, then validate and finish. Preserve the required '
+                          'roles, names and cardinality; resolve an interaction within its specified scope rather than '
+                          'removing or renaming required repeated controls. Do not redesign '
                           'passing source or edit tests.\n')
 RUNTIME_REPAIR_FEEDBACK = ('The orchestrator installed, built and started a copy of your delivered source. '
                            'Repair the source only, keep passing flows and docs/task-ir.json and docs/coverage.json valid, '
@@ -79,10 +80,16 @@ RUNTIME_REPAIR_FEEDBACK = ('The orchestrator installed, built and started a copy
                            'do not edit tests or requirements, then call validate_source and finish.\n')
 INTERACTION_CONVENTIONS = (
     'Render each parsed element with its role and accessible name unchanged (accessible-name semantics).\n'
-    'Unless the IR marks multiple=true, one role+name is unique in a given page state (Playwright strict mode).\n'
-    'Entries that share a group and persistent=true go in one persistent navigation landmark, not repeated in the body (landmark semantics).\n'
-    'A named region or list uses a region landmark with that accessible name; a dialog uses role=dialog with its name; form controls have an associated label (WAI-ARIA).\n'
-    'The action in When must succeed in the Given session. Add a sign-in gate only when the IR auth block and the scenario say so (scenario semantics).\n'
+    'Use the original public requirements to determine cardinality and interaction scope. A strict action needs one '
+    'target in that scope (Playwright strict mode); required repeated controls in separate rows or containers remain distinct. IR multiple=false '
+    'can mean repetition was not recognized, not that the page must contain one instance.\n'
+    'IR groups and persistent flags are extraction hints about availability, not instructions to choose a navigation '
+    'landmark. Preserve the specified toolbar, navigation, region or other container semantics.\n'
+    'Preserve an explicit list as a list and a region as a region; a named list may be nested in a region without '
+    'changing its role. Dialogs and form controls retain their required roles and accessible labels (WAI-ARIA).\n'
+    'The action in When must succeed in the Given session. Derive authentication prerequisites from the full public '
+    'requirements and supplied setup, including flows the parser does not recognize. An absent IR auth block is unknown; '
+    'it neither permits anonymous access nor justifies adding a sign-in gate to an anonymous operation.\n'
     'State that must survive reload is stored on the server; the UI updates immediately (observable-result semantics).\n'
     'Lists can hold many uniquely suffixed records without a forced pager; no default animation; time uses the zone the requirement states; the first view is interactive within one second (external automation constraints).\n'
 )
@@ -1018,6 +1025,9 @@ def ir_prompt_summary(ir, starter_layout):
     runtime = document.get('runtime') if isinstance(document.get('runtime'), dict) else {}
     lines = [
         'TASK IR SUMMARY',
+        'Use the full public requirements as the authority. Multiplicity, persistence, grouping and auth '
+        'recognition are incomplete extraction hints; omitted or false flags do not negate stated behavior '
+        'or prescribe a container role.',
         f'Detected starter layout: {starter_layout}.',
         f'Runtime layout: {runtime.get("layout")}.',
     ]
@@ -1097,7 +1107,8 @@ def review_slice(ir, work_item):
 
 
 def review_group_feedback(ir, items):
-    return (INTERACTION_CONVENTIONS + 'Review these related requirements together against the current source. '
+    # The full task packet already carries INTERACTION_CONVENTIONS once.
+    return ('Review these related requirements together against the current source. '
             'Trace shared state and dependent behaviors end to end; batch related fixes and validate once. '
             'Inspect every supplied review target within the allowance; source review is not behavioral acceptance. '
             'Do not redo unchanged source reads or turn this review into a new implementation plan. '

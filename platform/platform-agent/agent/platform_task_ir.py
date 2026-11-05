@@ -429,6 +429,8 @@ def _walk(tree: dict[str, Any], entities: list[dict[str, Any]]):
         seen.add(item_id)
         name = node.get("name") or node.get("title") or item_id
         text = node.get("description")
+        if isinstance(text, dict):
+            text = text.get("text")
         if not isinstance(text, str):
             text = node.get("text") if isinstance(node.get("text"), str) else ""
         text = text.strip()

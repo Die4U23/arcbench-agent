@@ -147,3 +147,10 @@ v14 从本次任务与当前工程生成行动，不携带预设业务计划。R
 
 
 计划步骤的目标、依赖和验收条件通过 `current_plan_step` 控制器消息提供一次，不放入每步变化的系统消息前缀。稳定规则与固定需求在前，当前源码观察和步骤数据在后，以保留可复用前缀并消除重复步骤负载。当前源码仍逐阶段重新观察；预算、范围、验证与回滚边界不变。前缀字节变化不等于已经测得提供方缓存命中、token节省或分数提升。
+## Requirement text shapes
+
+The deterministic task IR accepts requirement descriptions as either a string
+or a mapping with a string `text` field. Both forms preserve the same public
+text for review slices, UI annotation parsing and behavior-check citations.
+Image metadata and unsupported values are not coerced into prose; the existing
+top-level `text` fallback remains available when the description is not textual.

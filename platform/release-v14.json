@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "version": "v14-stable-step-context-prefix-candidate",
+  "version": "v14-structured-requirement-text-candidate",
   "formal_status": "UNRUN",
   "baseline_tag": "platform-v13-20261104",
   "issue": "https://github.com/Die4U23/arcbench-agent/issues/44",
@@ -82,8 +82,8 @@
       "bytes": 14457
     },
     "agent/platform_task_ir.py": {
-      "sha256": "f43b69cc999f5cfa82edbe777c9fbdb539a3714c57d8e04991d98c9a5858bbe1",
-      "bytes": 47460
+      "sha256": "efdd5006bfdd47cf41395ce8ad28e456a17a7846665e952fc3b34cadc9377470",
+      "bytes": 47533
     },
     "agent/request_metrics.py": {
       "sha256": "2c9f4e597db7f2f8515836b8378cea7a9d1ef270b1f9922664629e85ab5878d5",

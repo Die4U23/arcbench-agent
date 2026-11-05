@@ -304,7 +304,7 @@ class PlanExecutor:
         self.control, self.tools = control, tools
         self.planner, self.executor, self.validator = planner, executor, validator
 
-    def run(self, requirement_ids, allowance, feedback=None):
+    def run(self, requirement_ids, allowance, feedback=None, *, whole_task=False):
         started = self.control.requests
         phase_refs = list(dict.fromkeys(requirement_ids))
         pending = list(phase_refs)
@@ -348,6 +348,7 @@ class PlanExecutor:
                         revision=len(history), current_step=step.id,
                         request_ceiling=started + allowance,
                         phase_requirement_ids=list(phase_refs),
+                        whole_task=whole_task is True,
                         remaining_steps=len(steps) - index,
                         remaining_requirement_count=len(pending),
                         completed_step_ids=[item['id'] for item in completed],

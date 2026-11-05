@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "version": "v14-requirements-over-parser-hints-candidate",
+  "version": "v14-explicit-plan-coverage-scope-candidate",
   "formal_status": "UNRUN",
   "baseline_tag": "platform-v13-20261104",
   "issue": "https://github.com/Die4U23/arcbench-agent/issues/44",
@@ -50,12 +50,12 @@
       "bytes": 8946
     },
     "agent/platform_execution.py": {
-      "sha256": "eb7af13f779f1ac950087f3b28a70a1486edc3fdc448c2b2f97b92d6499b92bd",
-      "bytes": 18341
+      "sha256": "e4b011429b7fbd1b561dc2c4baf6ee33f2e0e5d8d2c260af8afd9e0c07b6493c",
+      "bytes": 18417
     },
     "agent/platform_generation.py": {
-      "sha256": "7a707e8d7334fd560886bca27b934946b360e666c348b1dd0536c5e5d9499959",
-      "bytes": 114466
+      "sha256": "0421c58ccaef4046355b88497aa56d6d5c6363b45e0287c978db789a9916397a",
+      "bytes": 114800
     },
     "agent/platform_inputs.py": {
       "sha256": "234e1c59b6e3f5b6a8ebb0cda3b7abf8639851c158b7105a454ec58d19f89c71",

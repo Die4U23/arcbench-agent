@@ -424,8 +424,9 @@ class PlatformGenerationModel(CompetitionModel):
                         'plan_requests_remaining_including_this is the remaining allocation for this entire '
                         'plan phase, including replanning; a larger global token estimate does not extend it. '
                         'The final step must integrate and validate source-backed claims for ALL original '
-                        'phase_requirement_ids, preserving earlier work. For a whole-task plan, this includes '
-                        'public scenarios and UI elements without a work-item association. '
+                        'phase_requirement_ids, preserving earlier work. When plan_progress.whole_task is true, '
+                        'this also includes parent work items and public scenarios and UI elements without '
+                        'a work-item association; atomic selection does not waive those source-backed claims. '
                         'Batch related source edits and coverage updates, avoid cosmetic passes while required '
                         'behavior remains, and close this step once its required behavior is complete. '
                         'Never skip a requirement or report an unimplemented behavior as covered.')
@@ -520,7 +521,7 @@ class PlatformGenerationModel(CompetitionModel):
             progress = self.execution_control.plan_progress
             if progress is not None and progress['remaining_steps'] == 1:
                 refs = progress['phase_requirement_ids']
-                if set(refs) == {str(item['id']) for item in ir.get('work_items', [])
+                if progress.get('whole_task') is True or set(refs) == {str(item['id']) for item in ir.get('work_items', [])
                                  if isinstance(item, dict) and item.get('id') is not None}:
                     refs = None
             missing = missing_coverage(tools.project_dir, ir, refs)
@@ -597,7 +598,8 @@ class PlatformGenerationModel(CompetitionModel):
 
             runner = PlanExecutor(control, tools, planner, execute,
                                   lambda: json.loads(tools.call('validate_source', {})))
-            result = runner.run(requirements, allowance, feedback)
+            result = runner.run(requirements, allowance, feedback,
+                                whole_task=self._manifest(packet).get('whole_task') is True)
             if result.get('reason') in {'rollback_failed', 'concurrent_source_change'}:
                 raise ExecutionStopped(result['reason'])
             return result
@@ -1599,7 +1601,8 @@ def generate(args):
         logging.info('SOURCE_PACKET %s',json.dumps(dict(task_id=task,selection=list(selection),whole_task=whole,
             all_text_visible=complete,source_files=len(sources),utf8_bytes=len(text.encode('utf-8')),
             dependency_locks='preserved_without_repeated_payload',requirement_mirror='excluded_duplicate')))
-        return replace(result,text=(WHOLE_TASK_PREFIX if complete else PARTIAL_TASK_PREFIX)+text)
+        return replace(result,text=(WHOLE_TASK_PREFIX if complete else PARTIAL_TASK_PREFIX)+text,
+                       manifest=dict(result.manifest, whole_task=whole))
     def record(kind, identity, result, *, allow_delivery=False, optional=False):
         logging.info('PLATFORM_STAGE_RESULT %s',json.dumps({k:result[k] for k in ('status','reason','tool','turns') if k in result}))
         actions.append(dict(stage=kind,item=identity,result=result))

@@ -154,3 +154,10 @@ or a mapping with a string `text` field. Both forms preserve the same public
 text for review slices, UI annotation parsing and behavior-check citations.
 Image metadata and unsupported values are not coerced into prose; the existing
 top-level `text` fallback remains available when the description is not textual.
+
+## 模型非成功终态
+
+JSON 与流式响应遵循同一执行边界：只有 `stop` 或 `tool_calls` 允许进入动作执行；
+`length` 仍作为截断停止，其他终态作为 `model_terminated` 停止并阻止后续阶段请求。
+中止响应的部分工具内容不执行。响应模型和用量均通过校验后才结算；缺少终帧、
+用量未知、用量越界或模型不一致仍保留预留。该边界不提供自动重试，也不修复外部连接中断。

@@ -1188,7 +1188,7 @@ def walkthrough_feedback(tests_dir):
 
 
 def run_runtime_loop(app, tests_dir, settings, *, model, tools, make_packet, record, validate, task_id, report_path, ir,
-                     model_calls_allowed=lambda: True, authored_checks=None):
+                     model_calls_allowed=lambda: True, authored_checks=None, review_after_pass=None):
     """Check, repair and re-check the project on a scratch copy.
 
     An optional controller-frozen authored suite contains public-requirement
@@ -1208,12 +1208,14 @@ def run_runtime_loop(app, tests_dir, settings, *, model, tools, make_packet, rec
     copy_dir, check_dir = work_root/'project', work_root/'check'
     cache = Path(tempfile.gettempdir())/PLAYWRIGHT_CACHE_NAME
     best = None
+    checked_source = None
+    review_attempted = False
     installed_manifests = None
     if authored_checks:
         report['authored_checks'] = dict(scope='synthetic_diagnostics_only', hashes=authored_checks['hashes'],
             cases=authored_checks['cases'], frozen=True)
 
-    def write_report():
+    def write_report(current_source=None):
         if report.get('stopped') == 'unavailable_after_review':
             report['final_status'] = 'unavailable'
         elif best is not None:
@@ -1223,11 +1225,21 @@ def run_runtime_loop(app, tests_dir, settings, *, model, tools, make_packet, rec
             report['best_round'] = best['round']
         if report['rounds']:
             report['last_round_status'] = report['rounds'][-1]['status']
+        report['checked_source_sha256'] = checked_source
+        report['source_sha256'] = current_source if current_source is not None else source_digest(snapshot_project(app))
+        if best is not None and checked_source != report['source_sha256']:
+            report['final_status'] = 'unverified'
         report_path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding='utf-8')
 
     def restore_best(entry, action):
+        nonlocal checked_source
+        if control is not None:
+            control.source(app)  # Detect external edits before any restoration write.
         try:
             if best is not None and restore_snapshot(app, best['files']):
+                # Restoration requires a fresh check; historical success is not
+                # evidence that the restored candidate ran in this world.
+                checked_source = None
                 tools.source_revision += 1
                 tools.unseal()
                 if control is not None:
@@ -1241,6 +1253,13 @@ def run_runtime_loop(app, tests_dir, settings, *, model, tools, make_packet, rec
 
     try:
         for number in range(1, settings.runtime_rounds + 1):
+            if control is not None and control.stopped:
+                if control.stopped in {'rollback_failed', 'concurrent_source_change'}:
+                    raise ExecutionStopped(control.stopped)
+                report['stopped'] = control.stopped
+                if best is not None:
+                    restore_best(report['rounds'][-1], 'restored_after_execution_stopped')
+                break
             remaining = deadline - monotonic()
             if remaining < RUNTIME_MIN_SECONDS:
                 report['stopped'] = 'wall_budget'
@@ -1261,13 +1280,20 @@ def run_runtime_loop(app, tests_dir, settings, *, model, tools, make_packet, rec
                         restore_best(report['rounds'][-1], 'restored_before_unrun_check')
                     break
             try:
-                manifests = manifest_digests(snapshot_project(app))
+                checking_files = control.source(app) if control is not None else snapshot_project(app)
+                checking_source = source_digest(checking_files)
+                manifests = manifest_digests(checking_files)
+                del checking_files
                 sync_project_copy(app, copy_dir, installed_manifests=installed_manifests)
                 suites = [('input', Path(tests_dir))] if tests_dir is not None else []
                 if authored_checks:
                     suites.append(('authored', Path(authored_checks['directory'])))
                 result = run_runtime_check(copy_dir, None, suites=suites, work_dir=check_dir, playwright_cache=cache,
                                            deadline=deadline, timeouts=dict(test=settings.runtime_test_timeout_ms / 1000))
+                if control is not None:
+                    control.source(app)
+            except ExecutionStopped:
+                raise  # Safety stops must never become a harness error followed by rollback.
             except Exception as error:  # the optional check must never discard a static-valid delivery
                 entry = dict(round=number, status='harness_error', error=f'{type(error).__name__}: {str(error)[:300]}',
                              signals={}, diagnostics={})
@@ -1282,6 +1308,7 @@ def run_runtime_loop(app, tests_dir, settings, *, model, tools, make_packet, rec
                 best = None
                 break
             install_ok = not (result.status == 'install_failed' or (result.status == 'timeout' and result.stage == 'install'))
+            checked_source = checking_source
             installed_manifests = manifests if install_ok else None
             entry = dict(round=number, status=result.status, stage=result.stage, passed=result.passed, failed=result.failed,
                          skipped=result.skipped, precondition=result.precondition, total=result.total,
@@ -1327,13 +1354,42 @@ def run_runtime_loop(app, tests_dir, settings, *, model, tools, make_packet, rec
                     'or treat a passing journey as full acceptance. If the diagnostic is wrong, leave the '
                     'application faithful to requirements and report the limitation.\n' +
                     json.dumps(authored_checks['plan'], ensure_ascii=False))
-            if best is None or rank >= best['rank']:
+            if best is None or checking_source == best['source_sha256'] or rank >= best['rank']:
+                # A fresh observation of the same candidate supersedes its
+                # historical rank, including a previously passing result.
                 best = dict(rank=rank, round=number, status=result.status, files=snapshot_project(app),
-                            feedback=feedback)
+                            feedback=feedback, source_sha256=checking_source)
             else:
                 restore_best(entry, f"restored_round_{best['round']}")
+                if checked_source is None:
+                    # Re-run the restored source before any further repair or
+                    # acceptance. The existing round/time cap still applies.
+                    if number >= settings.runtime_rounds:
+                        report['stopped'] = 'restored_candidate_unverified'
+                    write_report()
+                    continue
             write_report()
             if result.status == 'passed':
+                if (review_after_pass is not None and not review_attempted
+                        and number < settings.runtime_rounds and model_calls_allowed()
+                        and deadline - monotonic() >= repair_minimum_seconds(settings)):
+                    review_attempted = True
+                    entry['source_review'] = 'started_after_runtime_pass'
+                    write_report()
+                    original_deadline = control.deadline if control is not None else None
+                    try:
+                        if control is not None:
+                            control.deadline = min(control.deadline, deadline)
+                        review_after_pass()
+                    finally:
+                        if control is not None:
+                            control.deadline = original_deadline
+                    current_source = source_digest(control.source(app) if control is not None else snapshot_project(app))
+                    changed = current_source != checked_source
+                    entry['source_review'] = 'changed_recheck_required' if changed else 'unchanged'
+                    write_report(current_source)
+                    if changed:
+                        continue
                 break
             if result.status == 'failed' and not result.failures:
                 report['stopped'] = 'only_harness_preconditions'
@@ -1669,7 +1725,10 @@ def generate(args):
         checked = validate()
     (reports/'static-validation.json').write_text(json.dumps(checked,indent=2),encoding='utf-8')
     if not checked['passed']: raise RuntimeError('Source is not ready for platform build: '+json.dumps(checked['errors']))
-    if budget_open() and result.get('reason') not in ALLOCATION_STOP_REASONS:
+    # Without runtime capability this remains explicitly source-only review.
+    # Otherwise defer optional reviews until a runnable baseline exists, inside
+    # the same runtime round/time allocation so changed source is rechecked.
+    if (not settings.runtime_check or not shutil.which('node')) and budget_open() and result.get('reason') not in ALLOCATION_STOP_REASONS:
         review_batches(result.get('completed_steps') or [])
     if result.get('status')!='complete':
         logging.warning('Delivering structurally valid candidate after bounded generation stopped: %s; functional acceptance remains UNVERIFIED',result.get('reason'))
@@ -1710,7 +1769,9 @@ def generate(args):
         runtime_report = run_runtime_loop(app, inputs.tests_dir, settings, model=model, tools=tools,
             make_packet=lambda: packet(all_ids), record=record, validate=validate, task_id=task,
             report_path=reports/'runtime-check.json', ir=load_task_ir(app, ir), model_calls_allowed=budget_open,
-            authored_checks=authored)
+            authored_checks=authored,
+            review_after_pass=(lambda: review_batches(result.get('completed_steps') or []))
+                if result.get('reason') not in ALLOCATION_STOP_REASONS else None)
         final = validate()
         (reports/'static-validation.json').write_text(json.dumps(final,indent=2),encoding='utf-8')
         if not final['passed']:

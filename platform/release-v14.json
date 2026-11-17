@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "version": "v33-r8-deferred-candidate-closeout",
+  "version": "v34-r9-plan-dependency-contract",
   "formal_status": "UNRUN",
   "baseline_tag": "platform-v13-20261104",
   "issue": "https://github.com/Die4U23/arcbench-agent/issues/69",
@@ -66,12 +66,12 @@
       "bytes": 9820
     },
     "agent/platform_execution.py": {
-      "sha256": "c97df084a3522cd4d5e5f2cf37725b4cded930c20e1a4a13fd8d4b71caba2c78",
-      "bytes": 62268
+      "sha256": "3731c7ef4cd688a6e5c597d0318c46052563ba593d95473f2a2c255331408ab8",
+      "bytes": 63464
     },
     "agent/platform_generation.py": {
-      "sha256": "357c8f4d9f9df0d5c4522e10b8a0e490d6a82214344131a1bf74bd8b8998b28a",
-      "bytes": 187303
+      "sha256": "2e376ef6f631d9c5458bb71341811842735682ca20d2dc7e5549264f3050cae4",
+      "bytes": 188113
     },
     "agent/platform_inputs.py": {
       "sha256": "234e1c59b6e3f5b6a8ebb0cda3b7abf8639851c158b7105a454ec58d19f89c71",

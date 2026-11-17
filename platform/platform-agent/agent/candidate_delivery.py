@@ -92,6 +92,7 @@ def _check_source(app, evidence, model, settings, *, ir, directory, generation_r
         static_validation=evidence.static, runtime=feedback, smoke_hashes=smoke_hashes,
         reserved_validation_steps=validation_steps,
         generation_status=generation_result.get('status'), generation_stop_reason=generation_result.get('reason'),
+        generation_stop_detail=generation_result.get('detail'), generation_stop_phase=generation_result.get('phase'),
         original_controller_stop=permit.stop_reason,
         model_requests_closed=True,
         usage_accounting=dict(model.campaign_budget.state) if model.campaign_budget is not None else None,

@@ -18,7 +18,7 @@ from .sandbox_files import apply_snapshot, snapshot_project
 MODEL_ONLY_STOPS = frozenset({'model_request_failed', 'request_interrupted_usage_unknown',
     'model_terminated', 'execution_request_limit', 'platform_token_allocation',
     'platform_request_allocation', 'request_allowance', 'context_limit',
-    'repeated_action', 'no_progress', 'source_oscillation', 'replan_limit', 'tool_batch_limit', 'verification_blocked'})
+    'repeated_action', 'no_progress', 'source_oscillation', 'replan_limit', 'tool_batch_limit', 'verification_blocked', 'invalid_plan'})
 SOURCE_SAFETY_STOPS = frozenset({'rollback_failed', 'concurrent_source_change'})
 PHASE_BUDGET_STOPS = frozenset({'self_test_reserve', 'self_test_time_reserve'})
 EXECUTION_STOP_REASONS = frozenset({'execution_deadline', 'execution_request_limit', 'execution_tool_limit',
@@ -29,6 +29,12 @@ BUDGET_STOP_REASONS = EXECUTION_STOP_REASONS | PHASE_BUDGET_STOPS | {'platform_t
 ALLOCATION_STOP_REASONS = EXECUTION_STOP_REASONS | {'platform_token_allocation', 'platform_request_allocation'}
 CAMPAIGN_DIAGNOSTIC_STOPS = frozenset({'request_usage_unknown', 'request_interrupted_usage_unknown'})
 QUALITY_WARNINGS = frozenset({'quality_stagnation', 'quality_unknown'})
+
+
+def planning_stopped(result):
+    """Only a classified planning failure can enter the candidate-only exit."""
+    return (result.get('status') == 'stopped' and result.get('reason') == 'invalid_plan'
+            and result.get('phase') == 'planning')
 
 
 def behavior_verification_status(checked):
@@ -753,12 +759,12 @@ class PlanExecutor:
                           self.control.limits.requests - self.control.requests)
             return self.control.soft_request_allowance(max(0, ceiling), stage='CODE')
 
-        def result(status, reason=None):
+        def result(status, reason=None, **context):
             return dict(status=status, reason=reason, turns=self.control.requests - started,
                         completed_steps=completed, candidate_steps=constructed, plan_history=history,
                         pending_requirement_ids=pending,
                         acceptance='synthetic_step_diagnostics' if self.behavior_validator else 'static_only',
-                        task_state=self.control.task_state, control_state=self.control.control_state, **candidate)
+                        task_state=self.control.task_state, control_state=self.control.control_state, **candidate, **context)
 
         def quarantine(checkpoint):
             receipt = dict(candidate_source=self.behavior_validator.quarantine(),
@@ -777,12 +783,13 @@ class PlanExecutor:
                 document = self.planner(pending, completed + constructed, feedback,
                     min(self.control.limits.plan_requests, remaining() - 1))
                 if document.get('status') != 'complete':
-                    return result('stopped', document.get('reason', 'planning_failed'))
+                    return result('stopped', document.get('reason', 'planning_failed'),
+                                  phase='planning', detail=document.get('detail', ''))
                 try:
                     steps = validate_plan(document, pending, self.control.limits.plan_steps,
                         exhausted_scope=failed['requirement_ids'] if failed and failed['reason'] == 'request_allowance' else ())
                 except ValueError as error:
-                    return result('stopped', 'invalid_plan: ' + str(error))
+                    return result('stopped', 'invalid_plan', phase='planning', detail=str(error)[:1000])
                 plan = [dict(id=s.id, goal=s.goal, requirement_ids=list(s.requirement_ids),
                              depends_on=list(s.depends_on), acceptance=s.acceptance,
                              status='pending') for s in steps]

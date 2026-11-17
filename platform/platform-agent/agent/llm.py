@@ -7,7 +7,8 @@ import time
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit
-from .model_transport import CompletionClient, ModelRequestInterrupted, default_model_deadline
+from .model_transport import (CompletionClient, ModelRequestInterrupted,
+                              default_model_idle_timeout)
 from .request_metrics import RequestObservation
 
 LOGGER = logging.getLogger(__name__)
@@ -59,12 +60,17 @@ class ModelClient:
             raise ValueError('ARCBENCH_MODEL_TRANSPORT must be auto, json or assembled_stream')
         assemble_stream = (transport == 'assembled_stream' or
                            (transport == 'auto' and self.metrics_provider == 'api.deepseek.com'))
+        configured_deadline = os.environ.get('ARCBENCH_MODEL_DEADLINE_SECONDS')
+        deadline = float(configured_deadline) if configured_deadline is not None else None
+        idle = float(os.environ.get('ARCBENCH_MODEL_IDLE_SECONDS',
+                                    default_model_idle_timeout(self.model, self.base_url)))
         self.client = CompletionClient(api_key=api_key, base_url=self.base_url,
-            deadline_seconds=float(os.environ.get('ARCBENCH_MODEL_DEADLINE_SECONDS',
-                                                  default_model_deadline(self.model, self.base_url))),
-            assemble_stream=assemble_stream)
+            deadline_seconds=deadline, idle_seconds=idle, assemble_stream=assemble_stream)
         LOGGER.info('Model response transport: %s', 'assembled_stream' if assemble_stream else 'json')
+        LOGGER.info('Model timeout policy: request ceiling=%s read idle=%gs; controller phase/task limits apply',
+                    deadline if deadline is not None else 'phase (standalone: read-idle window)', idle)
         self.last_request_interruption = None
+        self.interrupted_requests = []
         self.max_turns, self.max_tool_calls = max_turns, max_tool_calls
         self.max_model_requests = int(os.environ.get('ARCBENCH_MAX_MODEL_REQUESTS', DEFAULT_MAX_MODEL_REQUESTS))
         self.max_total_tokens = int(os.environ.get('ARCBENCH_MAX_TOTAL_TOKENS', DEFAULT_MAX_TOTAL_TOKENS))
@@ -92,7 +98,7 @@ class ModelClient:
         except ModelRequestInterrupted as exc:
             stopped = ModelRequestInterrupted(reason=exc.reason, deadline_seconds=exc.deadline_seconds,
                 stage=stage, request=self.model_requests_used, cause_types=exc.cause_types,
-                stream_state=exc.stream_state)
+                stream_state=exc.stream_state, retry_after_seconds=exc.retry_after_seconds)
             self.last_request_interruption = stopped
             LOGGER.warning("%s", stopped)
             LOGGER.info("Model request: stage=%s request=%d context_chars=%d token_counts=unavailable",
@@ -112,6 +118,35 @@ class ModelClient:
         stopped = getattr(self, "last_request_interruption", None)
         if isinstance(stopped, ModelRequestInterrupted):
             raise stopped
+
+    def can_resume_with_json(self, expected) -> bool:
+        """Only a damaged assembled stream has a specific alternative protocol."""
+        return (isinstance(expected, ModelRequestInterrupted)
+                and expected is self.last_request_interruption
+                and isinstance(self.client, CompletionClient) and self.client.assemble_stream
+                and (expected.reason == 'incomplete_stream'
+                     or expected.reason == 'invalid_response' and 'JSONDecodeError' in expected.cause_types))
+
+    def resume_with_json(self, expected) -> None:
+        """Controller-only handoff after the durable ledger retains the liability."""
+        if not self.can_resume_with_json(expected):
+            raise ValueError('interruption is not eligible for JSON transport recovery')
+        self.interrupted_requests.append(expected.report())
+        self.client.assemble_stream = False
+        self.last_request_interruption = None
+        LOGGER.warning('Model transport recovery: assembled_stream -> json; unknown usage remains reserved')
+
+    def can_resume_after_service_error(self, expected) -> bool:
+        return (isinstance(expected, ModelRequestInterrupted)
+                and expected is self.last_request_interruption
+                and isinstance(self.client, CompletionClient) and expected.reason == 'http_503')
+
+    def resume_after_service_error(self, expected) -> None:
+        """Controller admits an accounted retry; the response protocol is unchanged."""
+        if not self.can_resume_after_service_error(expected):
+            raise ValueError('interruption is not eligible for service recovery')
+        self.interrupted_requests.append(expected.report())
+        self.last_request_interruption = None
 
     def _check_model_budget(self, *, reserve_for_delivery: bool = False) -> None:
         requests_used = getattr(self, "model_requests_used", 0)
@@ -226,6 +261,9 @@ class ModelClient:
         if self.last_request_interruption is not None:
             LOGGER.warning("Model usage incomplete: request=%d stage=%s token_counts=unavailable; unknown usage retained",
                 self.last_request_interruption.request, self.last_request_interruption.stage)
+        if self.interrupted_requests:
+            LOGGER.warning('Model usage incomplete: %d prior interrupted requests retained in budget liability',
+                           len(self.interrupted_requests))
         if self.cache_observed_requests:
             cache_input = self.cache_hit_tokens_used + self.cache_miss_tokens_used
             LOGGER.info(

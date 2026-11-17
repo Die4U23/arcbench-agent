@@ -18,7 +18,7 @@ MAX_FILES = 5000
 MAX_FILE_BYTES = 8 * 1024 * 1024
 MAX_TOTAL_BYTES = 32 * 1024 * 1024
 _IGNORED_DIRS = {"node_modules", "__pycache__", ".venv", "venv"}
-_METADATA = {".git", ".arc", ".hg", ".svn", ".gitmodules", ".gitattributes"}
+_METADATA = {".git", ".arc", ".hg", ".svn", ".gitmodules", ".gitattributes", "self-tests"}
 _CREDENTIALS = {
     ".npmrc",
     ".pypirc",
@@ -184,7 +184,16 @@ def _safe_target(root: Path, name: str) -> Path:
 def apply_snapshot(
     root: Path, files: Mapping[str, bytes], *, before: Mapping[str, bytes]
 ) -> None:
-    """Apply a bounded export only if the controller workspace has not changed."""
+    """Apply a bounded export, restoring its checkpoint after a partial failure.
+
+    Restoration requires the exact state produced by our successful mutations.
+    An uncoordinated writer is never overwritten to make a failed export appear
+    atomic. A failed restoration is terminal for this operation, not retried.
+    """
+    _apply_snapshot(root, files, before=before, restore_on_error=True)
+
+
+def _apply_snapshot(root, files, *, before, restore_on_error):
     validate_snapshot(files)
     validate_snapshot(before)
     spellings: dict[str, str] = {}
@@ -200,24 +209,60 @@ def apply_snapshot(
     if snapshot_project(root) != dict(before):
         raise UnsafeSandboxFile("host project changed during sandbox execution")
     targets = {name: _safe_target(root, name) for name in set(files) | set(before)}
-    staged: list[tuple[Path, Path]] = []
+    staged: list[tuple[str, Path, Path]] = []
+    applied = dict(before)
+    pending = None
     try:
-        for name, data in files.items():
-            if before.get(name) == data:
-                continue
-            target = targets[name]
-            target.parent.mkdir(parents=True, exist_ok=True)
-            with tempfile.NamedTemporaryFile(
-                dir=target.parent, prefix=".sandbox-export-", delete=False
-            ) as out:
-                temporary = Path(out.name)
-                staged.append((temporary, target))
-                out.write(data)
-            os.chmod(temporary, 0o644)
-        for temporary, target in staged:
-            os.replace(temporary, target)
-        for name in set(before) - set(files):
-            targets[name].unlink()
-    finally:
-        for temporary, _ in staged:
-            temporary.unlink(missing_ok=True)
+        try:
+            for name, data in files.items():
+                if before.get(name) == data:
+                    continue
+                target = targets[name]
+                target.parent.mkdir(parents=True, exist_ok=True)
+                with tempfile.NamedTemporaryFile(
+                    dir=target.parent, prefix=".sandbox-export-", delete=False
+                ) as out:
+                    temporary = Path(out.name)
+                    staged.append((name, temporary, target))
+                    out.write(data)
+                os.chmod(temporary, 0o644)
+            for name, temporary, target in staged:
+                # An interrupt may arrive after the OS mutation but before the
+                # Python journal update. Retain both exact permitted outcomes.
+                pending = (name, files[name])
+                os.replace(temporary, target)
+                applied[name] = files[name]
+                pending = None
+            for name in sorted(set(before) - set(files)):
+                pending = (name, None)
+                targets[name].unlink()
+                del applied[name]
+                pending = None
+        finally:
+            # Staging files belong to us, but snapshot_project intentionally
+            # includes them. Remove them before comparing the mutation journal.
+            for _, temporary, _ in staged:
+                temporary.unlink(missing_ok=True)
+        if snapshot_project(root) != dict(files):
+            raise UnsafeSandboxFile("host project changed during sandbox export")
+    except BaseException as error:
+        if not restore_on_error:
+            raise
+        current = snapshot_project(root)
+        if current != applied:
+            possible = dict(applied)
+            if pending is not None:
+                name, data = pending
+                if data is None:
+                    possible.pop(name, None)
+                else:
+                    possible[name] = data
+            if pending is None or current != possible:
+                raise UnsafeSandboxFile("host project changed before snapshot restoration") from error
+        if current == dict(before):
+            raise
+        try:
+            _apply_snapshot(root, before, before=current, restore_on_error=False)
+        except BaseException as restore_error:
+            raise UnsafeSandboxFile("snapshot restoration failed") from restore_error
+        raise

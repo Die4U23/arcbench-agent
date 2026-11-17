@@ -32,6 +32,7 @@ REQUIRED_MEMBERS = (
     "requirements.txt",
     "static-tools/interaction-scope.cjs",
     "agent/platform_generation.py",
+    "agent/platform_self_test.py",
     "agent/platform_inputs.py",
     "agent/platform_runtime_check.py",
     "agent/platform_scaffold.py",

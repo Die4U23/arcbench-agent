@@ -18,6 +18,8 @@ from typing import Any, Callable
 from uuid import uuid4
 from urllib.parse import urlsplit
 
+from .platform_execution import diagnostics_allowed
+
 
 class CampaignBudgetStopped(RuntimeError):
     """The campaign has stopped before another chargeable action."""
@@ -195,14 +197,16 @@ class CampaignBudget:
                        (reason, reservation_id, self.task_id))
             self._stop(db, reason)
 
-    def _check_open(self, db: sqlite3.Connection, stage: str) -> None:
+    def _check_open(self, db: sqlite3.Connection, stage: str, *, diagnostic: bool = False) -> None:
         self._check_config(db)
         if stage not in self.config.stages[self.task_id]:
             raise ValueError("stage is not in immutable task budget")
         row = db.execute("SELECT started, stopped FROM campaign WHERE id=1").fetchone()
-        if row["stopped"]:
+        stopped_diagnostic = bool(row["stopped"] and diagnostic
+                                  and diagnostics_allowed(row["stopped"], campaign=True))
+        if row["stopped"] and not stopped_diagnostic:
             raise CampaignBudgetStopped(row["stopped"])
-        if db.execute("SELECT 1 FROM reservations WHERE status='pending' LIMIT 1").fetchone():
+        if not stopped_diagnostic and db.execute("SELECT 1 FROM reservations WHERE status='pending' LIMIT 1").fetchone():
             self._stop(db, "request_usage_unknown")
             raise CampaignBudgetStopped("request_usage_unknown")
         now = time.time()
@@ -352,12 +356,12 @@ class CampaignBudget:
         db.execute("UPDATE reservations SET observed_usage_json=?, failure_reason=? WHERE id=?",
                    (json.dumps(observed, sort_keys=True, default=str), reason, reservation_id))
 
-    def record_tools(self, stage: str, count: int) -> None:
+    def record_tools(self, stage: str, count: int, *, diagnostic: bool = False) -> None:
         if type(count) is not int or count < 0:
             raise ValueError("tool count must be nonnegative")
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
-            self._check_open(db, stage)
+            self._check_open(db, stage, diagnostic=diagnostic)
             self._enforce(db, stage, tools=count)
             if count:
                 db.execute("INSERT INTO tool_events VALUES (?,?,?,?,?)",

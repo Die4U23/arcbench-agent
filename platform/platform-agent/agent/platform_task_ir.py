@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from .visual_contracts import parse_visual_tail
 
 SCHEMA_DESCRIPTION = (
     "Return a mapping with any of these extra fields. "
@@ -26,6 +27,7 @@ SCHEMA_DESCRIPTION = (
     "when: list of {action: open|click|fill|check|select|submit|reload|unknown, "
     "target: {role: string or null, name: string or null}, value: string or null, text: string}, "
     "then: list of {kind: visible|hidden|text|count|persisted|url|unknown, target, value, text}. "
+    "Visual properties are deterministic public contracts only; this callback cannot infer visual expectations. "
     "entities: list of {id, name, fields: list of strings, lifecycle: SEED|RUNTIME|null, seed_records: list of objects}. "
     "pages: list of {name, path: string or null, reference: string or null}. "
     "Auth is not accepted from this callback."
@@ -88,7 +90,8 @@ _AUTHENTICATED_PHRASES = (
 _ACTION_PATTERNS = (
     ("reload", re.compile(r"(?i)\b(?:reload(?:s|ed|ing)?|refresh(?:es|ed|ing)?)\b|刷新|重新加载")),
     ("submit", re.compile(r"(?i)\bsubmit(?:s|ted|ting)?\b|提交")),
-    ("check", re.compile(r"(?i)\b(?:uncheck(?:s|ed|ing)?|check(?:s|ed|ing)?|tick(?:s|ed|ing)?)\b|勾选")),
+    ("uncheck", re.compile(r"(?i)\buncheck(?:s|ed|ing)?\b|取消勾选")),
+    ("check", re.compile(r"(?i)\b(?:check(?:s|ed|ing)?|tick(?:s|ed|ing)?)\b|(?<!取消)勾选")),
     ("select", re.compile(r"(?i)\b(?:select(?:s|ed|ing)?|choose(?:s|d)?|chosen)\b|选择")),
     ("fill", re.compile(r"(?i)\bfill(?:s|ed|ing)?\b|填写|输入")),
     ("click", re.compile(r"(?i)\b(?:click(?:s|ed|ing)?|tap(?:s|ped|ping)?)\b|点击|单击")),
@@ -112,8 +115,8 @@ _ENTRY_NAME = re.compile(r"(?i)^(?:sign[\s-]?in|log[\s-]?in|登录)$")
 _SUBMIT_NAME = re.compile(r"(?i)^(?:sign[\s-]?in|log[\s-]?in|submit|登录|提交)$")
 _ACCOUNT_ENTITY = re.compile(r"(?i)account|user|member|credential")
 _ROLE_TOKEN = re.compile(r"^[a-z][a-z0-9_-]*$")
-_ACTIONS = {"open", "click", "fill", "check", "select", "submit", "reload", "unknown"}
-_KINDS = {"visible", "hidden", "text", "count", "persisted", "url", "unknown"}
+_ACTIONS = {"open", "click", "fill", "check", "uncheck", "select", "submit", "reload", "unknown"}
+_KINDS = {"visible", "hidden", "text", "contains_text", "value", "count", "persisted", "url", "unknown"}
 _SESSIONS = {"anonymous", "authenticated", "unknown"}
 _STEP_PREFIX = re.compile(r"(?is)^(given|when|then)\b\s*:?\s*(.*)$")
 
@@ -140,8 +143,10 @@ _IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"}
 def build_task_ir(requirements_path, project_dir, *, model_fill=None) -> dict:
     """Parse requirements and attach detect_runtime(project_dir)."""
     tree, rejected = _load_requirements(requirements_path)
+    rejected.extend(_unsupported_visual_fields(tree))
     entities = _entities(tree)
     pages = _pages(tree)
+    public_pages = [dict(page) for page in pages]
     work_items, scenarios, blobs = _walk(tree, entities)
     elements = _collect_elements(blobs)
     auth = _auth(elements)
@@ -162,6 +167,7 @@ def build_task_ir(requirements_path, project_dir, *, model_fill=None) -> dict:
         "work_items": work_items,
         "entities": entities,
         "pages": pages,
+        "public_pages": public_pages,
         "ui_elements": elements,
         "scenarios": scenarios,
         "auth": auth,
@@ -277,6 +283,87 @@ def _load_requirements(requirements_path) -> tuple[dict[str, Any], list[str]]:
     if not isinstance(loaded, dict):
         return {}, ["requirements root is not a mapping"]
     return loaded, notes
+
+
+def _unsupported_visual_fields(tree):
+    """Preserve every unconsumed requirement/page field as an unresolved input.
+
+    A field blacklist cannot protect unknown visual aliases. Use the parser's
+    actual consumed schema instead. Seed/entity data is not a visual instruction.
+    """
+    fields = {"id", "req_id", "name", "title", "slug", "description", "text", "page",
+              "scenarios", "children", "dependencies", "depends_on", "type", "environment"}
+    page_fields = {"name", "title", "page", "path", "route", "url", "reference", "image", "src", "file"}
+    issues = []
+    def visit(node, path, root=False):
+        if not isinstance(node, dict):
+            issues.append("unsupported_public_requirement_node:" + path)
+            return
+        allowed = fields | ({"data", "pages", "references", "images"} if root else set())
+        for key in node:
+            if key not in allowed:
+                issues.append("unconsumed_public_requirement_field:" + path + "." + str(key))
+        # Public task_bundle.build_contract_index classifies FOLDER/ATOMIC nodes.
+        # Preserve classification metadata; it does not grant visual coverage.
+        if "type" in node and node["type"] not in (None, "FOLDER", "ATOMIC"):
+            issues.append("unsupported_public_requirement_type:" + path)
+        if node.get("type") == "ATOMIC" and node.get("children"):
+            issues.append("atomic_public_requirement_has_children:" + path)
+        # Existing public schema defaults environment to an empty Mapping.
+        # Empty metadata has no semantic obligation. Nonempty content remains
+        # unresolved until an independent contract consumes it; do not drop it.
+        if "environment" in node:
+            if not isinstance(node["environment"], dict):
+                issues.append("unsupported_public_environment_type:" + path)
+            elif node["environment"]:
+                issues.append("unconsumed_public_environment_constraints:" + path)
+        for field in ("text", "page", "name", "title", "slug"):
+            if field in node and node[field] is not None and not isinstance(node[field], str):
+                issues.append("unsupported_public_field_type:" + path + "." + field)
+        description = node.get("description")
+        if description is not None and not isinstance(description, (str, dict)):
+            issues.append("unsupported_public_description_type:" + path)
+        if isinstance(description, dict) and ("text" not in description or not isinstance(description["text"], str)):
+            issues.append("unsupported_public_description_text:" + path)
+        if isinstance(description, dict):
+            for key in description:
+                if key != "text" and not (key == "image" and _description_images(description[key]) is not None):
+                    issues.append("unsupported_public_description_field:" + path + ".description." + str(key))
+        primary_text = description.get("text") if isinstance(description, dict) else description
+        # _walk gives every valid description string precedence, even an empty
+        # one. Its presence must not erase a second nonempty public text field.
+        # Preserve extraction compatible, but never count the unconsumed source as
+        # verified. Scalar and {text: ...} forms follow the identical rule.
+        secondary_text = node.get("text")
+        if isinstance(primary_text, str) and isinstance(secondary_text, str) and secondary_text.strip():
+            issues.append("unconsumed_public_text_field:" + path + ".text")
+        if "children" in node and not isinstance(node["children"], list):
+            issues.append("unsupported_public_children_type:" + path)
+        for index, child in enumerate(node.get("children", []) if isinstance(node.get("children"), list) else []):
+            visit(child, path + ".children[" + str(index) + "]")
+    visit(tree, "requirements", True)
+    page_keys = [key for key in ("pages", "references", "images") if key in tree]
+    if len(page_keys) > 1:
+        issues.append("multiple_public_page_fields")
+    for key in page_keys:
+        pages = tree[key]
+        if not isinstance(pages, list):
+            issues.append("unsupported_public_page_collection:" + key)
+            continue
+        for index, page in enumerate(pages):
+            path = key + "[" + str(index) + "]"
+            if isinstance(page, str) and page.strip():
+                continue
+            if not isinstance(page, dict) or _page(page) is None:
+                issues.append("unsupported_public_page:" + path)
+                continue
+            for field, value in page.items():
+                if field not in page_fields or (value is not None and not isinstance(value, str)):
+                    issues.append("unconsumed_public_page_field:" + path + "." + str(field))
+            for aliases in (("reference", "image", "src", "file"), ("path", "route", "url")):
+                if sum(bool(page.get(alias)) for alias in aliases) > 1:
+                    issues.append("ambiguous_public_page_aliases:" + path)
+    return issues
 
 
 def _task(tree: dict[str, Any]) -> dict[str, str]:
@@ -414,6 +501,16 @@ def _optional_str(value: Any) -> str | None:
     return None
 
 
+def _description_images(value):
+    """Preserve structured public references without inventing a pixel oracle."""
+    if not isinstance(value, list):
+        return None
+    if any(not isinstance(row, dict) or not {'reference'} <= set(row) <= {'id', 'reference', 'page'}
+           or any(not isinstance(v, str) or not v.strip() for v in row.values()) for row in value):
+        return None
+    return [dict(row) for row in value]
+
+
 def _walk(tree: dict[str, Any], entities: list[dict[str, Any]]):
     work_items: list[dict[str, Any]] = []
     scenarios: list[dict[str, Any]] = []
@@ -441,9 +538,17 @@ def _walk(tree: dict[str, Any], entities: list[dict[str, Any]]):
             "id": item_id,
             "name": str(name),
             "parent": parent,
+            **({"type": node["type"]} if "type" in node else {}),
+            **({"environment": _jsonish(node["environment"])} if "environment" in node else {}),
             "depends_on": _depends(node),
             "text": text,
+            **({"page": page} if page is not None else {}),
         })
+        description = node.get('description')
+        if isinstance(description, dict) and 'image' in description:
+            references = _description_images(description['image'])
+            if references is not None:
+                work_items[-1]['references'] = references
         if text:
             blobs.append((item_id, text, page))
         raw_scenarios = node.get("scenarios")
@@ -456,6 +561,17 @@ def _walk(tree: dict[str, Any], entities: list[dict[str, Any]]):
                 for piece in texts:
                     if piece:
                         blobs.append((item_id, piece, page))
+        described_visuals = []
+        existing_texts = {step.get("text") for scenario in scenarios if scenario.get("work_item") == item_id
+                          for phase in ("when", "then") for step in scenario.get(phase, [])}
+        for statement in _sentences(text):
+            parsed = _then_step(statement)
+            if parsed.get("kind") == "visual" and statement not in existing_texts:
+                described_visuals.append(parsed)
+        if described_visuals:
+            scenarios.append(dict(id=item_id + "::public-visual-description", work_item=item_id,
+                                  name="Explicit initial-render visual requirements", given=dict(session=None, account=None, data=[], text=""),
+                                  when=[], then=described_visuals, source="parsed"))
         children = node.get("children")
         if isinstance(children, list):
             for child in children:
@@ -527,11 +643,12 @@ def _scenario(work_id: str, raw: Any, index: int, entities: list[dict[str, Any]]
     whens: list[dict[str, Any]] = []
     thens: list[dict[str, Any]] = []
     steps = raw.get("steps")
+    ordered = [] if isinstance(steps, (list, str)) else None
     if isinstance(steps, list):
         for step in steps:
-            _consume_step(step, givens, whens, thens)
+            _consume_step(step, givens, whens, thens, ordered)
     elif isinstance(steps, str) and steps.strip():
-        _consume_step(steps, givens, whens, thens)
+        _consume_step(steps, givens, whens, thens, ordered)
     else:
         _consume_step(
             {key: raw[key] for key in raw if str(key).lower() in {"given", "when", "then"}},
@@ -539,6 +656,14 @@ def _scenario(work_id: str, raw: Any, index: int, entities: list[dict[str, Any]]
             whens,
             thens,
         )
+    consumed_whens = len(whens)
+    allowed={'id','name','title','steps','given','when','then'}
+    if any(str(key).lower() not in allowed for key in raw) or ('steps' in raw and any(str(key).lower() in {'given','when','then'} for key in raw)):
+        whens.append(dict(action='unknown',target=dict(role=None,name=None),value=None,text='Unconsumed scenario fields'))
+    if 'steps' in raw and not isinstance(raw['steps'],(list,str)):
+        whens.append(dict(action='unknown',target=dict(role=None,name=None),value=None,text='Unsupported scenario steps type'))
+    if ordered is not None:
+        ordered.extend(dict(phase="when", index=i) for i in range(consumed_whens, len(whens)))
     texts = [*givens, *[step["text"] for step in whens], *[step["text"] for step in thens]]
     return {
         "id": scenario_id,
@@ -547,54 +672,47 @@ def _scenario(work_id: str, raw: Any, index: int, entities: list[dict[str, Any]]
         "given": _given(givens, entities),
         "when": whens,
         "then": thens,
+        **({"ordered_steps": ordered} if ordered is not None else {}),
         "source": "parsed",
     }, texts
 
 
-def _consume_step(step: Any, givens: list[str], whens: list[dict[str, Any]], thens: list[dict[str, Any]]) -> None:
-    if isinstance(step, str):
-        text = step.strip()
-        if not text:
-            return
-        match = _STEP_PREFIX.match(text)
-        if match and match.group(2).strip():
-            _put(match.group(1).lower(), match.group(2).strip(), givens, whens, thens)
-        elif match:
-            return
-        else:
-            whens.append(_when_step(text))
+def _consume_step(step: Any, givens: list[str], whens: list[dict[str, Any]], thens: list[dict[str, Any]], ordered=None) -> None:
+    def unsupported():
+        if ordered is not None: ordered.append(dict(phase='when', index=len(whens)))
+        whens.append(dict(action='unknown',target=dict(role=None,name=None),value=None,
+                          text='Unsupported public step: '+json.dumps(step,ensure_ascii=False,default=str)))
+    if isinstance(step,str):
+        text=step.strip();match=_STEP_PREFIX.match(text)
+        if not text or (match and not match.group(2).strip()):unsupported();return
+        if match:_put(match.group(1).lower(),match.group(2).strip(),givens,whens,thens,ordered)
+        else:_put('when',text,givens,whens,thens,ordered)
         return
-    if not isinstance(step, dict):
+    if not isinstance(step,dict) or not step:unsupported();return
+    phases={k:str(k).lower() for k in step if str(k).lower() in {'given','when','then'}}
+    if phases:
+        if len(phases)!=len(step):unsupported()
+        for key,kind in phases.items():
+            value=step[key]
+            if not isinstance(value,str) or not value.strip():unsupported()
+            else:_put(kind,value.strip(),givens,whens,thens,ordered)
         return
-    placed = False
-    for key, kind in (
-        ("Given", "given"),
-        ("given", "given"),
-        ("When", "when"),
-        ("when", "when"),
-        ("Then", "then"),
-        ("then", "then"),
-    ):
-        value = step.get(key)
-        if isinstance(value, str) and value.strip():
-            _put(kind, value.strip(), givens, whens, thens)
-            placed = True
-    if placed:
-        return
-    keyword = step.get("keyword")
-    if not isinstance(keyword, str) or not keyword.strip():
-        keyword = step.get("type")
-    content = step.get("content")
-    if not isinstance(content, str) and isinstance(step.get("text"), str):
-        content = step.get("text")
-    if isinstance(keyword, str) and keyword.strip().upper() in {"GIVEN", "WHEN", "THEN"} and isinstance(content, str) and content.strip():
-        _put(keyword.strip().lower(), content.strip(), givens, whens, thens)
-        return
-    if isinstance(content, str) and content.strip():
-        whens.append(_when_step(content.strip()))
+    if set(step)-{'keyword','type','content','text'}:unsupported();return
+    keyword=step.get('keyword',step.get('type'));content=step.get('content',step.get('text'))
+    if ('keyword' in step and 'type' in step) or ('content' in step and 'text' in step):unsupported();return
+    if isinstance(keyword,str) and keyword.strip().lower() in {'given','when','then'} and isinstance(content,str) and content.strip():
+        _put(keyword.strip().lower(),content.strip(),givens,whens,thens,ordered)
+    else:unsupported()
 
 
-def _put(kind: str, text: str, givens: list[str], whens: list[dict[str, Any]], thens: list[dict[str, Any]]) -> None:
+def _put(kind: str, text: str, givens: list[str], whens: list[dict[str, Any]], thens: list[dict[str, Any]], ordered=None) -> None:
+    if ordered is not None:
+        if kind in ('when', 'then'):
+            ordered.append(dict(phase=kind, index=len(whens if kind == 'when' else thens)))
+        elif ordered:
+            ordered.append(dict(phase='when', index=len(whens)))
+            whens.append(dict(action='unknown', target=dict(role=None,name=None), value=None,
+                              text='Unsupported mid-scenario Given: ' + text))
     if kind == "given":
         givens.append(text)
     elif kind == "when":
@@ -603,26 +721,81 @@ def _put(kind: str, text: str, givens: list[str], whens: list[dict[str, Any]], t
         thens.append(_then_step(text))
 
 
+def _ambiguous_statement(text: str) -> bool:
+    # This IR represents one target and no enclosing scope. Preserve uncertainty
+    # instead of silently compiling only the first target or dropping its scope.
+    if len(_annotations(text)) > 1:
+        return True
+    outside = _QUOTED.sub(" ", text)
+    return bool(re.search(r"(?i)\b(?:and|then|within|inside|in)\b|;|；|然后|并且|同时|范围|区域.*内", outside))
+
+
+def _strict_statement(text: str, phase: str) -> dict | None:
+    """Finite whole-statement grammar; no verb-search interpretation of modifiers."""
+    annotation = '(?:' + _ANNOTATION.pattern + r'|(?P<locator_kind>text|label|placeholder|css)\s+(?P<locator_json>"(?:\\.|[^"\\])*"))' + r'(?:\s+within\s+(?P<locator_scope>\{[^{}]*\}))?'
+    def parsed_target(match):
+        groups = match.groupdict()
+        if groups.get('locator_kind'):
+            result = {groups['locator_kind'].lower(): json.loads(groups['locator_json'])}
+        else:
+            name, role = _first_target(text)
+            result = dict(role=role, name=name)
+        if groups.get('locator_scope'):
+            try: scope = json.loads(groups['locator_scope'])
+            except (ValueError, TypeError): return None
+            from .behavior_contracts import target as public_target
+            if public_target(scope) is None or 'within' in scope: return None
+            result['within'] = scope
+        return result
+    end = r"\s*[.。]?\s*"
+    literal = r'(?P<literal>"(?:\\.|[^"\\])*")'
+    if phase == 'when':
+        if re.fullmatch(r"(?:Reload(?: the current page)?|Refresh(?: the current page)?|刷新当前页面|刷新)"+end,text,re.I):
+            return dict(action='reload',target=dict(role=None,name=None),value=None,text=text)
+        for op,verb in [('click',r'Click|Tap|点击'),('check',r'Check|勾选'),('uncheck',r'Uncheck|取消勾选'),('submit',r'Submit|提交'),('open',r'Open|打开')]:
+            match = re.fullmatch(r'(?:'+verb+r')'+(r'\s*' if text.startswith(('点击','勾选','取消勾选','提交','打开')) else r'\s+')+annotation+end,text,re.I)
+            if match and parsed_target(match) is not None:
+                return dict(action=op,target=parsed_target(match),value=None,text=text)
+        for op,verb in [('fill','Fill'),('select','Select')]:
+            match=re.fullmatch(verb+r'\s+'+annotation+r'\s+with\s+'+literal+end,text,re.I)
+            if match:
+                if parsed_target(match) is None: return None
+                return dict(action=op,target=parsed_target(match),value=json.loads(match.group('literal')),text=text)
+    else:
+        # Bind the whole statement. No ignored modifiers, approximate words or extra keys.
+        visual_match = re.fullmatch(annotation + r"\s+(?P<visual_tail>(?:visual|CSS|width|height|border-radius|shape)\s+.*?)" + end, text, re.I)
+        if visual_match and parsed_target(visual_match) is not None:
+            try:
+                visual_value = parse_visual_tail(visual_match.group("visual_tail"))
+            except (ValueError, TypeError, OverflowError):
+                return None
+            return dict(kind="visual", target=parsed_target(visual_match), value=visual_value, text=text)
+        for kind,predicate in [('visible',r'is visible|可见'),('hidden',r'is hidden')]:
+            match = re.fullmatch(annotation+r'\s+(?:'+predicate+r')'+end,text,re.I)
+            if match and parsed_target(match) is not None:
+                return dict(kind=kind,target=parsed_target(match),value=None,text=text)
+        for kind,predicate in [('text',r'text is'),('contains_text',r'contains text'),('value',r'value is')]:
+            match=re.fullmatch(annotation+r'\s+'+predicate+r'\s+'+literal+end,text,re.I)
+            if match:
+                if parsed_target(match) is None: return None
+                return dict(kind=kind,target=parsed_target(match),value=json.loads(match.group('literal')),text=text)
+        match=re.fullmatch(annotation+r'\s+count is (?P<count>[0-9]+)'+end,text,re.I)
+        if match:
+            if parsed_target(match) is None: return None
+            return dict(kind='count',target=parsed_target(match),value=match.group('count'),text=text)
+        match=re.fullmatch(r'(?:the\s+)?URL\s+is\s+'+literal+end,text,re.I)
+        if match:return dict(kind='url',target=dict(role=None,name=None),value=json.loads(match.group('literal')),text=text)
+    return None
+
+
 def _when_step(text: str) -> dict[str, Any]:
-    action = _one_match(text, _ACTION_PATTERNS) or "unknown"
-    name, role = _first_target(text)
-    return {
-        "action": action,
-        "target": {"role": role, "name": name},
-        "value": _action_value(text, action),
-        "text": text,
-    }
+    result=_strict_statement(text,'when')
+    return result or dict(action='unknown',target=dict(role=None,name=None),value=None,text=text)
 
 
 def _then_step(text: str) -> dict[str, Any]:
-    kind = _kind(text)
-    name, role = _first_target(text)
-    return {
-        "kind": kind,
-        "target": {"role": role, "name": name},
-        "value": _then_value(text, kind),
-        "text": text,
-    }
+    result=_strict_statement(text,'then')
+    return result or dict(kind='unknown',target=dict(role=None,name=None),value=None,text=text)
 
 
 def _one_match(text: str, patterns: tuple[tuple[str, re.Pattern[str]], ...]) -> str | None:
@@ -646,9 +819,16 @@ def _annotations(text: str) -> list[tuple[str, str]]:
     for match in _ANNOTATION.finditer(text):
         name = next((match.group(group) for group in ("dn", "sn", "cn", "jn") if match.group(group) is not None), "")
         role = next((match.group(group) for group in ("rd", "rs", "rb") if match.group(group) is not None), "")
+        # Double-quoted public names use JSON escaping, just like exact literals.
+        # Decode data, never execute it; invalid escaping cannot bind a target.
+        if match.group("dn") is not None:
+            try:
+                name = json.loads('"' + match.group("dn") + '"')
+            except (ValueError, TypeError):
+                continue
         name = name.strip()
         role = role.strip().casefold()
-        if name and role:
+        if role:  # The annotation explicitly supplies a name, including an empty name.
             found.append((name, role))
     return found
 
@@ -798,7 +978,7 @@ def _sentences(text: str) -> list[str]:
 
 def _collect_elements(blobs: list[tuple[str, str, str | None]]) -> list[dict[str, Any]]:
     elements = []
-    seen: set[tuple[str, str, str, str]] = set()
+    seen = {}
     for blob_index, (work_item, text, page) in enumerate(blobs):
         for sentence_index, sentence in enumerate(_sentences(text)):
             found = _annotations(sentence)
@@ -807,23 +987,33 @@ def _collect_elements(blobs: list[tuple[str, str, str | None]]) -> list[dict[str
             persistent = len(found) >= 2 and _PERSIST.search(sentence) is not None
             group = f"persistent:{work_item}:{blob_index}:{sentence_index}" if persistent else None
             multiple = _MULTIPLE.search(sentence) is not None
-            for name, role in found:
-                identity = (role, name, work_item, sentence)
+            parsed = _strict_statement(sentence, 'when') or _strict_statement(sentence, 'then') or {}
+            parsed_target = parsed.get('target') or {}
+            if parsed.get('kind') == 'count' and str(parsed.get('value', '')).isdigit():
+                multiple = multiple or int(parsed['value']) > 1
+            for occurrence, (name, role) in enumerate(found):
+                scope = (parsed_target.get('within')
+                         if parsed_target.get('role') == role and parsed_target.get('name') == name else None)
+                element = {
+                    "role": role, "name": name, "page": page, "work_item": work_item,
+                    "group": group, "persistent": persistent, "multiple": multiple,
+                    "source": "parsed", "evidence": sentence,
+                    **({"within": scope} if scope is not None else {}),
+                }
+                identity = _element_identity(element)
+                origin = dict(blob=blob_index, sentence=sentence_index, occurrence=occurrence)
                 if identity in seen:
+                    seen[identity]['occurrences'].append(origin)
                     continue
-                seen.add(identity)
-                elements.append({
-                    "role": role,
-                    "name": name,
-                    "page": page,
-                    "work_item": work_item,
-                    "group": group,
-                    "persistent": persistent,
-                    "multiple": multiple,
-                    "source": "parsed",
-                    "evidence": sentence,
-                })
+                element['occurrences'] = [origin]
+                seen[identity] = element
+                elements.append(element)
     return elements
+
+
+def _element_identity(element):
+    return (element['role'], element['name'], element.get('work_item'), element.get('page'),
+            json.dumps(element.get('within'), sort_keys=True, ensure_ascii=False), element.get('evidence', ''))
 
 
 def _auth(elements: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -946,13 +1136,13 @@ def _merge_elements(items, elements, work_ids, rejected) -> None:
     if not isinstance(items, list):
         rejected.append("ui_elements is not a list")
         return
-    existing = {(element["role"], element["name"], element["work_item"], element["evidence"]) for element in elements}
+    existing = {_element_identity(element) for element in elements}
     for index, item in enumerate(items):
         element, reason = _valid_element(item, work_ids)
         if element is None:
             rejected.append(f"ui_elements[{index}] {reason}")
             continue
-        identity = (element["role"], element["name"], element["work_item"], element["evidence"])
+        identity = _element_identity(element)
         if identity in existing:
             rejected.append(f"ui_elements[{index}] duplicates a parsed item")
             continue
@@ -982,6 +1172,10 @@ def _valid_element(item: Any, work_ids: set[str]):
     page = item.get("page")
     group = item.get("group")
     evidence = item.get("evidence", "")
+    if 'within' in item:
+        from .behavior_contracts import target as public_target
+        if public_target(item['within']) is None or 'within' in item['within']:
+            return None, 'invalid enclosing scope'
     return {
         "role": role.strip().casefold(),
         "name": name.strip(),
@@ -992,6 +1186,7 @@ def _valid_element(item: Any, work_ids: set[str]):
         "multiple": item.get("multiple", False) is True,
         "source": "inferred",
         "evidence": evidence if isinstance(evidence, str) else "",
+        **({'within': dict(item['within'])} if 'within' in item else {}),
     }, None
 
 

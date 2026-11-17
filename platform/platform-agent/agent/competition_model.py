@@ -572,7 +572,9 @@ class CompetitionModel:
                         batch_ids.add(call.id)
                     seen_call_ids.update(batch_ids)
                 except ExecutionStopped as exc:
-                    return dict(status='stopped', reason=exc.reason, turns=turns)
+                    detail = getattr(exc, 'detail', '')
+                    self._append_log(dict(stage=stage, event='tool_preflight_stopped', reason=exc.reason, detail=detail))
+                    return dict(status='stopped', reason=exc.reason, detail=detail, turns=turns)
                 except (ValueError, TypeError, AttributeError, RecursionError) as exc:
                     detail = str(exc)[:1000]
                     self._append_log(dict(stage=stage, event='tool_batch_rejected', detail=detail,
@@ -629,7 +631,10 @@ class CompetitionModel:
                             self._execution_evidence = evidence
                         failed_signatures.pop(signature, None)
                     except ExecutionStopped as exc:
-                        return dict(status='stopped', reason=exc.reason, turns=turns)
+                        detail = getattr(exc, 'detail', '')
+                        self._append_log(dict(stage=stage, event='tool_execution_stopped', tool=name,
+                                              reason=exc.reason, detail=detail))
+                        return dict(status='stopped', reason=exc.reason, detail=detail, turns=turns)
                     except Exception as exc:
                         logging.warning('MODEL_TOOL_ERROR %s',json.dumps({'tool':name,'error_type':type(exc).__name__,'detail':str(exc)[:800]}))
                         failed_signatures[signature] = failed_signatures.get(signature, 0) + 1

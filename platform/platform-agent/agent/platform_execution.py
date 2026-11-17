@@ -15,7 +15,9 @@ from uuid import uuid4
 
 from .sandbox_files import apply_snapshot, snapshot_project
 
-MODEL_ONLY_STOPS = frozenset({'model_request_failed', 'request_interrupted_usage_unknown',
+COVERAGE_DELIVERY_STOPS = frozenset({'coverage_storage_failed', 'coverage_capacity_exceeded'})
+CONTROLLER_STATE_STOPS = COVERAGE_DELIVERY_STOPS | {'coverage_state_invalid'}
+MODEL_ONLY_STOPS = COVERAGE_DELIVERY_STOPS | frozenset({'model_request_failed', 'request_interrupted_usage_unknown',
     'model_terminated', 'execution_request_limit', 'platform_token_allocation',
     'platform_request_allocation', 'request_allowance', 'context_limit',
     'repeated_action', 'no_progress', 'source_oscillation', 'replan_limit', 'tool_batch_limit', 'verification_blocked', 'invalid_plan'})
@@ -760,6 +762,8 @@ class PlanExecutor:
             return self.control.soft_request_allowance(max(0, ceiling), stage='CODE')
 
         def result(status, reason=None, **context):
+            if failed is not None and reason in CONTROLLER_STATE_STOPS:
+                context.setdefault('detail', failed.get('detail', ''))
             return dict(status=status, reason=reason, turns=self.control.requests - started,
                         completed_steps=completed, candidate_steps=constructed, plan_history=history,
                         pending_requirement_ids=pending,
@@ -1056,7 +1060,7 @@ class PlanExecutor:
                     # Replanning cannot expand its share and must not turn this
                     # local stop into a global replan-limit stop.
                     return result('stopped', failed['reason'])
-                if failed['reason'] in ALLOCATION_STOP_REASONS | SOURCE_SAFETY_STOPS | {
+                if failed['reason'] in ALLOCATION_STOP_REASONS | SOURCE_SAFETY_STOPS | CONTROLLER_STATE_STOPS | {
                         'usage_unknown', 'request_usage_unknown', 'budget_exhausted', 'total_token_budget'}:
                     self.control.stop(failed['reason'])
                 if failed['validation'].get('failure_kind') == 'verification':

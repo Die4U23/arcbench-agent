@@ -5,6 +5,7 @@ from .platform_contract import contract_errors
 from .platform_scaffold import has_scaffold_seed_loader
 from .platform_seed import validate_seeds
 from .sandbox_files import snapshot_project
+from .coverage_store import write_coverage
 
 
 def _has_deploy_install_before_build(deploy):
@@ -129,13 +130,6 @@ def seed_coverage(ir):
     items.extend({'kind': 'ui_element', 'ref': ref, 'files': [], 'status': 'missing'} for ref in elements)
     items.extend({'kind': 'scenario', 'ref': ref, 'files': [], 'status': 'missing'} for ref in scenarios)
     return {'items': items}
-
-
-def write_coverage(project, document):
-    path = Path(project) / 'docs' / 'coverage.json'
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(document, indent=2, ensure_ascii=False) + '\n', encoding='utf-8', newline='\n')
-    return path
 
 
 def _read_json_object(path):

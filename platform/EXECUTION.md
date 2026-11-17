@@ -499,3 +499,9 @@ In runnable-candidate mode, a checkpoint deferred only by the existing final-tes
 The controller checks the exact isolated source with static validation, build/start and browser readiness using the remaining diagnostic budget. Only a runnable candidate can replace the baseline, through the existing guarded promotion transaction. A rejected candidate allows at most one switch to its prebound baseline, whose checks also spend the remaining budget. Equal-source candidates use the ordinary single-source check. Integrity changes and hard stops remain failures, and failed evidence is retained.
 
 Successful candidate delivery continues to mean readiness for independent evaluation. It does not mark unverified public requirements as passed. Export or delivery failures after promotion restore the previous source when safe and record the actual delivered digest. This mechanism is supported by local synthetic regression; it does not establish a formal score increase.
+
+### Dependencies in a revised plan
+
+Every returned plan defines its own dependency graph. `requirement_ids` references the supplied requirements; `depends_on` resolves only against the `id` fields in that same response's `steps` array. Completed-step history describes existing work and its evidence, rather than adding nodes to the new graph. Reusing an ID is legal when the current plan defines that node and otherwise satisfies the graph and coverage checks.
+
+Unknown dependencies remain invalid. Bounded error feedback identifies the offending edge and provides current-step ID guidance for the existing protocol correction. It never silently removes an edge, maps a requirement to a step, or turns historical construction into verified acceptance. Correcting one error can reveal another, such as a cycle or an exhausted scope; all corrections still share the original request and protocol-repair limits.

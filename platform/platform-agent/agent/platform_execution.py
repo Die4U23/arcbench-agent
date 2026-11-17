@@ -618,6 +618,15 @@ class PlanStep:
     acceptance: str
 
 
+def _plan_id_preview(value):
+    """Bound escaped diagnostic text without restricting the identifier itself."""
+    preview = value[:80]
+    while len(json.dumps(preview, ensure_ascii=True)) > 82:
+        preview = preview[:-1]
+    rendered = json.dumps(preview, ensure_ascii=True)
+    return rendered if preview == value else rendered + ' (truncated)'
+
+
 def validate_plan(document, requirement_ids, limit, requirement_dependencies=None, *, exhausted_scope=()):
     """Reject malformed plans, invented requirements, cycles and omitted goals."""
     expected = set(requirement_ids)
@@ -649,8 +658,19 @@ def validate_plan(document, requirement_ids, limit, requirement_dependencies=Non
                                    tuple(row['depends_on']), row['acceptance'])
     if covered != expected:
         raise ValueError('plan omits requirements')
-    if any(not set(step.depends_on) <= steps.keys() for step in steps.values()):
-        raise ValueError('plan references an unknown dependency')
+    for step_index, step in enumerate(steps.values()):
+        unknown = [(index, ref) for index, ref in enumerate(step.depends_on) if ref not in steps]
+        if unknown:
+            dependency_index, ref = unknown[0]
+            sample = ', '.join(_plan_id_preview(identity) for identity in list(steps)[:4])
+            detail = (
+                'plan references an unknown dependency: '
+                f'steps[{step_index}].depends_on[{dependency_index}] must name an id defined in this returned steps array. '
+                'Requirement IDs and completed_steps IDs are valid only if also defined in the current steps. '
+                f'step_id={_plan_id_preview(step.id)}; unknown_dependency={_plan_id_preview(ref)}; '
+                f'unknown_dependency_count={len(unknown)}; current_step_ids=[{sample}]; '
+                f'total_current_steps={len(steps)}; omitted_current_step_ids={max(0, len(steps) - 4)}')
+            raise ValueError(detail[:1000])
     ordered, done = [], set()
     while len(done) < len(steps):
         ready = [step for step in steps.values() if step.id not in done and set(step.depends_on) <= done]

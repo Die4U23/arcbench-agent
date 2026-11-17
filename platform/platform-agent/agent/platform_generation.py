@@ -30,7 +30,8 @@ from .platform_execution import (ExecutionLimits, ExecutionStopped, PlanExecutor
                                  ControlPolicy,
                                  SourceTransaction, source_digest, validate_arguments, validate_plan,
                                  SOURCE_SAFETY_STOPS, EXECUTION_STOP_REASONS, BUDGET_STOP_REASONS,
-                                 ALLOCATION_STOP_REASONS, PHASE_BUDGET_STOPS, diagnostics_allowed, planning_stopped)
+                                 ALLOCATION_STOP_REASONS, PHASE_BUDGET_STOPS, diagnostics_allowed, planning_stopped,
+                                 CONTROLLER_STATE_STOPS, COVERAGE_DELIVERY_STOPS)
 from .model_transport import MAX_MODEL_DEADLINE_SECONDS, ModelRequestInterrupted
 from .competition_context import assemble_context, build_work_plan, global_contract_schema
 from .llm import ModelClient
@@ -44,11 +45,12 @@ from .platform_settings import PlatformSettings, model_allowed
 from .platform_self_test import initialize_self_test, finalize_self_test, record_delivery_failure
 from .platform_static import missing_coverage, seed_coverage, ui_element_ref, validate_source, write_coverage
 from .platform_task_ir import build_task_ir, detect_runtime, write_task_ir
-from .sandbox_files import apply_snapshot, snapshot_project
+from .sandbox_files import apply_snapshot, snapshot_project, UnsafeSandboxFile
 from .source_observations import READ_TOOLS, SourceObservations
 from .verification_handoff import VerificationHandoff
 from .task_bundle import is_test_path, load_task_bundle
 from .tools import ProjectTools
+from .coverage_store import read_coverage, CoverageStateError
 
 WHOLE_TASK_PREFIX = 'SOURCE_COMPLETENESS: ALL_TEXT_SOURCES_INCLUDED\n'
 PARTIAL_TASK_PREFIX = 'SOURCE_COMPLETENESS: PARTIAL_READ_OMITTED_RANGES\n'
@@ -337,8 +339,14 @@ class StaticProjectTools(ProjectTools):
         if name == 'update_coverage':
             validate_arguments(arguments, COVERAGE_UPDATE_SCHEMA)
             self._resolve('docs/coverage.json')
-            expected = {(r['kind'], r['ref']) for r in seed_coverage(
-                json.loads(self._resolve('docs/task-ir.json').read_text(encoding='utf-8')))['items']}
+            try:
+                ir = json.loads(self._resolve('docs/task-ir.json').read_text(encoding='utf-8'))
+                expected = {(r['kind'], r['ref']) for r in seed_coverage(ir)['items']}
+            except (OSError, UnicodeError, ValueError, TypeError, AttributeError) as error:
+                raise CoverageStateError('coverage_state_invalid', 'Unable to read coverage requirement identities') from error
+            existing = read_coverage(self.project_dir)
+            if {(r['kind'], r['ref']) for r in existing['items']} != expected:
+                raise CoverageStateError('coverage_state_invalid', 'Coverage ledger identities differ from requirements')
             seen = set()
             for row in arguments['items']:
                 key = (row['kind'], row['ref'])
@@ -368,22 +376,24 @@ class StaticProjectTools(ProjectTools):
             raise ValueError('Source validation passed; this stage is sealed and further edits are forbidden')
         logging.info('PLATFORM_TOOL %s',json.dumps(dict(name=name,paths=[item.get('path') for item in arguments.get('files',[]) if isinstance(item,dict)] or [arguments.get('path') or arguments.get('resource')]),ensure_ascii=False))
         if name == 'update_coverage':
-            document = json.loads(self._resolve('docs/coverage.json').read_text(encoding='utf-8'))
-            rows = document.get('items')
-            if not isinstance(rows, list):
-                raise ValueError('Invalid coverage ledger')
-            keys = [(r['kind'], r['ref']) for r in rows]
-            if len(set(keys)) != len(keys):
-                raise ValueError('Duplicate existing coverage reference')
+            document = read_coverage(self.project_dir)
+            rows = document['items']
             updates = {(r['kind'], r['ref']): r for r in arguments['items']}
             # Files may be created earlier in the same validated tool batch.
-            sources = snapshot_project(self.project_dir)
+            try:
+                sources = snapshot_project(self.project_dir)
+            except UnsafeSandboxFile as error:
+                raise CoverageStateError('coverage_state_invalid', str(error)) from error
+            except OSError as error:
+                raise CoverageStateError('coverage_storage_failed', 'Unable to read coverage source references') from error
             for row in updates.values():
                 if any(path not in sources for path in row['files']):
                     raise ValueError('Coverage cites absent application source')
-            document['items'] = [updates.pop(key, row) for key, row in zip(keys, rows)] + list(updates.values())
-            super().call('write_files', {'files': [dict(path='docs/coverage.json',
-                content=json.dumps(document, ensure_ascii=False, indent=2) + '\n')]})
+            document['items'] = [updates.get((row['kind'], row['ref']), row) for row in rows]
+            write_coverage(self.project_dir, document, before=sources)
+            if document['items'] != rows:
+                self.changed_paths.append('docs/coverage.json')
+            self.written_paths.append('docs/coverage.json')
             return json.dumps(dict(updated=len(arguments['items']), acceptance='source_claim_only'))
         if name=='validate_source':
             files=snapshot_project(self.project_dir)
@@ -2542,6 +2552,8 @@ def _generate(args, evidence):
             return
         if allow_delivery and settings.delivery_policy == 'runnable_candidate' and planning_stopped(result):
             return
+        if allow_delivery and settings.delivery_policy == 'runnable_candidate' and result.get('reason') in COVERAGE_DELIVERY_STOPS:
+            return
         raise RuntimeError(f"{kind} stopped: {result.get('reason', result.get('status'))}")
     def validate():
         return json.loads(tools.call('validate_source', {}))
@@ -2666,7 +2678,7 @@ def _generate(args, evidence):
             pool -= spent
             logging.info('PLATFORM_BATCH_BUDGET %s', json.dumps(dict(item=item.id, allocated=share,
                 requests_used=spent, released=share-spent, requests_remaining=pool)))
-            if (planning_stopped(result) or result.get('reason') in ALLOCATION_STOP_REASONS
+            if (planning_stopped(result) or result.get('reason') in ALLOCATION_STOP_REASONS | CONTROLLER_STATE_STOPS
                     or result.get('reason') == 'coverage_incomplete' or not budget_open()):
                 break
         missing = missing_coverage(app, load_task_ir(app, ir), None)
@@ -2677,15 +2689,16 @@ def _generate(args, evidence):
                 task_id=task, status='incomplete', item='coverage', missing=missing), ensure_ascii=False))
             result = dict(result, status='stopped', reason='coverage_incomplete')
         tools.unseal()
-    if settings.delivery_policy == 'runnable_candidate' and planning_stopped(result):
+    if settings.delivery_policy == 'runnable_candidate' and (planning_stopped(result)
+            or result.get('reason') in COVERAGE_DELIVERY_STOPS):
         # This is a handled construction stop, not permission to generate again.
         # Close requests/writes before static checks; use only the rolled-back source.
         control = model.execution_control
         control.check_diagnostics()
         try:
-            control.stop('invalid_plan')
+            control.stop(result['reason'])
         except ExecutionStopped as stopped:
-            if stopped.reason != 'invalid_plan':
+            if stopped.reason != result['reason']:
                 raise
     delivery_app, delivery_tools = app, tools
     candidate_files = None

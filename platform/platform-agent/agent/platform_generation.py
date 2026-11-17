@@ -30,7 +30,7 @@ from .platform_execution import (ExecutionLimits, ExecutionStopped, PlanExecutor
                                  ControlPolicy,
                                  SourceTransaction, source_digest, validate_arguments, validate_plan,
                                  SOURCE_SAFETY_STOPS, EXECUTION_STOP_REASONS, BUDGET_STOP_REASONS,
-                                 ALLOCATION_STOP_REASONS, PHASE_BUDGET_STOPS, diagnostics_allowed)
+                                 ALLOCATION_STOP_REASONS, PHASE_BUDGET_STOPS, diagnostics_allowed, planning_stopped)
 from .model_transport import MAX_MODEL_DEADLINE_SECONDS, ModelRequestInterrupted
 from .competition_context import assemble_context, build_work_plan, global_contract_schema
 from .llm import ModelClient
@@ -2540,6 +2540,8 @@ def _generate(args, evidence):
             return
         if allow_delivery and result.get('reason') in BUDGET_STOP_REASONS | {'coverage_incomplete'}:
             return
+        if allow_delivery and settings.delivery_policy == 'runnable_candidate' and planning_stopped(result):
+            return
         raise RuntimeError(f"{kind} stopped: {result.get('reason', result.get('status'))}")
     def validate():
         return json.loads(tools.call('validate_source', {}))
@@ -2664,7 +2666,8 @@ def _generate(args, evidence):
             pool -= spent
             logging.info('PLATFORM_BATCH_BUDGET %s', json.dumps(dict(item=item.id, allocated=share,
                 requests_used=spent, released=share-spent, requests_remaining=pool)))
-            if result.get('reason') in ALLOCATION_STOP_REASONS or result.get('reason') == 'coverage_incomplete' or not budget_open():
+            if (planning_stopped(result) or result.get('reason') in ALLOCATION_STOP_REASONS
+                    or result.get('reason') == 'coverage_incomplete' or not budget_open()):
                 break
         missing = missing_coverage(app, load_task_ir(app, ir), None)
         if missing and result.get('status') == 'complete' and pool > 0 and budget_open():
@@ -2674,6 +2677,16 @@ def _generate(args, evidence):
                 task_id=task, status='incomplete', item='coverage', missing=missing), ensure_ascii=False))
             result = dict(result, status='stopped', reason='coverage_incomplete')
         tools.unseal()
+    if settings.delivery_policy == 'runnable_candidate' and planning_stopped(result):
+        # This is a handled construction stop, not permission to generate again.
+        # Close requests/writes before static checks; use only the rolled-back source.
+        control = model.execution_control
+        control.check_diagnostics()
+        try:
+            control.stop('invalid_plan')
+        except ExecutionStopped as stopped:
+            if stopped.reason != 'invalid_plan':
+                raise
     delivery_app, delivery_tools = app, tools
     candidate_files = None
     if (settings.delivery_policy == 'verified'

@@ -701,7 +701,7 @@ class CompetitionModel:
                     if not self._check_context(messages, schemas, stage, packet, max_tokens):
                         return {"status": "stopped", "reason": self._stopped_reason, "turns": turns}
                     continue
-                return {"status": "stopped", "reason": invalid_reason + (': ' + detail if invalid_reason == 'invalid_plan' else ''), "turns": turns,
+                return {"status": "stopped", "reason": invalid_reason, "detail": detail, "turns": turns,
                         "raw": content[:MAX_TOOL_RESULT_CHARS]}
             if value.get('status') in {'failed', 'stopped', 'incomplete'}:
                 return dict(status='stopped', reason='model_incomplete', turns=turns)

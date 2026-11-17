@@ -5,6 +5,8 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import json
 import math
+from email.utils import parsedate_to_datetime
+import time
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -12,8 +14,28 @@ import httpx
 from openai.types.chat.chat_completion import ChatCompletion, Choice
 
 
-DEFAULT_MODEL_DEADLINE_SECONDS = 300.0
-MAX_MODEL_DEADLINE_SECONDS = 900.0
+DEFAULT_MODEL_IDLE_SECONDS = 300.0
+MAX_MODEL_DEADLINE_SECONDS = 86_400.0
+
+
+def service_retry_after(value, *, now=None):
+    """Only bounded HTTP delay-seconds or an aware HTTP date may guide waiting."""
+    if value is None:
+        return 0.0
+    value = value.strip()
+    if value.isascii() and value.isdigit():
+        seconds = float(value)
+    else:
+        try:
+            date = parsedate_to_datetime(value)
+            if date.tzinfo is None:
+                raise ValueError('Retry-After date has no timezone')
+            seconds = max(0.0, date.timestamp() - (time.time() if now is None else now))
+        except (TypeError, ValueError, OverflowError) as error:
+            raise ValueError('invalid Retry-After') from error
+    if not math.isfinite(seconds) or not 0 <= seconds <= 30:
+        raise ValueError('Retry-After exceeds bounded wait')
+    return seconds
 
 
 class _ProviderChoice(Choice):
@@ -26,22 +48,24 @@ class _ProviderCompletion(ChatCompletion):
     choices: list[_ProviderChoice]
 
 
-def default_model_deadline(model: str, base_url: str) -> float:
-    """Pro inference gets a finite longer window; other transports stay unchanged."""
+def default_model_idle_timeout(model: str, base_url: str) -> float:
+    """Preserve the provider's inference window between network reads."""
     if urlsplit(base_url).hostname == 'api.deepseek.com' and model.casefold() == 'deepseek-v4-pro':
-        return MAX_MODEL_DEADLINE_SECONDS
-    return DEFAULT_MODEL_DEADLINE_SECONDS
+        return 900.0
+    return DEFAULT_MODEL_IDLE_SECONDS
 
 
 class ModelRequestInterrupted(RuntimeError):
     def __init__(self, *, reason: str, deadline_seconds: float,
                  stage: str = "unknown", request: int = 0,
-                 cause_types: tuple[str, ...] = (), stream_state: dict[str, Any] | None = None) -> None:
+                 cause_types: tuple[str, ...] = (), stream_state: dict[str, Any] | None = None,
+                 retry_after_seconds: float = 0.0) -> None:
         self.reason = reason
         self.deadline_seconds = deadline_seconds
         self.stage = stage
         self.request = request
         self.cause_types = cause_types
+        self.retry_after_seconds = retry_after_seconds
         # Only bounded counters/flags may reach logs, never response fragments.
         raw = stream_state if isinstance(stream_state, dict) else {}
         self.stream_state = {key: raw[key] for key in
@@ -52,7 +76,7 @@ class ModelRequestInterrupted(RuntimeError):
         super().__init__(
             f"Model request interrupted: stage={stage} request={request} reason={reason} "
             f"deadline_seconds={deadline_seconds:g}; response and usage incomplete; "
-            "generation stopped, no automatic resend" +
+            "no partial response exposed; recovery requires controller admission" +
             ("; cause_types=" + ",".join(cause_types) if cause_types else "") +
             ('; stream_state=' + json.dumps(self.stream_state, sort_keys=True) if self.stream_state else '')
         )
@@ -64,6 +88,8 @@ class ModelRequestInterrupted(RuntimeError):
             result['cause_types'] = list(self.cause_types)
         if self.stream_state:
             result['stream_state'] = dict(self.stream_state)
+        if self.reason == 'http_503':
+            result['retry_after_seconds'] = self.retry_after_seconds
         return result
 
 
@@ -73,19 +99,19 @@ class CompletionClient:
     Each connection is closed before returning, including cancellation. Keeping
     a client across separate asyncio.run loops would reuse a closed event loop.
     """
-    def __init__(self, *, deadline_seconds: float = DEFAULT_MODEL_DEADLINE_SECONDS,
+    def __init__(self, *, deadline_seconds: float | None = None,
+                 idle_seconds: float = DEFAULT_MODEL_IDLE_SECONDS,
                  assemble_stream: bool = False,
                  **options: Any) -> None:
-        if not math.isfinite(deadline_seconds) or not 0 < deadline_seconds <= MAX_MODEL_DEADLINE_SECONDS:
-            raise ValueError("Model request deadline must be positive and at most 900 seconds")
+        for name, value in (('deadline', deadline_seconds), ('idle timeout', idle_seconds)):
+            if name == 'deadline' and value is None:
+                continue
+            if not math.isfinite(value) or not 0 < value <= MAX_MODEL_DEADLINE_SECONDS:
+                raise ValueError(f"Model request {name} must be positive and at most 86400 seconds")
         self.deadline_seconds = deadline_seconds
+        self.idle_seconds = idle_seconds
         self.assemble_stream = assemble_stream
-        # A successful header can precede a long inference pause. The outer
-        # asyncio deadline bounds the entire response, including keepalives;
-        # an unrelated 60-second read cap must not shorten that advertised limit.
-        self._options = dict(options, max_retries=0, timeout=httpx.Timeout(
-            deadline_seconds, connect=min(10.0, deadline_seconds),
-            write=min(30.0, deadline_seconds), pool=min(10.0, deadline_seconds)))
+        self._options = dict(options, max_retries=0)
         self.chat = self
         self.completions = self
 
@@ -107,15 +133,32 @@ class CompletionClient:
     async def _complete(self, **kwargs: Any) -> Any:
         from .execution_policy import require_model_execution
         require_model_execution()
-        from openai import APIConnectionError, AsyncOpenAI
+        from openai import APIConnectionError, APIStatusError, AsyncOpenAI
 
-        async with AsyncOpenAI(**self._options) as client:
+        # RunControl clamps this ceiling to the original phase/task deadline.
+        # Rebuild the HTTP timeout for every request: the phase can change,
+        # and the read-idle window must not become an overall response limit.
+        # Without a controller, retain a finite whole-request idle-sized cap.
+        deadline = self.deadline_seconds if self.deadline_seconds is not None else self.idle_seconds
+        timeout = httpx.Timeout(min(self.idle_seconds, deadline),
+            connect=min(10.0, deadline), write=min(30.0, deadline), pool=min(10.0, deadline))
+        async with AsyncOpenAI(**dict(self._options, timeout=timeout)) as client:
             try:
                 return await asyncio.wait_for(
-                    self._request(client, kwargs), timeout=self.deadline_seconds)
+                    self._request(client, kwargs), timeout=deadline)
             except TimeoutError as exc:
                 raise ModelRequestInterrupted(
-                    reason="deadline", deadline_seconds=self.deadline_seconds) from exc
+                    reason="deadline", deadline_seconds=deadline) from exc
+            except APIStatusError as exc:
+                if exc.status_code != 503:
+                    raise
+                reason, retry_after = 'http_503', 0.0
+                try:
+                    retry_after = service_retry_after(exc.response.headers.get('retry-after'))
+                except ValueError:
+                    reason = 'http_503_retry_after_invalid'
+                raise ModelRequestInterrupted(reason=reason, deadline_seconds=deadline,
+                    cause_types=(type(exc).__name__,), retry_after_seconds=retry_after) from exc
             except (APIConnectionError, httpx.TransportError) as exc:
                 causes = []
                 seen = set()
@@ -125,14 +168,15 @@ class CompletionClient:
                     causes.append(type(cause).__name__)
                     cause = cause.__cause__
                 raise ModelRequestInterrupted(
-                    reason="transport_error", deadline_seconds=self.deadline_seconds,
+                    reason="transport_error", deadline_seconds=deadline,
                     cause_types=tuple(causes)) from exc
             except (ValueError, TypeError, AttributeError) as exc:
                 raise ModelRequestInterrupted(reason='invalid_response',
-                    deadline_seconds=self.deadline_seconds,
+                    deadline_seconds=deadline,
                     cause_types=(type(exc).__name__,)) from exc
 
     async def _request(self, client, kwargs):
+        deadline = self.deadline_seconds if self.deadline_seconds is not None else self.idle_seconds
         if not self.assemble_stream:
             return await client.chat.completions.create(**kwargs)
         options = dict(kwargs, stream=True, stream_options={
@@ -145,7 +189,7 @@ class CompletionClient:
                 chunks_received += 1
                 if metadata and chunk.id != metadata['id']:
                     raise ModelRequestInterrupted(reason='inconsistent_stream',
-                                                  deadline_seconds=self.deadline_seconds)
+                                                  deadline_seconds=deadline)
                 metadata = dict(id=chunk.id, model=chunk.model, created=chunk.created,
                                 object='chat.completion')
                 if chunk.usage is not None:
@@ -160,7 +204,7 @@ class CompletionClient:
                         if value is not None:
                             if not isinstance(value, str):
                                 raise ModelRequestInterrupted(reason='invalid_stream_delta',
-                                                              deadline_seconds=self.deadline_seconds)
+                                                              deadline_seconds=deadline)
                             state['message'][field] = (state['message'].get(field) or '') + value
                     for tool in delta.tool_calls or []:
                         entry = state['tools'].setdefault(tool.index, dict(id='', type='function',
@@ -173,7 +217,7 @@ class CompletionClient:
                                 if value is not None:
                                     if not isinstance(value, str):
                                         raise ModelRequestInterrupted(reason='invalid_stream_delta',
-                                                                      deadline_seconds=self.deadline_seconds)
+                                                                      deadline_seconds=deadline)
                                     entry['function'][field] += value
                     if part.finish_reason is not None:
                         state['finish_reason'] = part.finish_reason
@@ -182,7 +226,7 @@ class CompletionClient:
         # HTTP 200, partial arguments, a finish marker alone or EOF alone do
         # not establish a complete response. Require the final provider usage.
         if not choices or usage is None or any(part['finish_reason'] is None for part in choices.values()):
-            raise ModelRequestInterrupted(reason='incomplete_stream', deadline_seconds=self.deadline_seconds,
+            raise ModelRequestInterrupted(reason='incomplete_stream', deadline_seconds=deadline,
                 stream_state=dict(chunks_received=chunks_received, choices_received=len(choices),
                     unfinished_choices=sum(part['finish_reason'] is None for part in choices.values()),
                     usage_received=usage is not None))
@@ -198,12 +242,12 @@ class CompletionClient:
             elif tools:
                 if any(not tool['id'] or not tool['function']['name'] for tool in tools.values()):
                     raise ModelRequestInterrupted(reason='incomplete_stream_tool',
-                                                  deadline_seconds=self.deadline_seconds)
+                                                  deadline_seconds=deadline)
                 part['message']['tool_calls'] = [tools[key] for key in sorted(tools)]
             complete.append(part)
         try:
             return _ProviderCompletion.model_validate(dict(metadata, choices=complete, usage=usage), strict=True)
         except ValueError as exc:
             raise ModelRequestInterrupted(reason='invalid_stream_response',
-                                          deadline_seconds=self.deadline_seconds,
+                                          deadline_seconds=deadline,
                                           cause_types=(type(exc).__name__,)) from exc

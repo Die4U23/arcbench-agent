@@ -1,6 +1,7 @@
 """Non-executing source checks in a credential-sanitized trusted parser."""
 import hashlib,json,os,posixpath,re,shlex,shutil,subprocess
 from pathlib import Path
+from .platform_contract import contract_errors
 from .platform_scaffold import has_scaffold_seed_loader
 from .platform_seed import validate_seeds
 from .sandbox_files import snapshot_project
@@ -229,7 +230,7 @@ def missing_coverage(project, ir, work_ids=None):
 
 def validate_source(project, tests=None, *, include_test_evidence=True):
     files=snapshot_project(Path(project))
-    errors=[]
+    errors=contract_errors(project)
     manifests=[]
     for name,data in files.items():
         if name.endswith('package.json'):

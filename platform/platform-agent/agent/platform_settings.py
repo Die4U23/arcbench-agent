@@ -19,6 +19,10 @@ _FLASH_ALIASES = frozenset({"deepseek-flash", "deepseek-v4-flash", "deepseek-v4.
 _FLASH_ALLOWED = ("deepseek-flash", "deepseek-v4-flash")
 
 _INT_BOUNDS = {
+    'ARC_API_RETRIES_PER_CALL': (0, 4),
+    'ARC_API_RETRIES_TOTAL': (0, 20),
+    'ARC_API_WAIT_SECONDS': (0, 300),
+    'ARC_RECOVERY_ATTEMPTS': (0, 10),
     'ARC_EXECUTION_SECONDS': (1, 86400),
     'ARC_TOOL_BATCH_LIMIT': (1, 128),
     'ARC_REPEAT_LIMIT': (1, 20),
@@ -28,6 +32,7 @@ _INT_BOUNDS = {
     'ARC_STEP_REQUESTS': (1, 100),
     'ARC_REPLAN_LIMIT': (0, 10),
     'ARC_PROTOCOL_REPAIRS': (0, 10),
+    'ARC_INSPECTION_TURNS': (1, 100),
     'ARC_WORKSPACE_CONTEXT_BYTES': (0, 1000000),
     "ARC_TOKEN_LIMIT": (1, 100_000_000),
     "ARC_MAX_INPUT_TOKENS": (1, 100_000_000),
@@ -69,6 +74,7 @@ class PlatformSettings:
     token_limit: int | None = None
     execution_mode: str = 'plan_execute'
     input_policy: str = 'requirements_only'
+    delivery_policy: str = 'verified'
     reasoning_effort: str | None = None
     execution_seconds: int = 3600
     tool_batch_limit: int = 16
@@ -80,6 +86,13 @@ class PlatformSettings:
     replan_limit: int = 1
     protocol_repair_limit: int = 2
     workspace_context_bytes: int = 200000
+    inspection_turn_limit: int = 3
+    control_policy: str = 'adaptive'
+    budget_policy: str = 'adaptive'
+    recovery_attempt_limit: int = 1
+    api_retries_per_call: int = 2
+    api_retry_total: int = 4
+    api_wait_seconds: int = 60
 
     def execution_limits(self):
         from .platform_execution import ExecutionLimits
@@ -88,15 +101,24 @@ class PlatformSettings:
             repeated_actions=self.repeated_action_limit, idle_turns=self.idle_turn_limit,
             plan_steps=self.plan_step_limit, plan_requests=self.plan_request_allowance,
             step_requests=self.step_request_allowance, replans=self.replan_limit,
-            protocol_repairs=self.protocol_repair_limit)
+            protocol_repairs=self.protocol_repair_limit, inspection_turns=self.inspection_turn_limit)
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] = os.environ) -> PlatformSettings:
         values: dict[str, object] = {}
+        for name, field in [('ARC_CONTROL_POLICY', 'control_policy'), ('ARC_BUDGET_POLICY', 'budget_policy')]:
+            value = environ.get(name, 'adaptive')
+            if value not in {'adaptive', 'legacy'}:
+                raise ValueError(name)
+            values[field] = value
         policy = environ.get('ARC_INPUT_POLICY', 'requirements_only')
         if policy not in {'requirements_only', 'provided_tests'}:
             raise ValueError('ARC_INPUT_POLICY')
         values['input_policy'] = policy
+        delivery = environ.get('ARC_DELIVERY_POLICY', 'verified')
+        if delivery not in {'verified', 'runnable_candidate'}:
+            raise ValueError('ARC_DELIVERY_POLICY')
+        values['delivery_policy'] = delivery
         if 'ARC_REASONING_EFFORT' in environ:
             effort = environ['ARC_REASONING_EFFORT']
             if effort not in {'none', 'low', 'medium', 'high', 'max'}:
@@ -107,6 +129,10 @@ class PlatformSettings:
             raise ValueError('ARC_EXECUTION_MODE')
         values['execution_mode'] = mode
         for name, field in {
+            'ARC_API_RETRIES_PER_CALL': 'api_retries_per_call',
+            'ARC_API_RETRIES_TOTAL': 'api_retry_total',
+            'ARC_API_WAIT_SECONDS': 'api_wait_seconds',
+            'ARC_RECOVERY_ATTEMPTS': 'recovery_attempt_limit',
             'ARC_EXECUTION_SECONDS': 'execution_seconds',
             'ARC_TOOL_BATCH_LIMIT': 'tool_batch_limit',
             'ARC_REPEAT_LIMIT': 'repeated_action_limit',
@@ -116,6 +142,7 @@ class PlatformSettings:
             'ARC_STEP_REQUESTS': 'step_request_allowance',
             'ARC_REPLAN_LIMIT': 'replan_limit',
             'ARC_PROTOCOL_REPAIRS': 'protocol_repair_limit',
+            'ARC_INSPECTION_TURNS': 'inspection_turn_limit',
             'ARC_WORKSPACE_CONTEXT_BYTES': 'workspace_context_bytes',
         }.items():
             value = _optional_int(environ, name)

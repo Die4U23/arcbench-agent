@@ -17,16 +17,16 @@ from .campaign_budget import CampaignBudget, CampaignBudgetStopped
 from .model_transport import ModelRequestInterrupted
 from .llm import ModelBudgetExceeded, ModelClient
 from .platform_settings import PlatformSettings, models_equivalent
-from .platform_execution import ExecutionStopped, source_digest, validate_arguments
+from .platform_execution import ExecutionStopped, QUALITY_WARNINGS, source_digest, validate_arguments
 from .sandbox_files import snapshot_project
-from .tools import TOOL_SCHEMAS
+from .tools import TOOL_SCHEMAS, MAX_OUTPUT_CHARS
 
 
 DEFAULT_CONTEXT_WINDOW_TOKENS = 32_768
 DEFAULT_OUTPUT_RESERVE_TOKENS = 16_384
 DEFAULT_REQUEST_ALLOWANCE = 8
 DEFAULT_TOOL_CALL_LIMIT = 120
-MAX_TOOL_RESULT_CHARS = 12_000
+MAX_TOOL_RESULT_CHARS = MAX_OUTPUT_CHARS
 MAX_CONTEXT_READ_CHARS = 8_000
 MAX_IDENTICAL_TOOL_FAILURES = 3
 
@@ -249,7 +249,7 @@ class CompetitionModel:
         }}
 
     def _call_tool(self, tools: Any, name: str, arguments: dict[str, Any], packet: Any,
-                   stage: str) -> str:
+                   stage: str, *, stage_context: Any = None) -> str:
         if name == "read_context":
             resource = arguments.get("resource")
             offset = arguments.get("offset")
@@ -324,6 +324,9 @@ class CompetitionModel:
             result = result[:MAX_TOOL_RESULT_CHARS] + "\n[tool output bounded; retrieve a smaller range]"
         if name == "read_context":
             self._remember_context_result(arguments["resource"], result)
+        # Record only an executed tool result. Platform cache references return
+        # before this dispatch path and cannot manufacture a source receipt.
+        self._remember_project_source(name, arguments, result, packet, tools=tools)
         return result
 
     def _remember_context_result(self, resource: str, result: str) -> None:
@@ -352,7 +355,10 @@ class CompetitionModel:
         }
 
     def _remember_project_source(self, name: str, arguments: dict[str, Any], result: str,
-                                 packet: Any) -> None:
+                                 packet: Any, *, tools: Any) -> None:
+        if (name not in {"read_file", "read_files"} or not callable(getattr(tools, '_resolve', None))
+                or getattr(tools, 'project_dir', None) is None):
+            return
         manifest = self._manifest(packet)
         frozen_files = {item.get("path"): item.get("sha256")
                         for item in manifest.get("planned_application_files", [])
@@ -361,17 +367,20 @@ class CompetitionModel:
             frozen_files[item['path']] = item['sha256']
 
         def remember(path: str, content: str) -> None:
-            canonical = path if path.startswith("application/") else "application/" + path
+            # File tools use project-relative paths, including real directories
+            # named application. Only context resources use that display prefix.
+            canonical = "application/" + tools._resolve(path).relative_to(tools.project_dir).as_posix()
             digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
             frozen_digest = frozen_files.get(canonical)
             source = {"content": content, "sha256": frozen_digest or digest,
                       "current_application_read": frozen_digest == digest,
                       "path": canonical, "start": 0, "end": len(content)}
             self._context_sources[canonical] = source
-            self._context_sources[path] = source
+            if not path.startswith('application/'):
+                self._context_sources[path] = source
 
         if name == "read_file" and isinstance(arguments.get("path"), str):
-            if arguments.get("start_line") is not None or arguments.get("end_line") is not None:
+            if arguments.get("start_line", 1) != 1 or arguments.get("end_line") is not None:
                 return
             remember(arguments["path"], result)
         elif name == "read_files":
@@ -417,7 +426,7 @@ class CompetitionModel:
             return ""
 
     def _request(self, messages: list[dict[str, Any]], *, stage: str, tools: list[dict[str, Any]],
-                 max_tokens: int) -> Any:
+                 max_tokens: int, stage_context: Any = None) -> Any:
         if isinstance(self.session, ModelClient) and (
                 self.campaign_budget is None or not self.campaign_budget.live_allowed):
             raise CompetitionModelError('live competition requires verified campaign rates')
@@ -448,7 +457,7 @@ class CompetitionModel:
             request_options["response_format"] = {"type": "json_object"}
         try:
             response = self.session._create_completion(stage, model=model, messages=messages,
-                tools=tools, tool_choice=getattr(self, '_completion_tool_choice', 'auto'), max_tokens=max_tokens, **request_options)
+                tools=tools, tool_choice='auto', max_tokens=max_tokens, **request_options)
         except BaseException:
             if reservation_id is not None:
                 self.campaign_budget.freeze(reservation_id, "request_interrupted_usage_unknown")
@@ -494,7 +503,7 @@ class CompetitionModel:
     def _run(self, packet: Any, tools: Any, *, stage: str, mode: str,
              instructions: str, max_tokens: int, request_allowance: int | None = None,
              initial_messages: list[dict[str, Any]] | None = None,
-             final_validator: Any = None) -> dict[str, Any]:
+             final_validator: Any = None, stage_context: Any = None) -> dict[str, Any]:
         self._stopped_reason = None
         self._context_sources = {}
         reset_reads = getattr(getattr(packet, 'repository', None), 'reset_read_receipts', None)
@@ -518,7 +527,8 @@ class CompetitionModel:
                     self.session._check_model_budget(reserve_for_delivery=False)
                 else:
                     self.campaign_budget.check_time(stage)
-                response = self._request(messages, stage=stage, tools=schemas, max_tokens=max_tokens)
+                response = self._request(messages, stage=stage, tools=schemas, max_tokens=max_tokens,
+                                         stage_context=stage_context)
             except ExecutionStopped as exc:
                 return {"status": "stopped", "reason": exc.reason, "turns": turns}
             except CampaignBudgetStopped as exc:
@@ -601,24 +611,27 @@ class CompetitionModel:
                 results = []
                 for call, args in zip(calls, parsed):
                     name = call.function.name
+                    signature = name + ":" + json.dumps(args, sort_keys=True)
                     self.session.tool_calls_used = getattr(self.session, "tool_calls_used", 0) + 1
                     try:
+                        if control is not None:
+                            control.permit('write' if name in _WRITE_TOOLS else 'read')
                         if mode in {"design", "audit"} and name not in _READ_ONLY_TOOLS | {"read_context", "list_context"}:
                             raise ValueError("this stage is read-only")
-                        result = self._call_tool(tools, name, args, packet, stage)
-                        self._remember_project_source(name, args, result, packet)
-                        if control is not None:
+                        result = self._call_tool(tools, name, args, packet, stage, stage_context=stage_context)
+                        if stage_context is not None:
+                            new_evidence |= stage_context.new_information
+                        elif control is not None:
                             observed = hashlib.sha256((name + result).encode('utf-8')).hexdigest()
                             evidence = getattr(self, '_execution_evidence', set())
                             new_evidence |= name in _READ_ONLY_TOOLS | {'read_context', 'list_context'} and observed not in evidence
                             evidence.add(observed)
                             self._execution_evidence = evidence
-                        failed_signatures.pop(name + ":" + json.dumps(args, sort_keys=True), None)
+                        failed_signatures.pop(signature, None)
                     except ExecutionStopped as exc:
                         return dict(status='stopped', reason=exc.reason, turns=turns)
                     except Exception as exc:
                         logging.warning('MODEL_TOOL_ERROR %s',json.dumps({'tool':name,'error_type':type(exc).__name__,'detail':str(exc)[:800]}))
-                        signature = name + ":" + str(getattr(call.function, "arguments", ""))
                         failed_signatures[signature] = failed_signatures.get(signature, 0) + 1
                         result = f"Tool error: {type(exc).__name__}: {exc}"
                         if failed_signatures[signature] >= MAX_IDENTICAL_TOOL_FAILURES:
@@ -630,11 +643,28 @@ class CompetitionModel:
                 if control is not None:
                     after = source_digest(snapshot_project(tools.project_dir)) if hasattr(tools, 'project_dir') else ''
                     try:
-                        control.observe(turn_before, after, new_evidence=new_evidence)
+                        handoff = bool(getattr(stage_context, 'can_yield_verification', False))
+                        repair_handoff = bool(getattr(stage_context, 'verify_on_return', False))
+                        read_only_turn = all(call.function.name in _READ_ONLY_TOOLS | {'read_context', 'list_context'}
+                                             for call in calls)
+                        information_only = new_evidence and turn_before == after and read_only_turn
+                        control.observe(turn_before, after, new_evidence=new_evidence,
+                            information_only=information_only,
+                            verification_pending=(stage_context is not None and stage_context.completed
+                                or repair_handoff or handoff and control.control_state == 'WARNING'
+                                and control.warning_reason in QUALITY_WARNINGS))
+                        if stage_context is not None:
+                            stage_context.observe_tool_turn(turn_before, after, [call.function.name for call in calls],
+                                                            new_evidence=new_evidence)
                     except ExecutionStopped as exc:
                         return dict(status='stopped', reason=exc.reason, turns=turns)
-                if getattr(self,'_completion_tool_choice',None)=='none':
+                if stage_context is not None and stage_context.completed:
                     return {'status':'complete','turns':turns,'summary':'Agent requested validation and static checks passed; functional acceptance remains pending.','changed_paths':[]}
+                if (control is not None and handoff and not repair_handoff and not read_only_turn
+                        and control.control_state == 'WARNING' and control.warning_reason in QUALITY_WARNINGS):
+                    self._append_log(dict(event='step_verification_yield', reason=control.warning_reason,
+                        source_sha256=after, requests=control.requests, tools=control.tools))
+                    return dict(status='stopped', reason='verification_due', turns=turns)
                 if not self._check_context(messages, schemas, stage, packet, max_tokens):
                     return {"status": "stopped", "reason": self._stopped_reason, "turns": turns}
                 continue
@@ -645,6 +675,12 @@ class CompetitionModel:
             invalid_reason = 'invalid_json'
             try:
                 value = self._parse_final_object(content)
+                if not isinstance(value, dict):
+                    invalid_reason = 'invalid_json_shape'
+                    raise ValueError('final answer must be a JSON object')
+                if 'status' in value and not isinstance(value['status'], str):
+                    invalid_reason = 'invalid_json_shape'
+                    raise ValueError('status must be a string when supplied')
                 if final_validator is not None:
                     invalid_reason = 'invalid_plan'
                     final_validator(value)
@@ -655,23 +691,24 @@ class CompetitionModel:
                     format_repairs += 1
                     messages.append(self._assistant_payload(response))
                     messages.append({"role": "user", "content": (
-                        "Your final answer must be one valid JSON object matching the requested keys. "
-                        "Convert the answer you just produced into JSON only. Do not reread files, "
-                        "change the implementation, or add prose or Markdown fences. "
+                        ("Your JSON violates the requested contract. Correct the identified case, step or field; "
+                         "preserve unaffected entries and required behavior. Return the corrected complete JSON object. "
+                         if invalid_reason == 'invalid_plan' else
+                         "Your final answer must be one valid JSON object matching the requested keys. "
+                         "Convert the answer you just produced into JSON only. ") +
+                        "Do not reread files, change the implementation, or add prose or Markdown fences. "
                         "Validation error: " + detail)})
                     if not self._check_context(messages, schemas, stage, packet, max_tokens):
                         return {"status": "stopped", "reason": self._stopped_reason, "turns": turns}
                     continue
                 return {"status": "stopped", "reason": invalid_reason + (': ' + detail if invalid_reason == 'invalid_plan' else ''), "turns": turns,
                         "raw": content[:MAX_TOOL_RESULT_CHARS]}
-            if not isinstance(value, dict):
-                return {"status": "stopped", "reason": "invalid_json_shape", "turns": turns}
             if value.get('status') in {'failed', 'stopped', 'incomplete'}:
                 return dict(status='stopped', reason='model_incomplete', turns=turns)
             if control is not None and mode == 'implement':
                 state = source_digest(control.source(tools.project_dir)) if hasattr(tools, 'project_dir') else ''
                 try:
-                    control.observe(state, state)
+                    control.observe(state, state, verification_pending=True)
                 except ExecutionStopped as exc:
                     return dict(status='stopped', reason=exc.reason, turns=turns)
             value["status"] = "complete"

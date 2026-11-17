@@ -24,7 +24,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .platform_contract import read_contract
+from .platform_contract import contract_route_errors, read_contract, route_errors
 
 ERROR_LIMIT = 1500
 LOG_TAIL_LIMIT = 6000
@@ -44,6 +44,7 @@ BROWSER_MISSING = re.compile(r"Executable doesn't exist|browserType\.launch: .*(
 PLAYWRIGHT_CONFIG = re.compile(r'^playwright\.config\.[cm]?[jt]s$')
 STAGED_IGNORE = {'node_modules', '.git', '.arc', 'dist', 'build', 'coverage', 'test-results', 'playwright-report'}
 MAX_SUITE_PARENT_DEPTH = 3
+MAX_HTTP_PROBES = 20
 WINDOWS = os.name == 'nt'
 
 
@@ -96,6 +97,7 @@ class RuntimeCheckResult:
         if self.api_probes:
             feedback['api_probes'] = self.api_probes[:limit]
             feedback['api_probe_note'] = ('HTTP probes ran before the page tests. ok false is an interface failure. '
+                                          'Request/response JSON types are not checked. '
                                           'failure_groups are page results.')
         if self.preconditions:
             # Evaluator preconditions the harness deliberately left unset are reported, not repaired.
@@ -530,13 +532,17 @@ def _proc_listening_pids(port: int) -> set[int] | None:
 def listening_pids(port: int) -> set[int]:
     if WINDOWS:
         try:
-            output = subprocess.run(['netstat', '-ano', '-p', 'TCP'], capture_output=True, text=True, timeout=20).stdout
+            # Native Windows diagnostics may use an OEM code page even in Python UTF-8 mode.
+            # Only ASCII protocol fields are needed; never decode localized stdout/stderr.
+            output = subprocess.run(['netstat', '-ano', '-p', 'TCP'], capture_output=True, timeout=20).stdout
         except (OSError, subprocess.SubprocessError):
             return set()
         pids = set()
         for line in output.splitlines():
             parts = line.split()
-            if len(parts) >= 5 and parts[3].upper() == 'LISTENING' and parts[1].rsplit(':', 1)[-1] == str(port):
+            if (len(parts) >= 5 and parts[3].upper() == b'LISTENING'
+                    and parts[1].rsplit(b':', 1)[-1] == str(port).encode('ascii')
+                    and parts[4].isdigit()):
                 pids.add(int(parts[4]))
         return pids
     via_proc = _proc_listening_pids(port)
@@ -931,36 +937,64 @@ def smoke_probe_routes() -> list[dict]:
 
 
 def probe_plan(project_dir: Path) -> list[dict]:
-    """Health, the root page, then parameter-free read routes from the contract. Duplicates collapse."""
-    routes = smoke_probe_routes()
+    """Preserve explicit declarations; only merge their matching built-in defaults."""
+    errors = contract_route_errors(project_dir)
+    if errors:
+        raise ValueError('; '.join(item['error'] for item in errors))
     document = read_contract(project_dir)
-    extra = document.get('routes') if isinstance(document, dict) else None
-    if isinstance(extra, list):
-        routes.extend(item for item in extra if isinstance(item, dict))
-    planned = []
-    seen = set()
-    for route in routes:
-        method = str(route.get('method') or '').upper()
-        path = route.get('path')
-        if (method, path) in seen:
-            continue
-        seen.add((method, path))
-        planned.append(route)
-        if len(planned) >= 20:
-            break
-    return planned
+    extra = document.get('routes', []) if document else []
+    planned = {(route['method'], route['path']): dict(route, probe_source='smoke')
+               for route in smoke_probe_routes()}
+    for route in extra:
+        identity = (route['method'].upper(), route['path'])
+        defaults = planned.get(identity)
+        if defaults:
+            smoke = {key: value for key, value in defaults.items() if key != 'probe_source'}
+            merged = dict(smoke, **route)
+            # Required smoke reads cannot be disabled by a declared skip.
+            # Preserve that original declaration separately for diagnostics.
+            merged['probe'] = smoke['probe']
+            if smoke.get('require_body'):
+                merged['require_body'] = True
+            planned[identity] = dict(merged, probe_source='smoke+contract', smoke_defaults=smoke,
+                                     declared_route=dict(route))
+        else:
+            planned[identity] = dict(route, probe_source='contract')
+    return list(planned.values())
+
+
+def _probe_diagnostics(route: dict) -> dict:
+    context = route.get('declared_route') or {key: value for key, value in route.items()
+                                            if key not in {'probe_source', 'smoke_defaults'}}
+    result = dict(type_status='not_checked', contract_context=context,
+                  probe_source=route.get('probe_source', 'provided'), effective_probe=route.get('probe'))
+    if 'smoke_defaults' in route:
+        result['smoke_defaults'] = route['smoke_defaults']
+    return result
 
 
 def probe_routes(base_url: str, routes: list[dict], timeout: float = 5) -> list[dict]:
     """Call read probes. Mutating and templated routes are listed and not requested."""
+    errors = route_errors(routes, strict_probe=False)
+    if errors:
+        return [dict(method='CONTRACT', path='docs/contract.json', ok=False,
+                     error='Invalid route contract: ' + '; '.join(item['error'] for item in errors),
+                     type_status='not_checked', contract_context=routes)]
     results = []
+    attempted = 0
     for route in routes:
         method = str(route.get('method') or '').upper()
         path = str(route.get('path') or '')
+        diagnostics = _probe_diagnostics(route)
         templated = '{' in path or '/:' in path
         if route.get('probe') != 'read' or method != 'GET' or not path.startswith('/') or path.startswith('//') or templated:
-            results.append(dict(method=method, path=path, skipped='not a parameter-free GET read probe'))
+            results.append(dict(method=method, path=path, skipped='not a parameter-free GET read probe', **diagnostics))
             continue
+        if attempted >= MAX_HTTP_PROBES:
+            results.append(dict(method=method, path=path, skipped='probe_limit',
+                                probe_limit=MAX_HTTP_PROBES, **diagnostics))
+            continue
+        attempted += 1
         url = base_url.rstrip('/') + path
         try:
             with urllib.request.urlopen(urllib.request.Request(url, method='GET'), timeout=timeout) as response:
@@ -970,11 +1004,11 @@ def probe_routes(base_url: str, routes: list[dict], timeout: float = 5) -> list[
             status = error.code
             body = error.read(2048)
         except (urllib.error.URLError, OSError, ValueError) as error:
-            results.append(dict(method=method, path=path, ok=False, error=f'{type(error).__name__}: {error}'[:300]))
+            results.append(dict(method=method, path=path, ok=False, error=f'{type(error).__name__}: {error}'[:300], **diagnostics))
             continue
         text = redact(body.decode('utf-8', errors='replace'))[:400]
         expect = route.get('expect')
-        if isinstance(expect, int):
+        if 'expect' in route:
             ok = status == expect
             note = None
         elif status in (401, 403):
@@ -985,7 +1019,7 @@ def probe_routes(base_url: str, routes: list[dict], timeout: float = 5) -> list[
             note = None
         if ok and route.get('require_body') and not text.strip():
             ok = False
-        item = dict(method=method, path=path, status=status, ok=ok, body=text)
+        item = dict(method=method, path=path, status=status, ok=ok, body=text, **diagnostics)
         if note:
             item['note'] = note
         results.append(item)
@@ -1020,7 +1054,8 @@ def signal_counts(passed: int, failed: int, skipped: int, failures: list[Runtime
 def probe_signal(probes: list[dict]) -> dict:
     failures = api_failures(probes)
     executed = [item for item in probes if 'skipped' not in item]
-    return signal_counts(len(executed) - len(failures), len(failures), len(probes) - len(executed), failures)
+    return dict(signal_counts(len(executed) - len(failures), len(failures), len(probes) - len(executed), failures),
+                type_status='not_checked')
 
 
 def diagnostic_log_tail(text: str, status: str, limit: int = DIAGNOSTIC_LOG_LIMIT) -> str:
@@ -1182,6 +1217,15 @@ def run_runtime_check(project_dir: Path, tests_dir: Path | None = None, *,
         return left is not None and left <= 0
 
     try:
+        contract_failures = contract_route_errors(project_dir)
+        if contract_failures:
+            stage = 'contract'
+            failures = [RuntimeFailure('Invalid route contract', item['path'], item['error'], 'api')
+                        for item in contract_failures]
+            signals['contract'] = signal_counts(0, len(failures), 0, failures)
+            for item in contract_failures:
+                note(item['error'])
+            return finish('failed', failed=len(failures), total=len(failures), failures=failures)
         home = run_dir / 'home'
         home.mkdir()
         userconfig = home / '.npmrc'

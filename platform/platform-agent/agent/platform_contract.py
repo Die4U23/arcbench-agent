@@ -128,22 +128,11 @@ def read_contract(project_dir) -> dict | None:
     return loaded if isinstance(loaded, dict) else None
 
 
-def contract_errors(project_dir) -> list[dict[str, str]]:
-    """Validate an existing contract. A missing file is not an error here."""
-    path = Path(project_dir) / CONTRACT_RELATIVE
-    if not path.is_file():
-        return []
-    try:
-        data = json.loads(path.read_text(encoding='utf-8'))
-    except (OSError, UnicodeError, json.JSONDecodeError) as error:
-        return [dict(path=CONTRACT_RELATIVE, error=f'Invalid JSON: {error}')]
-    if not isinstance(data, dict):
-        return [dict(path=CONTRACT_RELATIVE, error='Contract must be a JSON object')]
+def route_errors(routes, *, strict_probe=True) -> list[dict[str, str]]:
+    """Validate route identity/status without requiring unrelated contract metadata."""
+    if not isinstance(routes, list):
+        return [dict(path=CONTRACT_RELATIVE, error='routes must be a list')]
     errors: list[dict[str, str]] = []
-    for key in ('entities', 'seeds', 'routes', 'accessible_names'):
-        if key in data and not isinstance(data[key], list):
-            errors.append(dict(path=CONTRACT_RELATIVE, error=f'{key} must be a list'))
-    routes = data.get('routes') if isinstance(data.get('routes'), list) else []
     seen_routes: set[tuple[str, str]] = set()
     for route in routes:
         if not isinstance(route, dict):
@@ -163,11 +152,40 @@ def contract_errors(project_dir) -> list[dict[str, str]]:
         if identity in seen_routes:
             errors.append(dict(path=CONTRACT_RELATIVE, error=f'Duplicate route {method} {route_path}'))
         seen_routes.add(identity)
+        if 'expect' in route and (type(route['expect']) is not int or not 100 <= route['expect'] <= 599):
+            errors.append(dict(path=CONTRACT_RELATIVE,
+                               error=f'{method} {route_path} expect must be an integer HTTP status from 100 to 599'))
         templated = _TEMPLATE.search(route_path) is not None
-        if probe == 'read' and (method != 'GET' or templated):
-            errors.append(dict(path=CONTRACT_RELATIVE, error=f'{method} {route_path} cannot use probe read'))
-        elif probe not in {'read', 'skip'}:
+        if not isinstance(probe, str) or probe not in {'read', 'skip'}:
             errors.append(dict(path=CONTRACT_RELATIVE, error=f'{method} {route_path} probe must be read or skip'))
+        elif strict_probe and probe == 'read' and (method != 'GET' or templated):
+            errors.append(dict(path=CONTRACT_RELATIVE, error=f'{method} {route_path} cannot use probe read'))
+    return errors
+
+
+def contract_route_errors(project_dir) -> list[dict[str, str]]:
+    """Validate the optional route document before any runtime work or probing."""
+    path = Path(project_dir) / CONTRACT_RELATIVE
+    if not path.is_file():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        return [dict(path=CONTRACT_RELATIVE, error=f'Invalid JSON: {error}')]
+    if not isinstance(data, dict):
+        return [dict(path=CONTRACT_RELATIVE, error='Contract must be a JSON object')]
+    return route_errors(data.get('routes', []))
+
+
+def contract_errors(project_dir) -> list[dict[str, str]]:
+    """Validate an existing contract. A missing file is not an error here."""
+    errors = contract_route_errors(project_dir)
+    data = read_contract(project_dir)
+    if data is None:
+        return errors
+    for key in ('entities', 'seeds', 'accessible_names'):
+        if key in data and not isinstance(data[key], list):
+            errors.append(dict(path=CONTRACT_RELATIVE, error=f'{key} must be a list'))
     seeds = data.get('seeds') if isinstance(data.get('seeds'), list) else []
     seen_files: set[str] = set()
     for seed in seeds:

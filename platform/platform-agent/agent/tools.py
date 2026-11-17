@@ -22,7 +22,7 @@ MAX_BATCH_FILES = 20
 MAX_BATCH_CONTENT_CHARS = 120_000
 MAX_BATCH_OUTPUT_CHARS = 40_000
 MAX_BATCH_SCRIPTS = 3
-IGNORED_DIRS = {".git", ".arc", "node_modules", "dist", "build", ".venv", "venv"}
+IGNORED_DIRS = {".git", ".arc", "node_modules", "dist", "build", ".venv", "venv", "self-tests"}
 ALLOWED_PROJECT_SCRIPTS = {"build", "test", "lint", "typecheck", "check"}
 LOGGER = logging.getLogger(__name__)
 
@@ -202,6 +202,14 @@ class ProjectTools:
         candidate = Path(raw_path)
         if candidate.is_absolute():
             raise ValueError("Absolute paths are not allowed")
+        if any(part.casefold() == "self-tests" for part in candidate.parts):
+            raise ValueError("Access to controller-owned self-tests is not allowed")
+        lexical = self.project_dir / candidate
+        for path in (lexical, *lexical.parents):
+            if path == self.project_dir:
+                break
+            if path.is_symlink() or getattr(path, "is_junction", lambda: False)():
+                raise ValueError("Project paths must not traverse symlinks or junctions")
         resolved = (self.project_dir / candidate).resolve()
         try:
             resolved.relative_to(self.project_dir)
@@ -230,10 +238,16 @@ class ProjectTools:
             raise FileNotFoundError(f"Directory not found: {path}")
         items: list[str] = []
         for current, dirs, files in os.walk(root):
-            dirs[:] = sorted(d for d in dirs if d not in IGNORED_DIRS and not d.startswith("."))
+            dirs[:] = sorted(d for d in dirs if d.casefold() not in IGNORED_DIRS and not d.startswith(".")
+                             and not (Path(current) / d).is_symlink()
+                             and not getattr(Path(current) / d, "is_junction", lambda: False)())
             base = Path(current)
             for filename in sorted(files):
                 full = base / filename
+                try:
+                    self._resolve(full.relative_to(self.project_dir).as_posix())
+                except ValueError:
+                    continue
                 items.append(full.relative_to(self.project_dir).as_posix())
                 if len(items) >= 300:
                     return "\n".join(items) + "\n...[truncated at 300 files]"
@@ -245,7 +259,7 @@ class ProjectTools:
         target = self._resolve(path)
         if not target.is_file():
             raise FileNotFoundError(f"File not found: {path}")
-        content = target.read_text(encoding="utf-8")
+        content = target.read_bytes().decode("utf-8")
         if start_line != 1 or end_line is not None:
             content = "\n".join(content.splitlines()[start_line - 1:end_line])
         if len(content) > MAX_FILE_CHARS:
@@ -268,14 +282,16 @@ class ProjectTools:
             resolved.append((relative, target))
 
         files: list[dict[str, str]] = []
-        read_limit = min(MAX_BATCH_OUTPUT_CHARS, max(1_000, int(os.environ.get("ARCBENCH_MAX_READ_OUTPUT_CHARS", MAX_BATCH_OUTPUT_CHARS))))
+        # Bound the encoded object here, before an adapter can cut JSON in half.
+        read_limit = min(MAX_OUTPUT_CHARS, max(1_000,
+            int(os.environ.get("ARCBENCH_MAX_READ_OUTPUT_CHARS", MAX_BATCH_OUTPUT_CHARS))))
         remaining = read_limit
         truncated = False
         for relative, target in resolved:
             if remaining <= 0:
                 truncated = True
                 break
-            content = target.read_text(encoding="utf-8")
+            content = target.read_bytes().decode("utf-8")
             if len(content) > MAX_FILE_CHARS:
                 truncated = True
                 content = content[:MAX_FILE_CHARS] + "\n...[file truncated]"
@@ -323,7 +339,9 @@ class ProjectTools:
             raise ValueError("Search query must not be empty")
         matches: list[str] = []
         for current, dirs, files in os.walk(self.project_dir):
-            dirs[:] = sorted(d for d in dirs if d not in IGNORED_DIRS and not d.startswith("."))
+            dirs[:] = sorted(d for d in dirs if d.casefold() not in IGNORED_DIRS and not d.startswith(".")
+                             and not (Path(current) / d).is_symlink()
+                             and not getattr(Path(current) / d, "is_junction", lambda: False)())
             for filename in files:
                 path = Path(current) / filename
                 try:

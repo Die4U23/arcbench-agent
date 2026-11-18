@@ -85,7 +85,7 @@ def _check_source(app, evidence, model, settings, *, ir, directory, generation_r
     ready = (result.stage == 'tests' and result.status in {'passed', 'failed'}
              and type(signal.get('passed')) is int and signal['passed'] == 1
              and signal.get('failed') == signal.get('skipped') == 0 and signal.get('failures') == [])
-    contracts = behavior_checks.requirement_contracts(ir)
+    _, unresolved, blocked = behavior_checks.VerificationScope(ir).select(evidence.required_ids)
     report = dict(version=1, scope='runnable_candidate_not_full_verification', ready=ready,
         status='READY_FOR_EVALUATION' if ready else 'NOT_READY', formal_status='UNRUN',
         source_sha256=source, requirements_sha256=evidence.requirements_sha256,
@@ -98,7 +98,7 @@ def _check_source(app, evidence, model, settings, *, ir, directory, generation_r
         usage_accounting=dict(model.campaign_budget.state) if model.campaign_budget is not None else None,
         missing_source_coverage=evidence.missing,
         requirements={ref: dict(status='not_fully_verified',
-            unresolved=contracts.get(ref, {}).get('unresolved', ['public_requirement_missing']))
+            unresolved=unresolved.get(ref, []), blocked_dependencies=blocked.get(ref, []))
             for ref in evidence.required_ids},
         retained_steps=generation_result.get('candidate_steps', []),
         known_diagnostic_suites=[dict(name=f'authored_{i}', hashes=s['hashes'],

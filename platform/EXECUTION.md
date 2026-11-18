@@ -523,3 +523,12 @@ The existing guarded snapshot transaction stages the ledger in a temporary file,
 Malformed claim arguments remain bounded model-correctable errors. `coverage_storage_failed` and `coverage_capacity_exceeded` are controller stops: the executor rolls back the unfinished step, retains prior checkpoints, and does not replan or ask the model to repair application code. Only runnable-candidate mode may check the exact retained source through the existing static and candidate closeout path, after closing model requests and writes. `coverage_state_invalid` (damaged or inconsistent metadata, or unsafe snapshot state) remains a hard failure and cannot authorize candidate delivery. The strict verified policy is unchanged.
 
 Stops preserve request, token, tool and elapsed-time consumption. Candidate readiness is separate from requirement acceptance; failed or unexecuted behavior remains unverified. These changes address ledger reliability and failure routing only, without changing behavior-contract execution, step sizing or paid evaluation settings.
+
+
+### Requirement-scoped behavior verification
+
+The public work plan expands folder prerequisites and inherited prerequisites into atomic requirement IDs. Planning and behavior verification read those edges from the task IR. The controller checks the full public IR before selecting cases. Each step can exercise its contract-bound requirements together with previously accepted regressions when their prerequisites are also available in that suite.
+
+Step feedback lists intrinsic binding errors in `unresolved`, immediate unavailable prerequisite IDs in `blocked_dependencies`, and the frozen suite's requirement IDs and runtime counts when execution reaches the harness. Observed authored failures identify their requirement through the frozen spec file. If an independent case passes while another requirement is blocked, the step stays unverified. A failing test, changed suite, unavailable harness, or exhausted budget retains its actual failure classification.
+
+Strict final verification reuses eligible frozen cases and executes diagnostics against the selected source. Complete acceptance still requires source-bound evidence for every required ID. Candidate readiness reports each requirement's binding errors and dependency blockers alongside the separate smoke and authored-suite results.

@@ -5,6 +5,7 @@ frozen suite lives outside the editable application throughout repair rounds.
 """
 from __future__ import annotations
 
+from graphlib import CycleError, TopologicalSorter
 import hashlib
 import json
 from pathlib import Path
@@ -91,6 +92,48 @@ TARGET may additionally contain "within": TARGET for one enclosing region (no de
 Do not use arbitrary JavaScript, retries, sleeps, catches, conditional assertions or broad fallback locators.
 The controller freezes this plan before executing it; checks cannot be rewritten after failures.
 '''
+
+
+class VerificationScope:
+    """Public binding errors and atomic prerequisites, indexed once per IR."""
+
+    def __init__(self, ir):
+        contracts = requirement_contracts(ir)  # Validate global structure before scoping.
+        self.errors = {ref: row['unresolved'] for ref, row in contracts.items()}
+        self.dependencies = {}
+        rows = ir.get('work_items') if isinstance(ir, dict) else None
+        for row in rows if isinstance(rows, list) else ():
+            if not isinstance(row, dict) or not isinstance(row.get('id'), str):
+                continue
+            ref = row['id']
+            deps = row.get('depends_on', [])
+            if not isinstance(deps, list) or any(not isinstance(dep, str) or not dep for dep in deps):
+                self.errors[ref] = [*self.errors.get(ref, ()), 'invalid_requirement_dependencies']
+                continue
+            self.dependencies[ref] = tuple(deps)
+
+    def select(self, refs):
+        dependencies = {ref: self.dependencies.get(ref, ()) for ref in refs}
+        unresolved = {ref: self.errors.get(ref, ['public_requirement_missing'])
+                      for ref in dependencies if ref not in self.errors or self.errors[ref]}
+        graph = TopologicalSorter(dependencies)
+        try:
+            graph.prepare()
+        except CycleError:
+            pass  # Independent nodes can still run. The cycle stays blocked.
+        ordered = []
+        while ready := graph.get_ready():
+            for ref in ready:
+                # An undeclared or out-of-scope prerequisite is never completed.
+                if ref in dependencies and ref not in unresolved:
+                    ordered.append(ref)
+                    graph.done(ref)
+        runnable = set(ordered)
+        blocked_dependencies = {}
+        for ref, deps in dependencies.items():
+            if missing := set(deps) - runnable:
+                blocked_dependencies[ref] = sorted(missing)
+        return ordered, unresolved, blocked_dependencies
 
 
 def _text(value, limit=2000):

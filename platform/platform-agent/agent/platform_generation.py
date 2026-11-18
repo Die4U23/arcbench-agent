@@ -1735,6 +1735,7 @@ class StepBehaviorGate:
         self.directory.mkdir(parents=True, exist_ok=True)
         self.deadline = min(monotonic() + settings.runtime_seconds, model.execution_control.deadline)
         self.frozen, self.accepted, self.collections = {}, set(), {}
+        self.partial_diagnostics = set()
         self.checks = 0
         self.retain_unverified = settings.delivery_policy == 'runnable_candidate'
 
@@ -1750,31 +1751,57 @@ class StepBehaviorGate:
     def authored_checks(self):
         return self.collections[tuple(sorted(self.accepted))] if self.accepted else None
 
+    @property
+    def ir(self):
+        return self._ir
+
+    @ir.setter
+    def ir(self, value):
+        self._ir = value
+        self.public_scope = behavior_checks.VerificationScope(value)
+
+    def _scope(self, step):
+        return self.public_scope.select(sorted(self.accepted | set(step.requirement_ids)))
+
     def request_reserve(self, step):
-        if not self.verification_available(step):
-            return 0  # Capability is known before spending an author request.
-        return int(bool(set(step.requirement_ids) - self.frozen.keys()))
+        runnable, _, _ = self._scope(step)
+        return int(bool(set(runnable).intersection(step.requirement_ids) - self.frozen.keys()))
 
     def verification_available(self, step):
-        if not self.retain_unverified:
-            return True
-        contracts = behavior_checks.requirement_contracts(self.ir)
-        return not any(ref not in contracts or contracts[ref]['unresolved'] for ref in step.requirement_ids)
+        runnable, _, _ = self._scope(step)
+        return bool(runnable)
 
     def __call__(self, step, allowance):
         control = self.model.execution_control
         control.check()
         refs = set(step.requirement_ids)
-        # Validate before scoping: malformed global structure must not escape
-        # through row.get(), while unrelated pending semantics cannot block this step.
-        contracts = behavior_checks.requirement_contracts(self.ir)
-        selected_refs = refs | self.accepted
-        unresolved = {ref: (contracts[ref]['unresolved'] if ref in contracts else ['public_requirement_missing'])
-                      for ref in selected_refs
-                      if ref not in contracts or contracts[ref]['unresolved']}
-        if unresolved:
-            return dict(passed=False, failure_kind='verification', reason='requirement_constraints_unresolved',
-                        unresolved=unresolved)
+        # Scheduling can reuse binding information. Admission checks the
+        # current full IR before projecting any rows into an authored suite.
+        self.public_scope = behavior_checks.VerificationScope(self.ir)
+        runnable, unresolved, blocked = self._scope(step)
+        scope = dict(current_requirement_ids=sorted(refs), regression_requirement_ids=sorted(self.accepted),
+                     unresolved=unresolved, blocked_dependencies=blocked)
+        if not runnable:
+            return dict(scope, passed=False, failure_kind='verification', reason='requirement_constraints_unresolved')
+        previous_checks = self.checks
+        checked = self._check_runnable(set(runnable), allowance)
+        if checked.get('reason') == 'behavior_requirements_missing':
+            # Preserve valid author output while its prerequisites are pending.
+            self.partial_diagnostics.update(set(runnable) & self.frozen.keys())
+        elif checked.get('passed') and (unresolved or blocked):
+            self.partial_diagnostics.update(runnable)
+            # The runtime feedback still describes the exact cases that passed.
+            checked.update(passed=False, failure_kind='verification', reason='requirement_constraints_unresolved')
+        elif not checked.get('passed'):
+            self.partial_diagnostics.difference_update(runnable)
+        checked.update(scope)
+        if self.checks != previous_checks:
+            (self.directory / f'check-{self.checks}.json').write_text(
+                json.dumps(checked, ensure_ascii=False, indent=2), encoding='utf-8')
+        return checked
+
+    def _check_runnable(self, refs, allowance):
+        control = self.model.execution_control
         missing = refs - self.frozen.keys()
         if missing:
             if allowance <= 0:
@@ -1808,19 +1835,11 @@ class StepBehaviorGate:
                                         cases=subset['cases'])
         # Retain valid partial author output as a frozen attempt, without
         # treating its missing requirements as executed or accepted.
-        selected = tuple(sorted(self.accepted | (refs & self.frozen.keys())))
-        if selected not in self.collections:
-            directory = self.directory / f'suite-{len(self.collections) + 1}'
-            cases, files = [], {}
-            for index, ref in enumerate(selected):
-                item = self.frozen[ref]
-                files[f'journey-{index + 1}.spec.cjs'] = item['source']
-                cases.extend(item['cases'])
-            files['plan.json'] = json.dumps({'cases': cases}, ensure_ascii=False, indent=2).encode('utf-8')
-            hashes = behavior_checks.write_frozen_suite(directory, files)
-            self.collections[selected] = dict(directory=directory, hashes=hashes,
-                plan={'cases': cases}, cases=len(cases))
-        suite = self.collections[selected]
+        available = refs & self.frozen.keys()
+        if available != refs:
+            # A partial author response cannot make a dependent case runnable.
+            available, _, _ = self.public_scope.select(sorted(available))
+        suite = self.suite_for(available) if available else None
         if missing := refs - self.frozen.keys():
             return dict(passed=False, failure_kind='verification', reason='behavior_requirements_missing',
                         missing=sorted(missing))
@@ -1847,15 +1866,20 @@ class StepBehaviorGate:
                 and result.failed == result.skipped == result.precondition == 0
                 and not api_failures(result.api_probes))
             checked = dict(passed=passed, reason=None if passed else 'behavior_check_failed',
-                scope='synthetic_diagnostics_only', source_sha256=source, requirement_ids=list(selected),
-                constraint_evidence=behavior_checks.plan_coverage(suite['plan'], dict(self.ir, work_items=[r for r in self.ir.get('work_items', []) if r['id'] in selected])),
-                current_requirement_ids=sorted(refs), regression_requirement_ids=sorted(self.accepted),
+                scope='synthetic_diagnostics_only', source_sha256=source, requirement_ids=sorted(refs),
+                constraint_evidence=behavior_checks.plan_coverage(suite['plan'], dict(self.ir, work_items=[r for r in self.ir.get('work_items', []) if r['id'] in refs])),
                 suite_hashes=suite['hashes'], result=result.to_feedback())
             if not passed:
                 observed_failure = (unchanged and (result.status in {'build_failed', 'start_failed'}
                     or (result.stage == 'tests' and result.status == 'failed' and result.failed > 0)
                     or api_failures(result.api_probes)))
                 checked['failure_kind'] = 'behavior' if observed_failure else 'verification'
+                if observed_failure:
+                    # Each controller-authored step spec belongs to exactly one
+                    # requirement. Build/start/probe errors have no such owner.
+                    owners = {f'journey-{index}.spec.cjs': ref for index, ref in enumerate(sorted(refs), 1)}
+                    checked['failed_requirement_ids'] = sorted({owners[Path(failure.file).name]
+                        for failure in result.failures if failure.file and Path(failure.file).name in owners})
         except ExecutionStopped:
             raise
         except Exception as error:
@@ -1863,8 +1887,22 @@ class StepBehaviorGate:
                            detail=f'{type(error).__name__}: {str(error)[:500]}')
         finally:
             safe_rmtree(work)
-        (self.directory / f'check-{self.checks}.json').write_text(json.dumps(checked, ensure_ascii=False, indent=2), encoding='utf-8')
         return checked
+
+    def suite_for(self, refs):
+        selected = tuple(sorted(refs))
+        if selected not in self.collections:
+            directory = self.directory / f'suite-{len(self.collections) + 1}'
+            cases, files = [], {}
+            for index, ref in enumerate(selected):
+                item = self.frozen[ref]
+                files[f'journey-{index + 1}.spec.cjs'] = item['source']
+                cases.extend(item['cases'])
+            files['plan.json'] = json.dumps({'cases': cases}, ensure_ascii=False, indent=2).encode('utf-8')
+            hashes = behavior_checks.write_frozen_suite(directory, files)
+            self.collections[selected] = dict(directory=directory, hashes=hashes,
+                plan={'cases': cases}, cases=len(cases))
+        return self.collections[selected]
 
     def quarantine(self):
         """Retain unverified source outside the deliverable; never count it as accepted."""
@@ -2363,7 +2401,13 @@ def _generate(args, evidence):
         prepare_scaffold(app)
     evidence.artifacts = initialize_self_test(app)
     scaffolded = inject_scaffold and has_full_scaffold(app)
+    bundle = load_task_bundle(**bundle_kwargs(inputs), include_tests=False)
+    work = build_work_plan(bundle)
+    dependencies = {ref: item.requirement_dependency_ids for item in work for ref in item.requirement_ids}
     ir = build_task_ir(inputs.requirements_path, app)
+    for row in ir['work_items']:
+        if row['id'] in dependencies:
+            row['depends_on'] = list(dependencies[row['id']])
     write_task_ir(app, ir)
     write_coverage(app, seed_coverage(ir))
     for note in inputs.notes:
@@ -2375,8 +2419,6 @@ def _generate(args, evidence):
         scaffolded=scaffolded, launcher_only=is_scaffold(app) and not scaffolded,
         entities=provenance_counts(ir.get('entities')), ui_elements=provenance_counts(ir.get('ui_elements')),
         scenarios=provenance_counts(ir.get('scenarios'))), ensure_ascii=False))
-    # Requirements and reference assets are the current official inputs.
-    bundle = load_task_bundle(**bundle_kwargs(inputs), include_tests=False)
     evidence.required_ids = tuple(bundle.index.atomic_ids)
     evidence.requirements_sha256 = bundle.source_hash
     reports = app/'.arc'/'platform-budget'/task
@@ -2467,7 +2509,6 @@ def _generate(args, evidence):
     seed_observations = collect_seed_evidence(inputs.requirements_path, inputs.tests_dir)
     seed_evidence = json.dumps(seed_observations, ensure_ascii=False)
     seed_summary = seed_hint_summary(seed_observations)
-    work = build_work_plan(bundle)
     all_ids = tuple(bundle.index.atomic_ids)
     actions = []
     def packet(selection, *, scoped=False):
@@ -2758,54 +2799,72 @@ def _generate(args, evidence):
         logging.warning('Delivering structurally valid candidate after bounded generation stopped: %s; functional acceptance remains UNVERIFIED',result.get('reason'))
     model.request_deadline = author_deadline
     budget.protect_self_test_requests(0)
-    authored = step_gate.authored_checks if step_gate is not None else None
-    authored_parts = [authored] if authored else []
-    covered = {case['requirement_id'] for suite in authored_parts for case in suite['plan']['cases']}
+    public_ir = load_task_ir(app, ir)
+    final_scope = behavior_checks.VerificationScope(public_ir)
+    ordered, unresolved, blocked = final_scope.select(all_ids)
+    # Frozen author output is reusable even if a prerequisite has yet to be
+    # authored. Check execution eligibility again once the final cases are known.
+    frozen_refs = (set(ordered) & (step_gate.accepted | step_gate.partial_diagnostics)
+                   if step_gate is not None else set())
+    covered = set()
+    authored_parts = []
     required = set(all_ids)
-    missing_ids = [ref for ref in all_ids if ref not in covered]
+    missing_ids = [ref for ref in ordered if ref not in frozen_refs]
     author_audit = dict(status='not_run', scope='synthetic_diagnostics_only', formal_acceptance=False,
-                        request_allowance=author_allowance, batches=[], reused_requirement_ids=sorted(covered))
+                        request_allowance=author_allowance, batches=[],
+                        unresolved=unresolved, blocked_dependencies=blocked)
     remaining_author_calls = author_allowance
-    if covered - required:
-        author_audit.update(status='invalid', reason='authored_requirement_scope_mismatch')
-    else:
-        for offset in range(0, len(missing_ids), behavior_checks.MAX_CASES):
-            refs = missing_ids[offset:offset + behavior_checks.MAX_CASES]
-            if not remaining_author_calls or not budget_open():
-                author_audit.update(status='incomplete', reason='author_budget_or_time_unavailable')
-                break
-            public_ir = load_task_ir(app, ir)
-            scoped_ir = dict(public_ir,
-                work_items=[row for row in public_ir.get('work_items', []) if row['id'] in refs],
-                scenarios=[row for row in public_ir.get('scenarios', []) if row.get('work_item') in refs])
-            authored_result = model.author_behavior_checks(packet(refs, scoped=True), tools, scoped_ir, remaining_author_calls)
-            record('behavior_author', ','.join(refs), authored_result, optional=True)
-            used = authored_result.get('turns', 0)
-            remaining_author_calls -= max(1, used if type(used) is int else 1)
-            audit = dict(requirement_ids=refs, status=authored_result.get('status'),
-                reason=authored_result.get('reason'), requests_used=used)
-            author_audit['batches'].append(audit)
-            if authored_result.get('status') != 'complete':
-                author_audit.update(status='incomplete', reason='author_incomplete')
-                break
-            plan = {'cases': authored_result.get('cases')}
-            directory = reports / 'final-author' / f'batch-{len(author_audit["batches"])}'
-            try:
-                behavior_checks.validate_plan(plan, scoped_ir)
-                hashes = behavior_checks.freeze_plan(plan, scoped_ir, directory)
-            except (ValueError, OSError) as error:
-                author_audit.update(status='invalid', reason=str(error)[:500])
-                break
-            part = dict(directory=directory, hashes=hashes, plan=plan, cases=len(plan['cases']))
-            evidence.suites.append(part)
-            authored_parts.append(part)
-            constraint_evidence = behavior_checks.plan_coverage(plan, scoped_ir)
-            audit['constraint_evidence'] = constraint_evidence
-            bound = set(constraint_evidence['covered'])
-            covered.update(bound)
-            if bound != set(refs):
-                author_audit.update(status='incomplete', reason='author did not cover every requested atomic requirement')
-                break
+    for offset in range(0, len(missing_ids), behavior_checks.MAX_CASES):
+        refs = missing_ids[offset:offset + behavior_checks.MAX_CASES]
+        if not remaining_author_calls or not budget_open():
+            author_audit.update(status='incomplete', reason='author_budget_or_time_unavailable')
+            break
+        scoped_ir = dict(public_ir,
+            work_items=[row for row in public_ir.get('work_items', []) if row['id'] in refs],
+            scenarios=[row for row in public_ir.get('scenarios', []) if row.get('work_item') in refs])
+        authored_result = model.author_behavior_checks(packet(refs, scoped=True), tools, scoped_ir, remaining_author_calls)
+        record('behavior_author', ','.join(refs), authored_result, optional=True)
+        used = authored_result.get('turns', 0)
+        remaining_author_calls -= max(1, used if type(used) is int else 1)
+        audit = dict(requirement_ids=refs, status=authored_result.get('status'),
+            reason=authored_result.get('reason'), requests_used=used)
+        author_audit['batches'].append(audit)
+        if authored_result.get('status') != 'complete':
+            author_audit.update(status='incomplete', reason='author_incomplete')
+            break
+        plan = {'cases': authored_result.get('cases')}
+        directory = reports / 'final-author' / f'batch-{len(author_audit["batches"])}'
+        try:
+            behavior_checks.validate_plan(plan, scoped_ir)
+            present = {case['requirement_id'] for case in plan['cases']}
+            if present != set(refs):
+                available, _, omitted = final_scope.select(sorted(covered | frozen_refs | present))
+                audit['blocked_dependencies'] = omitted
+                plan = {'cases': [case for case in plan['cases'] if case['requirement_id'] in available]}
+                if not plan['cases']:
+                    author_audit.update(status='incomplete', reason='authored_requirements_incomplete')
+                    break
+            hashes = behavior_checks.freeze_plan(plan, scoped_ir, directory)
+        except (ValueError, OSError) as error:
+            author_audit.update(status='invalid', reason=str(error)[:500])
+            break
+        part = dict(directory=directory, hashes=hashes, plan=plan, cases=len(plan['cases']))
+        evidence.suites.append(part)
+        authored_parts.append(part)
+        constraint_evidence = behavior_checks.plan_coverage(plan, scoped_ir)
+        audit['constraint_evidence'] = constraint_evidence
+        bound = set(constraint_evidence['covered'])
+        covered.update(bound)
+        if bound != set(refs):
+            author_audit.update(status='incomplete', reason='author did not cover every requested atomic requirement')
+            break
+    reusable, _, waiting = final_scope.select(sorted(covered | frozen_refs))
+    author_audit['blocked_dependencies'].update(waiting)
+    reused = frozen_refs.intersection(reusable)
+    if reused:
+        authored_parts.insert(0, step_gate.suite_for(reused))
+        covered.update(reused)
+    author_audit['reused_requirement_ids'] = sorted(reused)
     # Execute valid frozen cases even when later authoring fails. These remain
     # partial diagnostics: the final acceptance gate still requires every ID.
     final_constraint_evidence = behavior_checks.plan_coverage(

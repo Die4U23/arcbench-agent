@@ -59,6 +59,7 @@ class WorkItem:
     task_id: str
     requirement_ids: tuple[str, ...]
     dependency_ids: tuple[str, ...]
+    requirement_dependency_ids: tuple[str, ...] = field(default=(), kw_only=True)
     ancestor_ids: tuple[str, ...]
     related_data_ids: tuple[str, ...]
     scenario_ids: tuple[str, ...]
@@ -158,7 +159,8 @@ def build_work_plan(bundle: TaskBundle) -> tuple[WorkItem, ...]:
         weight = 1 + len(scenarios) * 2 + len(data) + len(shared) + len(edges[leaf]) + fanout + size // 4096
         result.append(WorkItem(_identity("work", bundle.task_id, leaf), bundle.task_id, (leaf,),
                       tuple(_identity("work", bundle.task_id, dep) for dep in edges[leaf]),
-                      ancestors, data, scenarios, tests, helpers, weight, shared))
+                      ancestors, data, scenarios, tests, helpers, weight, shared,
+                      requirement_dependency_ids=edges[leaf]))
     return tuple(result)
 
 

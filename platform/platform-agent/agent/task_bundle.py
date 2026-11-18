@@ -156,6 +156,37 @@ def _yaml_locations(raw: str) -> dict[str, int]:
     return locations
 
 
+def declared_requirement_dependencies(node: Mapping[str, Any], *, strict_canonical: bool = False) -> tuple[str, ...]:
+    """Read public dependency references and preserve the bundle's canonical string-ID contract."""
+    node_id = node.get("id", node.get("req_id"))
+    declarations = {}
+    for key in ("dependencies", "depends_on"):
+        if key not in node:
+            continue
+        raw = node[key]
+        error = f"INVALID_DEPENDENCIES: {node_id} ({key})"
+        if not isinstance(raw, (list, tuple)):
+            raise TaskBundleError(error)
+        if strict_canonical and key == "dependencies":
+            if any(not isinstance(ref, str) or not ref.strip() for ref in raw):
+                raise TaskBundleError(error)
+            declarations[key] = tuple(raw)
+            continue
+        ids = []
+        for ref in raw:
+            if isinstance(ref, Mapping):
+                if set(ref) not in ({"id"}, {"req_id"}):
+                    raise TaskBundleError(error)
+                ref = next(iter(ref.values()))
+            if isinstance(ref, bool) or not isinstance(ref, (str, int)) or not str(ref).strip():
+                raise TaskBundleError(error)
+            ids.append(str(ref).strip())
+        declarations[key] = tuple(ids)
+    if len(declarations) == 2 and set(declarations["dependencies"]) != set(declarations["depends_on"]):
+        raise TaskBundleError(f"CONFLICTING_DEPENDENCIES: {node_id}")
+    return declarations.get("dependencies", declarations.get("depends_on", ()))
+
+
 def build_contract_index(tree: Mapping[str, Any], *, task_id: str,
                          source_path: str = "requirements/requirements.yaml",
                          source_text: str = "") -> ContractIndex:
@@ -168,7 +199,7 @@ def build_contract_index(tree: Mapping[str, Any], *, task_id: str,
     scenarios: list[Any] = []
     obligations: list[Any] = []
     scenario_ids: set[str] = set()
-    known = {"id", "req_id", "name", "description", "type", "children", "dependencies",
+    known = {"id", "req_id", "name", "description", "type", "children", "dependencies", "depends_on",
              "environment", "data", "pages", "scenarios", "visual_reference", "optional_visual_reference"}
 
     def source(pointer: str) -> dict[str, Any]:
@@ -184,10 +215,7 @@ def build_contract_index(tree: Mapping[str, Any], *, task_id: str,
             raise TaskBundleError(f"DUPLICATE_REQUIREMENT_ID: {node_id}")
         if set(node) - known:
             diagnostics.append(f"UNKNOWN_FIELDS_PRESERVED: {node_id}: {sorted(set(node) - known)}")
-        deps = node.get("dependencies", [])
-        if not isinstance(deps, (list, tuple)) or any(not isinstance(dep, str) or not dep for dep in deps):
-            raise TaskBundleError(f"INVALID_DEPENDENCIES: {node_id}")
-        dependencies[node_id] = tuple(deps)
+        dependencies[node_id] = declared_requirement_dependencies(node, strict_canonical=True)
         children = node.get("children", [])
         if not isinstance(children, (list, tuple)):
             raise TaskBundleError(f"INVALID_CHILDREN: {node_id}")

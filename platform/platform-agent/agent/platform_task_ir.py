@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from .task_bundle import declared_requirement_dependencies
 from .visual_contracts import parse_visual_tail
 
 SCHEMA_DESCRIPTION = (
@@ -540,7 +541,7 @@ def _walk(tree: dict[str, Any], entities: list[dict[str, Any]]):
             "parent": parent,
             **({"type": node["type"]} if "type" in node else {}),
             **({"environment": _jsonish(node["environment"])} if "environment" in node else {}),
-            "depends_on": _depends(node),
+            "depends_on": list(declared_requirement_dependencies(node)),
             "text": text,
             **({"page": page} if page is not None else {}),
         })
@@ -596,25 +597,6 @@ def _work_id(node: dict[str, Any], seen: set[str], index: int) -> str:
     if item_id in seen:
         item_id = f"{item_id}-{index + 1}"
     return item_id
-
-
-def _depends(node: dict[str, Any]) -> list[str]:
-    raw = node.get("dependencies")
-    if raw is None:
-        raw = node.get("depends_on")
-    if not isinstance(raw, list):
-        return []
-    ids = []
-    for item in raw:
-        if isinstance(item, str) and item.strip():
-            ids.append(item.strip())
-        elif isinstance(item, int) and not isinstance(item, bool):
-            ids.append(str(item))
-        elif isinstance(item, dict):
-            child = item.get("id") or item.get("req_id")
-            if isinstance(child, (str, int)) and not isinstance(child, bool) and str(child).strip():
-                ids.append(str(child).strip())
-    return ids
 
 
 def _scenario(work_id: str, raw: Any, index: int, entities: list[dict[str, Any]]):

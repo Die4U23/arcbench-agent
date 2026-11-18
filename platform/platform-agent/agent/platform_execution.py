@@ -328,7 +328,7 @@ class RunControl:
         return result
 
     def record_verification(self, *, stage, passed, source_sha256, evidence_id,
-                            failure_kind=None, requirement_ids=(), failed_ids=(), evidence_kind='runtime', closeout=None):
+                            failure_kind=None, requirement_ids=(), failed_ids=None, evidence_kind='runtime', closeout=None):
         if (stage not in {'PLAN', 'BUILD', 'TEST'} or type(passed) is not bool
                 or not source_sha256 or not evidence_id or evidence_kind not in {'runtime', 'static'}):
             raise ValueError('verification requires a stage, boolean result, source and evidence identity')
@@ -344,14 +344,14 @@ class RunControl:
         self.current_source = source_sha256
         receipt = dict(stage=stage, passed=passed, source_sha256=source_sha256,
                        evidence_id=evidence_id, failure_kind=failure_kind,
-                       requirement_ids=list(requirement_ids), failed_ids=list(failed_ids), evidence_kind=evidence_kind)
+                       requirement_ids=list(requirement_ids), failed_ids=list(failed_ids or ()), evidence_kind=evidence_kind)
         if closeout is not None:
             receipt['closeout_stop_epoch'] = closeout.stop_epoch
         self.verifications[evidence_id] = receipt
         self.emit(dict(event='verification_evidence', **receipt))
         if closeout is not None or not self.policy.enabled:
             return receipt
-        refs, failures = set(requirement_ids), set(failed_ids)
+        refs = set(requirement_ids)
         runtime_test = stage == 'TEST' and evidence_kind == 'runtime'
         gain = runtime_test and passed and (bool(refs - self._passed_requirements)
                                              or bool(self._failed_requirements & refs))
@@ -363,7 +363,7 @@ class RunControl:
                 self._passed_requirements.update(refs)
                 self._failed_requirements.difference_update(refs)
             else:
-                self._failed_requirements.update(failures or refs)
+                self._failed_requirements.update(refs if failed_ids is None else failed_ids)
         if gain:
             self.quality_idle = 0
         elif runtime_test:
@@ -921,7 +921,8 @@ class PlanExecutor:
                                         source_sha256=source_digest(self.control.source(self.tools.project_dir)),
                                         evidence_id=f'step-{len(history)}-{step.id}-behavior',
                                         failure_kind=outcome.behavior_validation.get('failure_kind'),
-                                        requirement_ids=step.requirement_ids)
+                                        requirement_ids=outcome.behavior_validation.get('requirement_ids', step.requirement_ids),
+                                        failed_ids=outcome.behavior_validation.get('failed_requirement_ids'))
                             plan[index].setdefault('attempts', []).append(vars(outcome).copy())
                             checked = outcome.validation
                             repairable = (eligible and (

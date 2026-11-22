@@ -5,6 +5,29 @@ const fs = require('node:fs');
 const {babelParse, traverse} = require('./babelBundle.cjs');
 const input = JSON.parse(fs.readFileSync(0, 'utf8'));
 const results = [];
+
+function observeParameters(rows) {
+  return function(path) {
+    const owner = path.node.id || (path.isMethod() && !path.node.computed ? path.node.key :
+      path.parentPath.isVariableDeclarator() ? path.parentPath.node.id : null);
+    if (owner?.type !== 'Identifier') return;
+    path.node.params.forEach((param, index) => {
+      const pattern = param.type === 'AssignmentPattern' ? param.left : param;
+      if (pattern.type !== 'ObjectPattern') return;
+      // A named field can be deliberately excluded from the remaining object.
+      if (pattern.properties.some(property => property.type === 'RestElement')) return;
+      for (const {type, computed, key, value} of pattern.properties) {
+        if (type !== 'ObjectProperty' || computed || key.type !== 'Identifier' || value.type !== 'Identifier') continue;
+        const binding = path.scope.getOwnBinding(value.name);
+        if (binding?.identifier !== value || binding.referenced || !binding.constant) continue;
+        const identity = JSON.stringify([owner.name, index, key.name, value.name]);
+        rows.push({identity, kind:'unused_destructured_parameter', function:owner.name,
+          property:key.name, binding:value.name, line:value.loc.start.line, column:value.loc.start.column + 1});
+      }
+    });
+  };
+}
+
 for (const file of input.files) {
   try {
     const ast = babelParse(file.content, file.path, true);
@@ -38,7 +61,24 @@ for (const file of input.files) {
       }
       unbound.add(name);
     }});
-    results.push({path:file.path,valid:true,imports:[...new Set(imports)],unbound:[...unbound].sort()});
+    const row = {path:file.path,valid:true,imports:[...new Set(imports)],unbound:[...unbound].sort()};
+    if (Object.hasOwn(file, 'previous')) {
+      try {
+        const observations = [];
+        traverse(ast, {Function:observeParameters(observations)});
+        if (observations.length) {
+          const previous = [];
+          if (file.previous !== null)
+            traverse(babelParse(file.previous, file.path, true), {Function:observeParameters(previous)});
+          const known = new Set(previous.map(item => item.identity));
+          row.observations = observations.filter(item => !known.has(item.identity)).slice(0, 8)
+            .map(({identity, ...observation}) => observation);
+        }
+      } catch {
+        // An unavailable edit observation has no bearing on source validity.
+      }
+    }
+    results.push(row);
   } catch (error) {
     results.push({path:file.path,valid:false,error:String(error.message).slice(0,1600)});
   }

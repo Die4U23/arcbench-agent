@@ -19,19 +19,19 @@ import yaml
 # Default run cap from requirement size. Generation applies ARC_TOKEN_LIMIT
 # later through settings.token_limit and does not read it here.
 #
-# clamp(1_500_000 + 30_000*scenarios + 10_000*work_items + 5_000*entities,
-#       1_500_000, 6_000_000)
+# clamp(3_000_000 + 60_000*scenarios + 20_000*work_items + 10_000*entities,
+#       3_000_000, 12_000_000)
 #
 # scenarios: number of entries in every ``scenarios`` list.
 # work_items: atomic requirements, using the task-bundle rule — type ATOMIC,
 #   or a node whose id is not ROOT, whose type is omitted, and which has no
 #   children. Only the requirement tree (the root and ``children``) is walked.
 # entities: mappings stored in every ``data`` list.
-TOKEN_FLOOR = 1_500_000
-TOKEN_CAP = 6_000_000
-TOKEN_PER_SCENARIO = 30_000
-TOKEN_PER_WORK_ITEM = 10_000
-TOKEN_PER_ENTITY = 5_000
+TOKEN_FLOOR = 3_000_000
+TOKEN_CAP = 12_000_000
+TOKEN_PER_SCENARIO = 60_000
+TOKEN_PER_WORK_ITEM = 20_000
+TOKEN_PER_ENTITY = 10_000
 
 SPEC_SUFFIXES = (".spec.ts", ".spec.js", ".spec.mjs", ".spec.cjs", ".test.ts")
 

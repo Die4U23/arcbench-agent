@@ -25,8 +25,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .platform_contract import contract_route_errors, read_contract, route_errors
+from .platform_scaffold import SCAFFOLD_NPM_REGISTRY, is_scaffold
 
 ERROR_LIMIT = 1500
+REPORT_DETAIL_LIMIT = 400
 LOG_TAIL_LIMIT = 6000
 DEFAULT_TIMEOUTS = dict(install=600, build=300, start=60, tests=900, test=10, playwright_install=300)
 TEST_SOURCE_SUFFIXES = ('.ts', '.js', '.mts', '.cts', '.mjs', '.cjs', '.tsx', '.jsx')
@@ -54,6 +56,7 @@ class RuntimeFailure:
     file: str | None
     error: str
     kind: str = 'app'
+    report_detail: str = ''
 
 
 @dataclass
@@ -77,19 +80,23 @@ class RuntimeCheckResult:
     tests_log_tail: str = ''
     signals: dict = field(default_factory=dict)
     diagnostics: dict = field(default_factory=dict)
+    browser_cases_executed: int | None = None
 
     def to_feedback(self, limit: int = 20) -> dict:
-        groups: dict[str, dict] = {}
+        groups: dict[tuple[str, str], dict] = {}
         for failure in self.failures:
             lines = [line for line in failure.error.splitlines() if line.strip()]
-            key = lines[0].strip()[:300] if lines else '(no error message)'
-            group = groups.setdefault(key, dict(error=key, count=0, tests=[]))
+            headline = lines[0].strip()[:300] if lines else '(no error message)'
+            group = groups.setdefault((headline, failure.report_detail), dict(error=headline, count=0, tests=[]))
+            if failure.report_detail:
+                group['report_detail'] = failure.report_detail
             group['count'] += 1
             if len(group['tests']) < 5:
                 group['tests'].append(dict(name=failure.name, file=failure.file,
                                            detail='\n'.join(lines[1:])[:400]))
         ordered = sorted(groups.values(), key=lambda item: -item['count'])
-        feedback = dict(status=self.status, stage=self.stage,
+        feedback = dict(status=self.status, stage=self.stage, duration_seconds=self.duration_seconds,
+                        browser_cases_executed=self.browser_cases_executed,
                         counts=dict(passed=self.passed, failed=self.failed, skipped=self.skipped,
                                     precondition=self.precondition, total=self.total),
                         failure_groups=ordered[:limit], omitted_groups=max(0, len(ordered) - limit),
@@ -286,7 +293,8 @@ def parse_playwright_report(report: dict) -> tuple[int, int, int, list[RuntimeFa
                     skipped += 1
                 else:
                     failed += 1
-                    failures.append(RuntimeFailure(name, spec.get('file') or file, first_error(test)))
+                    error, detail = _attempt_error(test)
+                    failures.append(RuntimeFailure(name, spec.get('file') or file, error, report_detail=detail))
         for child in suite.get('suites') or []:
             walk(child, path, file)
 
@@ -299,15 +307,27 @@ def parse_playwright_report(report: dict) -> tuple[int, int, int, list[RuntimeFa
 
 
 def first_error(test: dict) -> str:
+    return _attempt_error(test)[0]
+
+
+def _attempt_error(test: dict) -> tuple[str, str]:
     for result in reversed(test.get('results') or []):
         errors = ([result['error']] if result.get('error') else []) + list(result.get('errors') or [])
+        messages = []
         for error in errors:
-            message = error.get('message') or error.get('stack') or error.get('value')
+            message = error.get('message')
+            if not messages:
+                message = message or error.get('stack') or error.get('value')
             if message:
-                return clean_text(message)
+                text = clean_text(message)
+                if text and text not in messages:
+                    messages.append(text)
+        if messages:
+            # Playwright can report the timeout first and the interrupted action separately.
+            return messages[0], '\n'.join(messages[1:])[:REPORT_DETAIL_LIMIT]
         if result.get('status') not in (None, 'passed', 'skipped'):
-            return f"test {result['status']}"
-    return f"test status {test.get('status')}"
+            return f"test {result['status']}", ''
+    return f"test status {test.get('status')}", ''
 
 
 def clean_text(text: str, limit: int = ERROR_LIMIT) -> str:
@@ -615,6 +635,15 @@ def start_command(project_dir: Path, npm: str) -> tuple[list[str], str]:
     return [npm, 'run', 'start'], 'npm start'
 
 
+def runtime_packages(project_dir: Path) -> list[Path]:
+    root = Path(project_dir)
+    if not (root / 'package.json').is_file():
+        split = [root / 'frontend', root / 'backend']
+        if all((directory / 'package.json').is_file() for directory in split):
+            return split
+    return [root]
+
+
 def _is_link(path: Path) -> bool:
     return os.path.islink(path) or (hasattr(os.path, 'isjunction') and os.path.isjunction(path))
 
@@ -765,7 +794,7 @@ def discover_playwright_packages(project_dir: Path, env: dict[str, str]) -> tupl
         if key not in seen:
             seen.add(key)
             deduped.append(path)
-    project = [Path(project_dir) / 'node_modules' / '@playwright' / 'test']
+    project = [directory / 'node_modules' / '@playwright' / 'test' for directory in runtime_packages(project_dir)]
     return deduped, project
 
 
@@ -1043,7 +1072,10 @@ DIAGNOSTIC_LOG_LIMIT = 1500
 
 
 def failure_payload(failure: RuntimeFailure) -> dict:
-    return dict(name=failure.name, file=failure.file, error=failure.error, kind=failure.kind)
+    payload = dict(name=failure.name, file=failure.file, error=failure.error, kind=failure.kind)
+    if failure.report_detail:
+        payload['report_detail'] = failure.report_detail
+    return payload
 
 
 def signal_counts(passed: int, failed: int, skipped: int, failures: list[RuntimeFailure]) -> dict:
@@ -1136,6 +1168,7 @@ def run_playwright_suite(*, node: str, package: Path, tests: Path, harness: Path
     else:
         status = 'passed' if not failures and not preconditions and code == 0 else 'failed'
     return dict(status=status, passed=passed, failed=failed, skipped=skipped, total=total,
+                browser_cases_executed=None if status == 'unavailable' else total - skipped,
                 precondition=len(preconditions), failures=failures, preconditions=preconditions,
                 signal=signal_counts(passed, failed, skipped, failures), signal_name=signal_name)
 
@@ -1186,6 +1219,8 @@ def run_runtime_check(project_dir: Path, tests_dir: Path | None = None, *,
     stage = 'prepare'
     resolution_notes: dict = {}
     signals: dict = {}
+    # A launched suite without a usable Playwright report has an unknown count.
+    browser_case_counts = []
     playwright_info = playwright_diagnostic()
 
     def remaining() -> float | None:
@@ -1203,6 +1238,7 @@ def run_runtime_check(project_dir: Path, tests_dir: Path | None = None, *,
         diagnostics = dict(playwright=dict(playwright_info), log_tail=diagnostic_log_tail(tail, status))
         return RuntimeCheckResult(status=status, stage=stage, log_tail=redact(tail)[-LOG_TAIL_LIMIT:],
                                   duration_seconds=round(time.monotonic() - started, 2),
+                                  browser_cases_executed=(None if None in browser_case_counts else sum(browser_case_counts)),
                                   env_supplied=dict(env_supplied), env_unset=list(env_unset), launcher=launcher,
                                   notes=dict(resolution_notes), tests_log_tail=tests_tail,
                                   signals={key: dict(value) for key, value in signals.items()},
@@ -1265,17 +1301,43 @@ def run_runtime_check(project_dir: Path, tests_dir: Path | None = None, *,
         stage = 'install'
         if expired():
             return finish('timeout')
-        if not (project_dir / 'package.json').is_file():
+        packages = runtime_packages(project_dir)
+        if not (packages[0] / 'package.json').is_file():
             note('project has no package.json')
             return finish('install_failed')
-        if install and not (project_dir / 'node_modules').is_dir():
-            locked = any((project_dir / name).is_file() for name in ('package-lock.json', 'npm-shrinkwrap.json'))
+        install_deadline = time.monotonic() + budget(limits['install'])
+        install_env = None
+        for directory in packages:
+            if not install or (directory / 'node_modules').is_dir():
+                continue
+            if install_env is None:
+                install_env = base_env.copy()
+                # npm may call process.report during native package selection. Socket
+                # name lookups in that report can stall while registry connections are open.
+                flag = '--report-exclude-network'
+                remaining_install = install_deadline - time.monotonic()
+                if remaining_install <= 0:
+                    return finish('timeout')
+                supported = run_stage([node, flag, '--version'], directory, base_env,
+                                      logs / 'install.log', remaining_install)
+                if supported is None:
+                    return finish('timeout')
+                if supported == 0:
+                    install_env['NODE_OPTIONS'] = flag
+            locked = any((directory / name).is_file() for name in ('package-lock.json', 'npm-shrinkwrap.json'))
             command = ([npm, 'ci', '--include=dev', '--no-audit', '--no-fund'] if locked else
                        [npm, 'install', '--include=dev', '--no-audit', '--no-fund', '--no-package-lock'])
-            code = run_stage(command, project_dir, base_env, logs / 'install.log', budget(limits['install']))
+            if directory == project_dir and is_scaffold(project_dir):
+                # Preflight the same dependency source that the bundled deploy.sh uses.
+                command.append(f'--registry={SCAFFOLD_NPM_REGISTRY}')
+            remaining_install = install_deadline - time.monotonic()
+            if remaining_install <= 0:
+                return finish('timeout')
+            note(f'install {directory.relative_to(project_dir)} with npm {command[1]}')
+            code = run_stage(command, directory, install_env, logs / 'install.log', remaining_install)
             if code != 0:
                 # A partial tree must not be mistaken for a successful install next round.
-                safe_rmtree(project_dir / 'node_modules')
+                safe_rmtree(directory / 'node_modules')
             if code is None:
                 return finish('timeout')
             if code != 0:
@@ -1284,13 +1346,21 @@ def run_runtime_check(project_dir: Path, tests_dir: Path | None = None, *,
         stage = 'build'
         if expired():
             return finish('timeout')
-        try:
-            scripts = json.loads((project_dir / 'package.json').read_text(encoding='utf-8-sig')).get('scripts') or {}
-        except ValueError as error:
-            note(f'package.json is not valid JSON: {error}')
-            return finish('build_failed')
-        if 'build' in scripts:
-            code = run_stage([npm, 'run', 'build'], project_dir, base_env, logs / 'build.log', budget(limits['build']))
+        build_deadline = time.monotonic() + budget(limits['build'])
+        for directory in packages:
+            manifest = directory / 'package.json'
+            try:
+                scripts = json.loads(manifest.read_text(encoding='utf-8-sig')).get('scripts') or {}
+            except ValueError as error:
+                note(f'{manifest.relative_to(project_dir)} is not valid JSON: {error}')
+                return finish('build_failed')
+            if 'build' not in scripts:
+                continue
+            remaining_build = build_deadline - time.monotonic()
+            if remaining_build <= 0:
+                return finish('timeout')
+            note(f'build {directory.relative_to(project_dir)}')
+            code = run_stage([npm, 'run', 'build'], directory, base_env, logs / 'build.log', remaining_build)
             if code is None:
                 return finish('timeout')
             if code != 0:
@@ -1300,12 +1370,15 @@ def run_runtime_check(project_dir: Path, tests_dir: Path | None = None, *,
         if expired():
             return finish('timeout')
         command, launcher = start_command(project_dir, npm)
+        start_dir = project_dir if launcher == 'deploy.sh' else packages[-1]
         if launcher != 'deploy.sh' and 'start' not in scripts:
-            note('package.json has no start script')
+            note(f'{(start_dir / "package.json").relative_to(project_dir)} has no start script')
             return finish('start_failed')
+        if start_dir != project_dir:
+            launcher = 'backend npm start'
         note(f'launcher: {launcher}')
         start_limit = limits['start'] + (limits['install'] + limits['build'] if launcher == 'deploy.sh' else 0)
-        app = spawn(command, project_dir, clean_env(dict(PORT=str(port), HOST='127.0.0.1'), **env_options), logs / 'start.log')
+        app = spawn(command, start_dir, clean_env(dict(PORT=str(port), HOST='127.0.0.1'), **env_options), logs / 'start.log')
         state = wait_for_http(port, app, budget(start_limit))
         if state != 'ready':
             note(f'app {state} before answering on {base_url}/')
@@ -1340,6 +1413,7 @@ def run_runtime_check(project_dir: Path, tests_dir: Path | None = None, *,
                 return finish('timeout', api_probes=probes)
             link_directory(package, item['harness'] / 'node_modules' / '@playwright' / 'test')
             single = len(prepared) == 1
+            browser_case_counts.append(None)
             outcome = run_playwright_suite(
                 node=node, package=package, tests=item['tests'], harness=item['harness'], base_url=base_url,
                 report=run_dir / ('report.json' if single else f'report-{index}.json'),
@@ -1347,6 +1421,7 @@ def run_runtime_check(project_dir: Path, tests_dir: Path | None = None, *,
                 env=clean_env(item['env'], **env_options), env_unset=item['unset'],
                 log=logs / ('tests.log' if single else f'tests-{index}.log'),
                 timeout=budget(limits['tests']), test_timeout=limits['test'], grep=grep, signal_name=item['name'])
+            browser_case_counts[-1] = outcome.get('browser_cases_executed')
             signals[item['name']] = outcome['signal']
             outcomes.append(outcome)
             if outcome['status'] in {'timeout', 'unavailable'}:

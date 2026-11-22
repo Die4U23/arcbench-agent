@@ -129,6 +129,7 @@ def prepare(args, evidence, *, settings, model, task, ir, deadline, reports, res
         runtime_paths=runtime_paths(evidence.runtime.paths),
         previous_owner=dict(pid=os.getpid(),lease=lease.identity), source_sha256=source_digest(source),
         control=LivePause._control(control), ledger=budget.state, ledger_path=str(budget.path.resolve()),
+        closeout_start=evidence.closeout_start,
         ledger_sha256=digest(budget.path.read_bytes()), session_tools=model.session.tool_calls_used,
         continuation=dict(stage='final_verification',pending_model_request=None,generation_result=result),
         ir=ir, required_ids=list(evidence.required_ids), requirements_sha256=evidence.requirements_sha256,
@@ -257,7 +258,7 @@ def resume(args):
         requirements_sha256=value['requirements_sha256'],static=value['static'],missing=value['missing'],
         authored=value['authored'],suites=value['suites'],runtime_report=value['runtime_report'],
         runtime=AgentRuntime.from_env(**value['runtime_paths']),control=control,source_ready=True,
-        behavior_enabled=True,runtime_enabled=True)
+        behavior_enabled=True,runtime_enabled=True,closeout_start=value.get('closeout_start'))
     error = None
     try:
         control.check()
@@ -276,7 +277,12 @@ def resume(args):
         control.check()
     except Exception as caught:
         error = f'{type(caught).__name__}: {str(caught)[:500]}'
-    code = generation.finish_generation(evidence,app,error)
-    _exclusive(path.parent/'finished.json',encoded(dict(exit_code=code,
-        control=LivePause._control(control),ledger=budget.state,execution_resume=value['execution_resume'])))
-    return code
+    code = None
+    try:
+        result = generation.finish_generation(evidence,app,error)
+        _exclusive(path.parent/'finished.json',encoded(dict(exit_code=result,
+            control=LivePause._control(control),ledger=budget.state,execution_resume=value['execution_resume'])))
+        code = result
+        return code
+    finally:
+        evidence.record_closeout(code)

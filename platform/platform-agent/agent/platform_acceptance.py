@@ -603,11 +603,15 @@ def _compact_failure(failure) -> dict:
     error = failure.get("error")
     name = failure.get("name")
     file = failure.get("file")
-    return {
+    compact = {
         "name": name if isinstance(name, str) else None,
         "file": file if isinstance(file, str) else None,
         "error": error[:300] if isinstance(error, str) else "",
     }
+    detail = failure.get("report_detail")
+    if isinstance(detail, str) and detail:
+        compact["report_detail"] = detail[:400]
+    return compact
 
 
 def _items(value) -> list:

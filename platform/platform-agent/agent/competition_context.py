@@ -257,7 +257,7 @@ class ContextRepository:
         except (OSError, UnsafeSandboxFile) as error:
             raise TaskBundleError(f"PATH_ESCAPE_OR_UNSAFE_APPLICATION_SOURCE: {path}: {error}") from error
 
-    def add_evidence(self, resource: str, text: str) -> dict[str, Any]:
+    def add_evidence(self, resource: str, text: str, *, reuse_identical: bool = False) -> dict[str, Any]:
         """Register controller-owned immutable text, never a model write tool."""
         try:
             validate_relative_path(resource)
@@ -265,11 +265,14 @@ class ContextRepository:
             raise TaskBundleError(f"INVALID_EVIDENCE_RESOURCE: {resource}") from error
         if not resource.startswith("evidence/") or not isinstance(text, str):
             raise TaskBundleError("INVALID_EVIDENCE_RESOURCE")
+        raw = text.encode("utf-8")
+        existing = self._files.get(resource)
+        if reuse_identical and existing is not None and existing[1] == raw:
+            return {"resource": resource, "sha256": existing[0], "size_bytes": len(raw)}
         folded = resource.casefold()
         if any(folded == path.casefold() or folded.startswith(path.casefold() + "/") or
                path.casefold().startswith(folded + "/") for path in self._files):
             raise TaskBundleError(f"EVIDENCE_RESOURCE_COLLISION: {resource}")
-        raw = text.encode("utf-8")
         self._files[resource] = (_digest(raw), raw)
         return {"resource": resource, "sha256": _digest(raw), "size_bytes": len(raw)}
 

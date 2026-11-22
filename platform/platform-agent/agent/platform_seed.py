@@ -24,6 +24,9 @@ _STRING_LITERAL_RE = re.compile(
     r"""'([^'\\]*(?:\\.[^'\\]*)*)'|"([^"\\]*(?:\\.[^"\\]*)*)"|`([^`$\\]*(?:\\.[^`$\\]*)*)`"""
 )
 _OBJECT_KEY_RE = re.compile(r"(?:^|[{,])\s*(?:['\"]([A-Za-z0-9_$-]+)['\"]|([A-Za-z_$][A-Za-z0-9_$]*))\s*:")
+_SEED_HEADER_RE = re.compile(r"(?i)^\s*Seed prerequisites(?:\s*\([^\r\n]*\))?\s*:\s*$")
+_SEED_BULLET_RE = re.compile(r"^(?P<indent>[ \t]*)[-*][ \t]+(?P<body>.*)$")
+_GIVEN_PREFIX_RE = re.compile(r"(?is)^\s*given\b\s*:?\s*(.*)$")
 
 
 def _load_requirements(requirements: Mapping[str, Any] | Path | str) -> Mapping[str, Any]:
@@ -48,58 +51,184 @@ def _load_requirements(requirements: Mapping[str, Any] | Path | str) -> Mapping[
     raise FileNotFoundError(f"Requirements source not found: {requirements}")
 
 
-def _extract_given_steps(tree: Mapping[str, Any]) -> list[dict[str, str]]:
-    given_steps: list[dict[str, str]] = []
-    seen: set[str] = set()
+def _strict_json_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON key: " + key)
+        result[key] = value
+    return result
 
-    def visit(node: Any) -> None:
-        if not isinstance(node, Mapping) or len(given_steps) >= MAX_GIVEN_STEPS:
+
+def _reject_json_constant(value):
+    raise ValueError("non-finite JSON constant: " + value)
+
+
+def parse_seed_prerequisites(
+    text: str, *, requirement_id: str = "", scenario_id: str = "",
+    step_id: str = "", source_path: str = "",
+) -> dict[str, Any]:
+    """Preserve explicit public seed entries without inferring or executing setup.
+
+    ``parsed`` means JSON syntax only. Nested prose remains in ``value`` and
+    ``raw``; it does not grant an executable record mapping or a ready session.
+    Unsupported entries remain visible instead of becoming empty prerequisites.
+    Line locations are relative to the original Given field, not the YAML file.
+    """
+    lines = text.splitlines(keepends=True)
+    headers = [i for i, line in enumerate(lines) if _SEED_HEADER_RE.fullmatch(line)]
+    result = {"status": "absent", "entries": [], "remaining_text": text, "issues": []}
+    if not headers:
+        return result
+    owner = {"requirement_id": requirement_id, "scenario_id": scenario_id,
+             "step_id": step_id, "source_path": source_path}
+    result["remaining_text"] = "".join(lines[:headers[0]]).strip()
+    for block_index, header in enumerate(headers):
+        end = headers[block_index + 1] if block_index + 1 < len(headers) else len(lines)
+        starts = []
+        bullet_indent = None
+        for pos in range(header + 1, end):
+            match = _SEED_BULLET_RE.match(lines[pos].rstrip("\r\n"))
+            if match and (bullet_indent is None or len(match["indent"]) <= bullet_indent):
+                bullet_indent = len(match["indent"]) if bullet_indent is None else bullet_indent
+                starts.append(pos)
+        prefix_end = starts[0] if starts else end
+        prefix = "".join(lines[header + 1:prefix_end])
+        if prefix.strip() or not starts:
+            result["issues"].append({
+                "reason": "unparsed_seed_text" if prefix.strip() else "missing_seed_entries",
+                "raw": prefix, "source": dict(owner, line_start=header + 1, line_end=prefix_end),
+            })
+        for ordinal, start in enumerate(starts):
+            stop = starts[ordinal + 1] if ordinal + 1 < len(starts) else end
+            raw = "".join(lines[start:stop])
+            body = _SEED_BULLET_RE.match(lines[start].rstrip("\r\n"))["body"]
+            label, separator, first_value = body.partition(":")
+            payload = first_value + "\n" + "".join(lines[start + 1:stop])
+            value, reason = None, None
+            if not separator or not label.strip():
+                reason = "missing_seed_label_or_value_separator"
+            else:
+                try:
+                    value = json.loads(payload, object_pairs_hook=_strict_json_object,
+                                       parse_constant=_reject_json_constant)
+                    if not isinstance(value, (dict, list)):
+                        reason = "seed_value_is_not_an_object_or_array"
+                        value = None
+                except (ValueError, RecursionError) as exc:
+                    reason = "invalid_seed_json: " + str(exc)
+            result["entries"].append({
+                "id": (f"{scenario_id or requirement_id or 'given'}::"
+                       f"{source_path or step_id or 'Given'}::seed-{block_index + 1}-{ordinal + 1}"),
+                "label": label.strip() if separator else "", "raw": raw,
+                "value": value, "parse_status": "unparsed" if reason else "parsed",
+                "reason": reason,
+                "source": dict(owner, line_start=start + 1, line_end=stop),
+            })
+    parsed = sum(entry["parse_status"] == "parsed" for entry in result["entries"])
+    if parsed and parsed == len(result["entries"]) and not result["issues"]:
+        result["status"] = "parsed"
+    else:
+        result["status"] = "partial" if parsed else "unparsed"
+    return result
+
+
+def public_scenario_id(work_id: str, scenario: Any, index: int) -> str:
+    raw = scenario.get("id") if isinstance(scenario, Mapping) else None
+    if isinstance(raw, (str, int)) and not isinstance(raw, bool) and str(raw).strip():
+        return str(raw).strip()
+    return f"{work_id}::scenario-{index + 1}"
+
+
+def scenario_given_sources(
+    scenario: Any, *, requirement_id: str, scenario_id: str, source_path: str,
+) -> list[dict[str, Any]]:
+    """Return Given occurrences with owners; identical text is not shared state."""
+    rows = []
+
+    def append(text, step_id, path):
+        if not isinstance(text, str) or not text.strip():
             return
-        req_id = str(node.get("id") or node.get("req_id") or "").strip()
+        rows.append({
+            "requirement_id": requirement_id, "scenario_id": scenario_id,
+            "step_id": step_id, "source_path": path, "given": text,
+            "seed_prerequisites": parse_seed_prerequisites(
+                text, requirement_id=requirement_id, scenario_id=scenario_id,
+                step_id=step_id, source_path=path),
+        })
+
+    def consume(step, index, path, *, allow_typed=True):
+        fallback = f"{scenario_id}::step-{index + 1}"
+        if isinstance(step, str):
+            match = _GIVEN_PREFIX_RE.match(step)
+            if match:
+                append(match[1], fallback, path)
+            return
+        if not isinstance(step, Mapping):
+            return
+        step_id = str(step.get("id") or fallback)
+        phase_keys = [key for key in step if str(key).lower() in {"given", "when", "then"}]
+        if phase_keys:
+            for key in phase_keys:
+                if str(key).lower() == "given":
+                    append(step[key], step_id, path + "." + str(key))
+            return
+        if (not allow_typed or set(step) - {"id", "references", "keyword", "type", "content", "text"}
+                or ("keyword" in step and "type" in step) or ("content" in step and "text" in step)):
+            return
+        keyword = step.get("keyword", step.get("type"))
+        if isinstance(keyword, str) and keyword.strip().lower() == "given":
+            field = "content" if "content" in step else "text"
+            append(step.get(field), step_id, path + "." + field)
+
+    if isinstance(scenario, str):
+        append(scenario, f"{scenario_id}::step-1", source_path)
+    elif isinstance(scenario, Mapping):
+        steps = scenario.get("steps")
+        if isinstance(steps, list):
+            for index, step in enumerate(steps):
+                consume(step, index, f"{source_path}.steps[{index}]")
+        elif isinstance(steps, str) and steps.strip():
+            consume(steps, 0, source_path + ".steps")
+        else:
+            consume(scenario, 0, source_path, allow_typed=False)
+    return rows
+
+
+def _given_evidence(tree: Mapping[str, Any], limit: int | None = MAX_GIVEN_STEPS) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    # The same traversal identities address both the full IR and scoped retrieval.
+    from .platform_task_ir import _work_id
+    given_steps = []
+    total = 0
+    seen = set()
+
+    def visit(node: Any, path: str) -> None:
+        nonlocal total
+        if not isinstance(node, Mapping):
+            return
+        req_id = _work_id(node, seen, len(seen))
+        seen.add(req_id)
         scenarios = node.get("scenarios")
         if isinstance(scenarios, list):
-            for idx, scenario in enumerate(scenarios):
-                if not isinstance(scenario, Mapping) or len(given_steps) >= MAX_GIVEN_STEPS:
-                    continue
-                scenario_id = str(scenario.get("id") or f"{req_id}::scenario-{idx + 1}").strip()
-                steps = scenario.get("steps")
-                if not isinstance(steps, list):
-                    continue
-                for step in steps:
-                    if not isinstance(step, Mapping) or len(given_steps) >= MAX_GIVEN_STEPS:
-                        continue
-                    texts: list[str] = []
-                    for key in ("Given", "given"):
-                        val = step.get(key)
-                        if isinstance(val, str) and val.strip():
-                            texts.append(val.strip())
-                    if not texts:
-                        step_type = str(step.get("type") or step.get("keyword") or "").strip().upper()
-                        content = step.get("content")
-                        if step_type == "GIVEN" and isinstance(content, str) and content.strip():
-                            texts.append(content.strip())
-                    for text in texts:
-                        normalized = " ".join(text.split())
-                        if normalized and normalized not in seen:
-                            seen.add(normalized)
-                            given_steps.append(
-                                {
-                                    "requirement_id": req_id,
-                                    "scenario_id": scenario_id,
-                                    "given": text,
-                                }
-                            )
-                            if len(given_steps) >= MAX_GIVEN_STEPS:
-                                return
+            for index, scenario in enumerate(scenarios):
+                scenario_id = public_scenario_id(req_id, scenario, index)
+                rows = scenario_given_sources(scenario, requirement_id=req_id, scenario_id=scenario_id,
+                                              source_path=f"{path}.scenarios[{index}]")
+                total += len(rows)
+                given_steps.extend(rows if limit is None else rows[:max(0, limit - len(given_steps))])
         children = node.get("children")
         if isinstance(children, list):
-            for child in children:
-                if len(given_steps) >= MAX_GIVEN_STEPS:
-                    return
-                visit(child)
+            for index, child in enumerate(children):
+                visit(child, f"{path}.children[{index}]")
 
-    visit(tree)
-    return given_steps
+    visit(tree, "requirements")
+    return given_steps, {"total": total, "returned": len(given_steps),
+                         "omitted": total - len(given_steps), "truncated": total > len(given_steps),
+                         "limit": limit}
+
+
+def _extract_given_steps(tree: Mapping[str, Any]) -> list[dict[str, Any]]:
+    return _given_evidence(tree)[0]
 
 
 def _skip_string_or_comment(text: str, index: int) -> int:
@@ -331,6 +460,8 @@ def _extract_test_constants(tests_dir: Path | None, given_texts: list[str]) -> l
                     "file": rel_file,
                     "name": name,
                     "source": bounded_source,
+                    "source_truncated": len(literal) > MAX_CONSTANT_SOURCE_CHARS,
+                    "source_char_count": len(literal),
                     "seed_hint": hint,
                 }
             )
@@ -339,11 +470,11 @@ def _extract_test_constants(tests_dir: Path | None, given_texts: list[str]) -> l
 
 def collect_seed_evidence(
     requirements: Mapping[str, Any] | Path | str,
-    tests_dir: Path | str | None = None,
-) -> dict[str, list[dict[str, Any]]]:
-    """Collect deduplicated Given steps and exported helper/fixture test constants."""
+    tests_dir: Path | str | None = None, *, given_limit: int | None = MAX_GIVEN_STEPS,
+) -> dict[str, Any]:
+    """Collect owned public Given evidence; legacy helper input remains optional."""
     tree = _load_requirements(requirements)
-    given_steps = _extract_given_steps(tree)
+    given_steps, given_summary = _given_evidence(tree, given_limit)
     given_texts = [item["given"] for item in given_steps]
     test_constants = _extract_test_constants(
         Path(tests_dir) if tests_dir is not None else None,
@@ -351,7 +482,9 @@ def collect_seed_evidence(
     )
     return {
         "given_steps": given_steps,
+        "given_summary": given_summary,
         "test_constants": test_constants,
+        "test_constants_limit_reached": len(test_constants) >= MAX_TEST_CONSTANTS,
     }
 
 
@@ -359,12 +492,16 @@ def seed_instructions() -> str:
     """Return application-neutral instructions for creating startup seed files."""
     return (
         "Seed Data Rules:\n"
-        "1. Create ONLY declared prerequisite records (accounts, reference records, or initial items "
-        "that Given steps or test setup comments state already exist before scenario actions) as JSON "
+        "1. Create ONLY records explicitly declared as public initial/seed data, as JSON "
         "files under `seed/<collection>.json` with shape `{\"collection\": \"<name>\", \"records\": [...]}`.\n"
-        "2. NEVER seed records that scenarios create, edit, or delete through the UI during When/Then steps.\n"
+        "2. A Given condition is not permission to seed it. Records declared as UI-created and runtime "
+        "states such as signed-in sessions must be established through the stated operations, including "
+        "operations described in Given. Separate declared initial records from scenario-created records.\n"
         "3. Reuse the exact identifiers, usernames, emails, credentials, and field values from requirement "
-        "Given steps and exported test helper/fixture constants.\n"
+        "Given steps. Parsed seed JSON is input evidence, not proof of an executable setup or satisfied "
+        "preconditions. Preserve unresolved entries and nested prose; do not invent missing values or "
+        "merge differently scoped records by label. Optional helper constants do not override public "
+        "initial-state rules.\n"
         "4. Specify plaintext passwords in seed records using a field named exactly `password`; "
         "`server/seed.js` automatically replaces `password` with `passwordHash` via `hashPassword` "
         "(scrypt) once per fresh storage on server startup."

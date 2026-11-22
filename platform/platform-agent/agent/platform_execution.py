@@ -6,26 +6,35 @@ tokens, tool calls or elapsed time, and never restores runtime metadata.
 from __future__ import annotations
 
 from collections import Counter
-from dataclasses import dataclass
+from contextlib import contextmanager
+from dataclasses import dataclass, replace
 import hashlib
 import json
+import logging
+import math
 from pathlib import Path
 import time
 from uuid import uuid4
 
+from .platform_settings import MAX_RUN_SECONDS
 from .sandbox_files import apply_snapshot, snapshot_project
 
 COVERAGE_DELIVERY_STOPS = frozenset({'coverage_storage_failed', 'coverage_capacity_exceeded'})
 CONTROLLER_STATE_STOPS = COVERAGE_DELIVERY_STOPS | {'coverage_state_invalid'}
-MODEL_ONLY_STOPS = COVERAGE_DELIVERY_STOPS | frozenset({'model_request_failed', 'request_interrupted_usage_unknown',
+MODEL_ONLY_STOPS = COVERAGE_DELIVERY_STOPS | frozenset({'truncated', 'model_request_failed', 'request_interrupted_usage_unknown',
     'model_terminated', 'execution_request_limit', 'platform_token_allocation',
     'platform_request_allocation', 'request_allowance', 'context_limit',
-    'repeated_action', 'no_progress', 'source_oscillation', 'replan_limit', 'tool_batch_limit', 'verification_blocked', 'invalid_plan'})
+    'repeated_action', 'no_progress', 'source_oscillation', 'replan_limit', 'tool_batch_limit',
+    'verification_blocked', 'invalid_plan', 'planning_truncated', 'recovery_exhausted',
+    'invalid_json', 'invalid_json_shape', 'invalid_tool_batch', 'model_incomplete', 'empty_response'})
 SOURCE_SAFETY_STOPS = frozenset({'rollback_failed', 'concurrent_source_change'})
 PHASE_BUDGET_STOPS = frozenset({'self_test_reserve', 'self_test_time_reserve'})
+SOURCE_CLAIMS_DRAFT = 'source_claims_incomplete'
+SOURCE_CLAIMS_DRAFT_STOPS = frozenset({'replan_limit', 'request_allowance'})
 EXECUTION_STOP_REASONS = frozenset({'execution_deadline', 'execution_request_limit', 'execution_tool_limit',
     'tool_batch_limit', 'repeated_action', 'source_oscillation', 'no_progress', 'replan_limit',
-    'request_interrupted_usage_unknown', 'model_request_failed', 'model_terminated', 'verification_blocked'})
+    'request_interrupted_usage_unknown', 'model_request_failed', 'model_terminated', 'verification_blocked',
+    'truncated', 'recovery_exhausted'})
 BUDGET_STOP_REASONS = EXECUTION_STOP_REASONS | PHASE_BUDGET_STOPS | {'platform_token_allocation', 'platform_request_allocation',
     'request_allowance', 'budget_insufficient', 'context_limit', 'inspection_limit'}
 ALLOCATION_STOP_REASONS = EXECUTION_STOP_REASONS | {'platform_token_allocation', 'platform_request_allocation'}
@@ -35,7 +44,9 @@ QUALITY_WARNINGS = frozenset({'quality_stagnation', 'quality_unknown'})
 
 def planning_stopped(result):
     """Only a classified planning failure can enter the candidate-only exit."""
-    return (result.get('status') == 'stopped' and result.get('reason') == 'invalid_plan'
+    return (result.get('status') == 'stopped' and result.get('reason') in {
+                'invalid_plan', 'planning_truncated', 'invalid_json', 'invalid_json_shape',
+                'invalid_tool_batch', 'model_incomplete', 'empty_response'}
             and result.get('phase') == 'planning')
 
 
@@ -48,7 +59,7 @@ def behavior_verification_status(checked):
     """
     stops = [checked.get(key) for key in ('reason', 'author_status')]
     if any(reason in (BUDGET_STOP_REASONS | SOURCE_SAFETY_STOPS |
-            {'usage_unknown', 'request_usage_unknown', 'budget_exhausted', 'total_token_budget'})
+            {'usage_unknown', 'usage_unknown_or_out_of_bounds', 'request_usage_unknown', 'budget_exhausted', 'total_token_budget'})
             - PHASE_BUDGET_STOPS for reason in stops):
         return 'BLOCKED'
     if checked.get('passed') is False and checked.get('failure_kind') == 'behavior':
@@ -97,13 +108,15 @@ class ControlPolicy:
     recovery_attempts: int = 1
     warning_turns: int = 3
     quality_window: int = 6
-    recovery_requests: int = 2
-    probation_requests: int = 4
+    recovery_requests: int | None = None
+    probation_requests: int | None = None
 
     def __post_init__(self):
         if type(self.enabled) is not bool:
             raise ValueError('control policy enabled must be boolean')
         for name, value in vars(self).items():
+            if name in {'recovery_requests', 'probation_requests'} and value is None:
+                continue
             if name != 'enabled' and (type(value) is not int or value < (0 if name == 'recovery_attempts' else 1)):
                 raise ValueError('invalid control policy: ' + name)
 
@@ -136,23 +149,34 @@ class ProjectLease:
 
 @dataclass(frozen=True)
 class ExecutionLimits:
-    requests: int = 400
+    requests: int | None = None
     tools: int = 2000
-    seconds: int = 3600
+    seconds: int = MAX_RUN_SECONDS
     batch_tools: int = 16
     repeated_actions: int = 3
     idle_turns: int = 6
     plan_steps: int = 24
-    plan_requests: int = 4
-    step_requests: int = 12
+    plan_requests: int | None = None
+    step_requests: int | None = None
     replans: int = 1
     protocol_repairs: int = 2
     inspection_turns: int = 3
 
     def __post_init__(self):
         for name, value in vars(self).items():
+            if name in {'requests', 'plan_requests', 'step_requests'} and value is None:
+                continue
             if type(value) is not int or value < (0 if name in {'replans', 'protocol_repairs'} else 1):
                 raise ValueError(f'invalid execution limit: {name}')
+
+
+def request_horizon(value):
+    """Use infinity only for internal arithmetic on an unconfigured request limit."""
+    return math.inf if value is None else value
+
+
+def reported_requests(value):
+    return None if value == math.inf else value
 
 
 def source_digest(files):
@@ -160,6 +184,32 @@ def source_digest(files):
     for name, data in sorted(files.items()):
         digest.update(name.encode('utf-8') + b'\0' + hashlib.sha256(data).digest())
     return digest.hexdigest()
+
+
+def construction_digest(files):
+    """Hash implementation progress, separately from complete source integrity.
+
+    Public inputs, coverage claims, documentation and tests cannot buy another
+    construction window. Runtime source, assets, seeds, dependency manifests
+    and deployment scripts remain included. This is still activity evidence,
+    never proof of behavior or requirement acceptance.
+    """
+    def implementation_path(name):
+        parts = name.casefold().split('/')
+        basename = parts[-1]
+        if parts[0] in {'docs', 'requirements'}:
+            return False
+        if any(part in {'test', 'tests', 'self-tests', '__tests__', '__snapshots__',
+                        'test-results', 'playwright-report', 'coverage'} for part in parts[:-1]):
+            return False
+        if ('.test.' in basename or '.spec.' in basename
+                or basename.startswith(('test_', 'conftest.'))
+                or basename.split('.')[0] in {'readme', 'changelog', 'license', 'licence',
+                                             'copying', 'authors', 'contributors', 'contributing'}
+                or basename.endswith(('.md', '.rst', '.adoc'))):
+            return False
+        return True
+    return source_digest({name: data for name, data in files.items() if implementation_path(name)})
 
 
 def validate_arguments(value, schema, path='$'):
@@ -201,6 +251,12 @@ class RunControl:
         self.clock, self.emit = clock, emit or (lambda event: None)
         self.deadline = clock() + self.limits.seconds
         self.requests = self.tools = self.replans = self.idle = self.protocol_repairs = 0
+        self.service_failed_requests = 0
+        self.protected_final_tools = 0
+        self.external_tool_capacity = None
+        self.productive_replans = 0
+        self._replan_progress_requirements = set()
+        self._replan_progress_sources = set()
         self.stopped = None
         self._stop_epoch = 0
         self._candidate_closeout = None
@@ -209,16 +265,34 @@ class RunControl:
         self.states = Counter()
         self.expected_sources = {}
         self.plan_progress = None
+        self.prior_retained_requirement_ids = frozenset()
+        self.retained_requirement_ids = frozenset()
+        self.initial_empty_step_alternated = False
         self.policy = policy or ControlPolicy()
         self.task_state, self.control_state = 'PLAN', 'RUNNING'
         self.current_source = None
         self.verifications = {}
-        self.recovery_count = self.quality_idle = self.warning_age = 0
+        self.recovery_count = self.source_recovery_count = 0
+        self.truncation_replacements = 0
+        self.quality_idle = self.warning_age = 0
         self.fault_reason = self.warning_reason = None
         self.quality_known = False
         self.verification_available = True
         self._passed_requirements, self._failed_requirements = set(), set()
+        self._observed_scenarios = set()
         self._probation_requests = 0
+
+    @property
+    def work_requests(self):
+        """Physical requests excluding confirmed service failures that yielded no model decision."""
+        return self.requests - self.service_failed_requests
+
+    def remaining_physical_requests(self):
+        return max(0, request_horizon(self.limits.requests) - self.requests)
+
+    @property
+    def control_recovery_available(self):
+        return self.recovery_count - self.truncation_replacements < self.policy.recovery_attempts
 
     def _transition(self, state, reason):
         previous = self.control_state
@@ -257,19 +331,22 @@ class RunControl:
                 raise ExecutionStopped(self.fault_reason or 'execution_terminated')
             if self.control_state == 'RECOVERING' and action != 'recovery':
                 raise ExecutionStopped('recovery_action_required')
-            if (self.control_state == 'PROBATION' and self.task_state != 'PLAN'
-                    and self._probation_requests >= self.policy.probation_requests
+            probation_limit = self.policy.probation_requests
+            if (self.control_state == 'PROBATION' and self.task_state != 'PLAN' and probation_limit is not None
+                    and self._probation_requests >= probation_limit
                     and (action == 'request' or action == 'write'
-                         and self._probation_requests > self.policy.probation_requests)):
+                         and self._probation_requests > probation_limit)):
                 self._trip(self.fault_reason or 'probation_exhausted')
         return True
 
     def soft_request_allowance(self, proposed, *, stage=None):
         self.permit()
         if self.control_state == 'PROBATION' and (stage or self.task_state) == 'PLAN':
-            return proposed  # Planning has its own bound and still spends the shared hard budgets.
+            return proposed  # Planning still spends the shared hard budgets.
         if self.policy.enabled and self.control_state in {'WARNING', 'PROBATION'}:
             cap = self.policy.probation_requests if self.control_state == 'PROBATION' else self.policy.recovery_requests
+            if cap is None:
+                return proposed
             if self.control_state == 'PROBATION':
                 cap -= self._probation_requests
             return max(0, min(proposed, cap))
@@ -277,7 +354,12 @@ class RunControl:
 
     def _trip(self, reason):
         self.fault_reason = reason
-        if self.recovery_count >= self.policy.recovery_attempts:
+        if reason == 'activity_stagnation':
+            self.emit_cost(dict(event='activity_stagnation_limit', source_sha256=self.current_source,
+                consecutive_idle_turns=self.idle, idle_turn_limit=self.limits.idle_turns,
+                warning_age=self.warning_age, warning_turn_limit=self.policy.warning_turns,
+                requests=self.requests, tools=self.tools))
+        if not self.control_recovery_available:
             self.stop('recovery_exhausted')
         self._transition('CIRCUIT_OPEN', reason)
         raise ExecutionStopped(reason)
@@ -304,12 +386,14 @@ class RunControl:
             raise ExecutionStopped(self.stopped or 'recovery_not_permitted')
         if self.clock() >= self.deadline:
             self.stop('execution_deadline')
-        if self.recovery_count >= self.policy.recovery_attempts:
+        if not self.control_recovery_available:
             self.stop('recovery_exhausted')
         if warning_rollback:
             self.fault_reason = self.warning_reason
             self._transition('CIRCUIT_OPEN', self.fault_reason)
         self.recovery_count += 1
+        if action == 'source_rollback':
+            self.source_recovery_count += 1
         self._transition('RECOVERING', action)
         try:
             result = callback()
@@ -386,6 +470,26 @@ class RunControl:
             self._warn('quality_stagnation')
         return receipt
 
+    def observe_retained_scenario(self, step, checked, source_sha256):
+        """Credit a new runtime observation only on the retained construction source."""
+        observation = checked.get('selected_scenario') or {}
+        if (not self.policy.enabled or checked.get('reason') != 'requirement_constraints_unresolved'
+                or observation.get('diagnostic_only') is not True or observation.get('status') != 'passed'
+                or observation.get('source_sha256') != source_sha256
+                or self.current_source != source_sha256 or observation.get('requirement_id') not in step.requirement_ids
+                or not observation.get('scenario_id')):
+            return
+        identity = (observation['requirement_id'], observation['scenario_id'])
+        if identity in self._observed_scenarios:
+            return
+        self._observed_scenarios.add(identity)
+        if self.control_state == 'WARNING' and self.warning_reason == 'quality_unknown' and not self.quality_known:
+            self.quality_idle = self.warning_age = 0
+            self.warning_reason = None
+            self._transition('RUNNING', 'retained_public_scenario_observed')
+        elif self.control_state == 'RUNNING' and not self.quality_known:
+            self.quality_idle = 0
+
     def finish_task(self, *, source_sha256, required_checks):
         self.permit('verification')
         if (not required_checks or source_sha256 != self.current_source
@@ -422,7 +526,9 @@ class RunControl:
             self.task_state = 'STOPPED'
             self._transition('TERMINATED', reason)
             self.emit(dict(event='execution_stopped', reason=reason,
-                           requests=self.requests, tools=self.tools, replans=self.replans))
+                           requests=self.requests, tools=self.tools, replans=self.replans,
+                           productive_replans=self.productive_replans,
+                           unproductive_replans=self.replans - self.productive_replans))
         raise ExecutionStopped(self.stopped)
 
     def check(self):
@@ -492,9 +598,34 @@ class RunControl:
                 original_stop=self.stopped, task_state=self.task_state, control_state=self.control_state,
                 requirements_verified=False, requests=self.requests, tools=self.tools))
 
+    def cost_snapshot(self):
+        return self.requests, self.tools, self.clock()
+
+    def cost_since(self, start, end=None):
+        requests, tools, started = start
+        final_requests, final_tools, finished = self.cost_snapshot() if end is None else end
+        return dict(requests_start=requests, requests_end=final_requests, requests=final_requests - requests,
+                    tools_start=tools, tools_end=final_tools, tools=final_tools - tools, seconds=finished - started)
+
+    @contextmanager
+    def measure_phase(self, phases, name):
+        start = self.cost_snapshot()
+        try:
+            yield
+        finally:
+            phases[name] = self.cost_since(start)
+
+    def emit_cost(self, event):
+        # Accounting is observational. A failing audit sink must not replace
+        # a controller stop, alter a committed outcome, or interrupt rollback.
+        try:
+            self.emit(event)
+        except Exception as error:
+            logging.warning('Cost observation unavailable: %s', type(error).__name__)
+
     def request(self):
         self.permit('request')
-        if self.requests >= self.limits.requests:
+        if not self.remaining_physical_requests():
             self.stop('execution_request_limit')
         self.requests += 1
         if self.control_state == 'PROBATION' and self.task_state != 'PLAN':
@@ -515,6 +646,15 @@ class RunControl:
             self.stop('tool_batch_limit')
         if self.tools + len(calls) > self.limits.tools:
             self.stop('execution_tool_limit')
+        if self.protected_final_tools:
+            available = self.limits.tools - self.tools
+            if self.external_tool_capacity is not None:
+                external, reason = self.external_tool_capacity
+                if len(calls) > external:
+                    raise ExecutionStopped(reason)
+                available = min(available, external)
+            if len(calls) + self.protected_final_tools > available:
+                raise ExecutionStopped('self_test_reserve')
         self.tools += len(calls)
 
     def action(self, name, arguments, state):
@@ -538,16 +678,19 @@ class RunControl:
             # Quiet BUILD/TEST processes are not failed CODE turns. Quality is
             # unknown until actual checks; a write or novel read cannot prove it.
             if self.task_state in {'PLAN', 'CODE'}:
+                if progress and self.control_state == 'WARNING' and self.warning_reason == 'activity_stagnation':
+                    self.warning_reason, self.warning_age = None, 0
+                    self._transition('RUNNING', 'activity_resumed')
                 # Necessary context acquisition consumes the hard budgets but
                 # is not an attempted implementation or a quality improvement.
-                # Do not reset accrued quality debt or an existing warning.
+                # Do not reset accrued quality debt or a quality warning.
                 if (self.task_state == 'CODE' and self.verification_available
                         and not (information_only and new_evidence and before == after)):
                     self.quality_idle += 1
                 if self.idle >= self.limits.idle_turns:
                     self._warn('activity_stagnation')
-                # The retained quality debt cannot immediately consume the new
-                # bounded CODE/TEST recovery window. A failed test still trips it.
+                # Retained quality debt alone does not consume the new CODE/TEST
+                # recovery attempt. A failed test still trips it.
                 elif (self.task_state == 'CODE' and self.control_state != 'PROBATION'
                       and self.verification_available
                       and self.quality_idle >= self.policy.quality_window
@@ -561,11 +704,52 @@ class RunControl:
         if self.idle >= self.limits.idle_turns:
             self.stop('no_progress')
 
-    def replan(self):
+    def check_planning_resources(self):
         self.check()
-        if self.replans >= self.limits.replans:
+        if self.remaining_physical_requests() <= 0:
+            self.stop('execution_request_limit')
+        if self.tools >= self.limits.tools:
+            self.stop('execution_tool_limit')
+
+    def replan(self, *, committed_progress=()):
+        """Admit planning without erasing cumulative attempts or resource use.
+
+        Only PlanExecutor supplies these already committed, source-changing
+        receipts. A new step ID, rolled-back edit, repeated requirement or
+        previously credited source does not create another productive attempt.
+        """
+        self.check_planning_resources()
+        new_refs, new_sources, full_sources = set(), set(), set()
+        if self.policy.enabled:
+            for receipt in committed_progress:
+                refs = receipt.get('requirement_ids')
+                source = receipt.get('implementation_source_sha256')
+                full_source = receipt.get('source_sha256')
+                if ('slice_parent' in receipt or receipt.get('source_changed') is not True or not isinstance(refs, (list, tuple))
+                        or not refs or any(not isinstance(ref, str) or not ref for ref in refs)
+                        or not isinstance(source, str) or not source
+                        or not isinstance(full_source, str) or not full_source
+                        or source in self._replan_progress_sources or source in new_sources):
+                    continue
+                unseen = set(refs) - self._replan_progress_requirements - new_refs
+                if unseen:
+                    new_refs.update(unseen)
+                    new_sources.add(source)
+                    full_sources.add(full_source)
+        productive = bool(new_refs and new_sources)
+        used = self.replans - self.productive_replans if self.policy.enabled else self.replans
+        if not productive and used >= self.limits.replans:
             self.stop('replan_limit')
         self.replans += 1
+        if productive:
+            self.productive_replans += 1
+            self._replan_progress_requirements.update(new_refs)
+            self._replan_progress_sources.update(new_sources)
+        self.emit(dict(event='replan_admitted', replans=self.replans,
+            productive_replans=self.productive_replans,
+            unproductive_replans=self.replans - self.productive_replans,
+            productive=productive, new_requirement_ids=sorted(new_refs),
+            committed_source_sha256s=sorted(full_sources), progress_source_sha256s=sorted(new_sources)))
 
     def source(self, root, *, changed_by_controller=False):
         root = Path(root).resolve()
@@ -587,9 +771,41 @@ class SourceTransaction:
         self.before = control.source(self.root)
         self.finished = False
 
+    def implementation_changed(self):
+        from .task_bundle import is_test_path
+        current = self.control.source(self.root)
+        return any(current.get(path) != self.before.get(path) for path in current.keys() | self.before.keys()
+                   if not path.casefold().startswith(('docs/', 'requirements/')) and not is_test_path(path))
+
+    def quarantine(self, save, *, stop_reason=None, **identity):
+        files = self.control.source(self.root)
+        if stop_reason in {'truncated', SOURCE_CLAIMS_DRAFT}:
+            # Coverage claims alone cannot turn the untouched starter into a candidate.
+            from .coverage_store import LEDGER_PATH
+            paths = (files.keys() | self.before.keys()) - {LEDGER_PATH}
+            if stop_reason == SOURCE_CLAIMS_DRAFT:
+                from .task_bundle import is_test_path
+                paths = (name for name in paths if not name.casefold().startswith(('docs/', 'requirements/'))
+                         and not is_test_path(name))
+            if not any(files.get(name) != self.before.get(name) for name in paths):
+                return {}
+        try:
+            location = save()
+        except ExecutionStopped:
+            raise
+        except Exception as error:
+            if stop_reason:
+                raise RuntimeError(f'{stop_reason} candidate capture failed: {error}') from error
+            raise
+        if stop_reason:
+            identity['candidate_stop_reason'] = stop_reason
+        return dict(candidate_source=location, candidate_source_sha256=source_digest(files),
+                    candidate_base_sha256=source_digest(self.before), candidate_acceptance='unverified', **identity)
+
     def commit(self):
         self.control.check()
-        digest = source_digest(self.control.source(self.root))
+        self.committed_files = self.control.source(self.root)
+        digest = source_digest(self.committed_files)
         self.finished = True
         return digest
 
@@ -635,7 +851,11 @@ def _plan_id_preview(value):
     return rendered if preview == value else rendered + ' (truncated)'
 
 
-def validate_plan(document, requirement_ids, limit, requirement_dependencies=None, *, exhausted_scope=()):
+def _refits_deferred_scope(step, deferred):
+    return len(step.requirement_ids) < len(deferred) or deferred.isdisjoint(step.requirement_ids)
+
+
+def validate_plan(document, requirement_ids, limit, requirement_dependencies=None, *, exhausted_scope=(), deferred_scope=()):
     """Reject malformed plans, invented requirements, cycles and omitted goals."""
     expected = set(requirement_ids)
     rows = document.get('steps') if isinstance(document, dict) else None
@@ -666,6 +886,11 @@ def validate_plan(document, requirement_ids, limit, requirement_dependencies=Non
                                    tuple(row['depends_on']), row['acceptance'])
     if covered != expected:
         raise ValueError('plan omits requirements')
+    deferred = set(deferred_scope)
+    if deferred and not any(not step.depends_on and _refits_deferred_scope(step, deferred)
+                            for step in steps.values()):
+        raise ValueError('plan repeats the deferred requirement scope; provide a smaller or independent ready step '
+                         'for the current request window and retain all other work')
     for step_index, step in enumerate(steps.values()):
         unknown = [(index, ref) for index, ref in enumerate(step.depends_on) if ref not in steps]
         if unknown:
@@ -729,74 +954,280 @@ class StepOutcome:
 class PlanExecutor:
     """Sequential plan/execute/replan. Successful steps survive a later failure."""
     def __init__(self, control, tools, planner, executor, validator, behavior_validator=None,
-                 *, before_closeout=None, budget_planner=None, repairer=None):
+                 *, before_closeout=None, budget_planner=None, repairer=None, phase_deadline=None, tools_remaining=None,
+                 quarantine_source=None, requests_remaining=None, repair_request_limit=None, adaptive_progress=None,
+                 can_fund_repair=None, has_independent_followup=None):
         self.control, self.tools = control, tools
         self.planner, self.executor, self.validator = planner, executor, validator
         self.behavior_validator = behavior_validator
         self.before_closeout = before_closeout
         self.budget_planner = budget_planner
         self.repairer = repairer
+        self.quarantine_source = quarantine_source or getattr(behavior_validator, 'quarantine', None)
+        self.phase_deadline = phase_deadline
+        self.tools_remaining = tools_remaining
+        self.requests_remaining = requests_remaining
+        self.repair_request_limit = repair_request_limit
+        self.can_fund_repair = can_fund_repair
+        self.has_independent_followup = has_independent_followup
+        self.adaptive_progress = (control.policy.enabled and (adaptive_progress if adaptive_progress is not None
+                                  else not getattr(budget_planner, 'fixed_order', False)))
+
+    def _preflight_pending(self, steps, rows, done):
+        """Evaluate plan prerequisites and public requirement contracts separately."""
+        runnable, fully_bound = [], []
+        for step, row in zip(steps, rows):
+            check = self.behavior_validator.contract_preflight(step)
+            check['pending_step_dependencies'] = [ref for ref in step.depends_on if ref not in done]
+            row['verification_preflight'] = check
+            if not check['pending_step_dependencies'] and check['runnable_requirement_ids']:
+                runnable.append(step.id)
+                if not check['unresolved'] and not check['blocked_dependencies']:
+                    fully_bound.append(step.id)
+        return runnable, fully_bound
+
+    def _split_initial_step(self, step, tail, *, requests_left, implementation_reserve):
+        """Allow one batch of reads before the final partition, within the original step ceiling."""
+        plan_allowance = min(2, request_horizon(self.control.limits.plan_requests),
+                             requests_left - implementation_reserve)
+        if plan_allowance < 1:
+            return None
+        reserved_ids = {step.id, *(item.id for item in tail)}
+        refs = list(step.requirement_ids)
+        max_steps = self.control.limits.plan_steps - len(tail)
+        feedback = dict(reason='initial_step_empty_truncation', step=step.id, requirement_ids=refs,
+            goal=step.goal, acceptance=step.acceptance, reserved_step_ids=sorted(reserved_ids),
+            max_steps=max_steps, step_request_limit=reported_requests(requests_left - plan_allowance))
+        document = self.planner(refs, [], feedback, plan_allowance)
+        if document.get('status') != 'complete':
+            reason = document.get('reason') or 'planning_failed'
+            if reason in PHASE_BUDGET_STOPS:
+                raise ExecutionStopped(reason)
+            if reason in ALLOCATION_STOP_REASONS | SOURCE_SAFETY_STOPS | CONTROLLER_STATE_STOPS | {
+                    'usage_unknown', 'usage_unknown_or_out_of_bounds', 'request_usage_unknown',
+                    'budget_exhausted', 'total_token_budget'}:
+                self.control.stop(reason)
+            self.control.emit(dict(event='initial_step_split_declined', step=step.id, reason=reason))
+            return None
+        try:
+            children = validate_plan(document, refs, max_steps)
+            child_ids = tuple(child.id for child in children)
+            if reserved_ids.intersection(child_ids):
+                raise ValueError('split reuses an existing step id')
+            if len(children) < 2 or sum(len(child.requirement_ids) for child in children) != len(refs):
+                raise ValueError('split must partition the original scope into smaller steps')
+        except ValueError as error:
+            self.control.emit(dict(event='initial_step_split_declined', step=step.id,
+                reason='invalid_plan', detail=str(error)[:1000]))
+            return None
+        updated_tail = [replace(item, depends_on=tuple(ref for parent in item.depends_on
+            for ref in (child_ids if parent == step.id else (parent,)))) for item in tail]
+        return child_ids, [*children, *updated_tail]
 
     def run(self, requirement_ids, allowance, feedback=None, *, whole_task=False):
+        from .platform_budget_policy import BudgetPlanner
+        renewal_policy = self.budget_planner if callable(getattr(self.budget_planner, 'renew', None)) else BudgetPlanner()
+        self.control.retained_requirement_ids = self.control.prior_retained_requirement_ids
         started = self.control.requests
+        work_started = self.control.work_requests
+        phase_ceiling = work_started + request_horizon(allowance)
         phase_refs = list(dict.fromkeys(requirement_ids))
         pending = list(phase_refs)
         completed, constructed, history = [], [], []
+        local_failures = []
+        blocked_requirements = set()
         failed = None
         candidate = {}
+        truncated_refs = set()
+        slice_parents = set()
+        slice_children = {}
+        slice_ceilings = {}
+        next_slice = None
+        awaiting_alternative = False
+        refit_step_ids = set()
         budget_scope = uuid4().hex
+        previous_final_tools = self.control.protected_final_tools
+        strict_preflight = (getattr(self.behavior_validator, 'retain_unverified', None) is False
+                            and callable(getattr(self.behavior_validator, 'contract_preflight', None)))
 
         def remaining():
-            return allowance - (self.control.requests - started)
+            phase = phase_ceiling - self.control.work_requests
+            return min(phase, self.requests_remaining()) if self.requests_remaining is not None else phase
 
         def observation_key(step):
             return f'{budget_scope}:{len(history)}:{step.id}'
+
+        def cost_profile(step):
+            profile = getattr(self.behavior_validator, 'cost_profile', None)
+            if callable(profile):
+                return ('behavior', *profile(step))
+            return ('custom_behavior' if self.behavior_validator else 'static', len(step.requirement_ids),
+                    minimum_requests(step))
+
+        def finish_attempt(step, outcome, start, end, phases, disposition, stop_reason):
+            attempts = plan[index].setdefault('attempts', [])
+            cost = dict(self.control.cost_since(start, end), run=budget_scope, revision=len(history),
+                        step=step.id, attempt=len(attempts) + 1, disposition=disposition, phases=phases)
+            if stop_reason:
+                cost['stop_reason'] = stop_reason
+            attempts.append(dict(outcome, cost=cost))
+            self.control.emit_cost(dict(event='attempt_cost', **cost))
 
         def minimum_requests(step):
             reserve = getattr(self.behavior_validator, 'request_reserve', None)
             return 1 + (reserve(step) if callable(reserve) else 0)
 
-        def step_capacity():
-            ceiling = min(self.control.limits.step_requests, remaining(),
-                          self.control.limits.requests - self.control.requests)
-            return self.control.soft_request_allowance(max(0, ceiling), stage='CODE')
+        def step_capacity(*, planning_requests=0, request_ceiling=None):
+            remaining_requests = min(remaining(), self.control.remaining_physical_requests())
+            if request_ceiling is not None:
+                remaining_requests = min(remaining_requests, request_ceiling - self.control.work_requests)
+            ceiling = min(request_horizon(self.control.limits.step_requests), max(0, remaining_requests - planning_requests))
+            return self.control.soft_request_allowance(ceiling, stage='CODE')
+
+        def isolatable(failure):
+            if (not self.adaptive_progress or self.control.stopped or truncated_refs or refit_step_ids
+                    or step.id in slice_ceilings
+                    or self.control.control_state not in {'RUNNING', 'WARNING'}):
+                return False
+            reason = failure.get('reason')
+            if reason in (ALLOCATION_STOP_REASONS | PHASE_BUDGET_STOPS | SOURCE_SAFETY_STOPS
+                          | CONTROLLER_STATE_STOPS | {'usage_unknown', 'usage_unknown_or_out_of_bounds', 'request_usage_unknown',
+                                                      'budget_exhausted', 'total_token_budget'}):
+                return False
+            checked = failure.get('validation') or {}
+            return (reason in {'request_allowance', 'inspection_limit', 'context_limit',
+                               'static_validation_failed', 'step_behavior_unverified',
+                               'requirement_constraints_unresolved', 'behavior_requirements_missing'}
+                    or checked.get('failure_kind') == 'behavior')
 
         def result(status, reason=None, **context):
             if failed is not None and reason in CONTROLLER_STATE_STOPS:
                 context.setdefault('detail', failed.get('detail', ''))
+            if reason == 'verification_blocked' and failed and failed.get('phase') == 'verification_preflight':
+                context.update(phase=failed['phase'], detail=failed['reason'])
+            if reason == 'truncated' and candidate.get('candidate_stop_reason') != reason:
+                candidate.clear()  # A previous failure's draft is not this interrupted step.
+            if (reason in SOURCE_CLAIMS_DRAFT_STOPS and failed
+                    and failed.get('candidate_stop_reason') == SOURCE_CLAIMS_DRAFT
+                    and failed.get('candidate_base_sha256') == self.control.current_source):
+                candidate.update((key, value) for key, value in failed.items() if key.startswith('candidate_'))
+            if failed is not None:
+                context.setdefault('triggering_failure', failed)
             return dict(status=status, reason=reason, turns=self.control.requests - started,
+                        work_turns=self.control.work_requests - work_started,
                         completed_steps=completed, candidate_steps=constructed, plan_history=history,
                         pending_requirement_ids=pending,
+                        local_failures=list(local_failures),
+                        blocked_requirement_ids=sorted(blocked_requirements.intersection(pending)),
+                        replans=self.control.replans, productive_replans=self.control.productive_replans,
+                        unproductive_replans=self.control.replans - self.control.productive_replans,
+                        phase_requests_remaining=reported_requests(max(0, remaining())),
+                        global_requests_remaining=reported_requests(self.control.remaining_physical_requests()),
                         acceptance='synthetic_step_diagnostics' if self.behavior_validator else 'static_only',
                         task_state=self.control.task_state, control_state=self.control.control_state, **candidate, **context)
 
-        def quarantine(checkpoint):
-            receipt = dict(candidate_source=self.behavior_validator.quarantine(),
-                candidate_source_sha256=source_digest(self.control.source(self.tools.project_dir)),
-                candidate_base_sha256=source_digest(checkpoint.before), candidate_acceptance='unverified')
+        def quarantine(checkpoint, **identity):
+            receipt = checkpoint.quarantine(self.quarantine_source, **identity)
             candidate.update(receipt)
             return receipt
+
+        def pending_work():
+            return list(dict.fromkeys(ref for row in plan
+                if row['status'] not in {'completed', 'constructed_unverified'} and 'replacement_step_ids' not in row
+                for ref in row['requirement_ids'])) + deferred
+
+        adaptive_slices = (self.control.policy.enabled and self.budget_planner is not None
+                    and not getattr(self.budget_planner, 'fixed_order', False)
+                    and getattr(self.behavior_validator, 'retain_unverified', False) is True
+                    and callable(getattr(self.behavior_validator, 'public_step_slice', None)))
+
+        def may_slice(parent):
+            return (adaptive_slices
+                    and (parent.id, parent.requirement_ids) not in slice_parents and parent.id not in slice_children
+                    and len(steps) < self.control.limits.plan_steps)
+
+        def insert_slice(parent, position, capacity, reason, runway=None):
+            nonlocal next_slice
+            if not may_slice(parent) or capacity < 2:
+                return False
+            slice_parents.add((parent.id, parent.requirement_ids))
+            ids = {s.id for s in steps}
+            number = 1
+            while (child_id := f'{parent.id[:64]}-slice-{number}') in ids:
+                number += 1
+            ceiling = self.control.work_requests + capacity
+            self.control.plan_progress = None
+            prepared = self.behavior_validator.public_step_slice(
+                parent, self.control.retained_requirement_ids, child_id, allowance=capacity)
+            if prepared is None:
+                return False
+            child, scenario = prepared
+            residual = replace(parent, depends_on=(*parent.depends_on, child.id))
+            steps[position:position+1] = [child, residual]
+            row = plan[position]
+            row.update(depends_on=list(residual.depends_on), status='pending', slice_child=child.id)
+            plan.insert(position, dict(id=child.id, goal=child.goal, acceptance=child.acceptance,
+                requirement_ids=list(child.requirement_ids), depends_on=list(child.depends_on),
+                status='pending', slice_parent=parent.id, scenario_id=scenario))
+            slice_children[child.id] = (parent.id, scenario)
+            slice_ceilings[parent.id] = slice_ceilings[child.id] = ceiling
+            next_slice = child.id
+            self.control.emit(dict(event='public_step_slice', parent_step=parent.id, step=child.id,
+                requirement_ids=list(child.requirement_ids), scenario_id=scenario, reason=reason, runway=runway))
+            return True
+
+        def scheduling_stop(reason, **context):
+            if truncated_refs or refit_step_ids:
+                # Seal generation before closeout so an unmet step cannot reappear
+                # in a new plan or a whole-task static repair. Recheck the active baseline.
+                self.control.stop('truncated')
+            return result('stopped', reason, **context)
 
         try:
             while True:
                 self.control.plan_progress = None
                 self.control.check()
                 self.control.set_task_state('PLAN', reason='plan_requested')
+                if strict_preflight and self.budget_planner is not None:
+                    reserve = getattr(self.behavior_validator, 'retained_closeout_tools', None)
+                    if callable(reserve):
+                        self.control.protected_final_tools = reserve(pending)
                 if remaining() < 2:
                     return result('stopped', 'request_allowance')
-                document = self.planner(pending, completed + constructed, feedback,
-                    min(self.control.limits.plan_requests, remaining() - 1))
-                if document.get('status') != 'complete':
-                    return result('stopped', document.get('reason', 'planning_failed'),
-                                  phase='planning', detail=document.get('detail', ''))
+                planned_window = step_capacity(planning_requests=1)
+                deferred_scope = set(failed['requirement_ids']) if failed and failed['reason'] == 'step_window_changed' else set()
+                planning_start = self.control.cost_snapshot()
                 try:
-                    steps = validate_plan(document, pending, self.control.limits.plan_steps,
-                        exhausted_scope=failed['requirement_ids'] if failed and failed['reason'] == 'request_allowance' else ())
-                except ValueError as error:
-                    return result('stopped', 'invalid_plan', phase='planning', detail=str(error)[:1000])
+                    document = self.planner(pending, completed + constructed, feedback,
+                        min(request_horizon(self.control.limits.plan_requests), remaining() - 1))
+                    if document.get('status') != 'complete':
+                        return result('stopped', document.get('reason', 'planning_failed'),
+                                      phase='planning', detail=document.get('detail', ''))
+                    try:
+                        # The production planner attaches this scope after validating its response.
+                        # Requirements outside it stay in the task until a later window handles them.
+                        window = document.get('plan_window_requirement_ids', pending)
+                        if (not isinstance(window, list) or (pending and not window)
+                                or any(not isinstance(ref, str) for ref in window)
+                                or len(set(window)) != len(window) or not set(window).issubset(pending)):
+                            raise ValueError('invalid planning window')
+                        window_set = set(window)
+                        deferred = [ref for ref in pending if ref not in window_set]
+                        steps = validate_plan(document, window, self.control.limits.plan_steps,
+                            exhausted_scope=failed['requirement_ids'] if failed and failed['reason'] == 'request_allowance' else (),
+                            deferred_scope=deferred_scope)
+                    except ValueError as error:
+                        return result('stopped', 'invalid_plan', phase='planning', detail=str(error)[:1000])
+                finally:
+                    self.control.emit_cost(dict(event='planning_cost', run=budget_scope, revision=len(history)+1,
+                        purpose='replan' if history else 'plan', **self.control.cost_since(planning_start)))
                 plan = [dict(id=s.id, goal=s.goal, requirement_ids=list(s.requirement_ids),
                              depends_on=list(s.depends_on), acceptance=s.acceptance,
                              status='pending') for s in steps]
+                if strict_preflight:
+                    propose = getattr(self.behavior_validator, 'prepare_semantic_proposal', None)
+                    if callable(propose):
+                        propose(window, max(0, remaining() - 1))
                 history.append(plan)
                 self.control.emit(dict(event='plan_validated', steps=plan))
                 if self.control.policy.enabled and self.control.control_state != 'PROBATION':
@@ -804,87 +1235,290 @@ class PlanExecutor:
                         source_sha256=source_digest(self.control.source(self.tools.project_dir)),
                         evidence_id='plan-' + str(len(history)))
                 failed = None
-                for index, step in enumerate(steps):
+                revision_failures = []
+                refit_step_ids.clear()
+                refit_ceiling = None
+                slice_children.clear()
+                slice_ceilings.clear()
+                next_slice = None
+                index = 0
+                while index < len(steps):
+                    step = steps[index]
+                    # Construction makes source available for an actual setup check.
+                    # A scenario slice alone never supplies its whole parent requirement.
+                    self.control.retained_requirement_ids = self.control.prior_retained_requirement_ids | frozenset(
+                        ref for row in completed + constructed if 'slice_parent' not in row
+                        for ref in row['requirement_ids'])
                     # Model step IDs are local to this validated revision.
                     done = [item['id'] for item in plan[:index]
                             if item['status'] in {'completed', 'constructed_unverified'}]
+                    step_ceiling = refit_ceiling if refit_step_ids else None
                     request_share = None
-                    if self.budget_planner is not None:
-                        ready = [item.id for item in steps[index:] if set(item.depends_on) <= set(done)]
-                        capacity = step_capacity()
-                        ready = [item.id for item in steps[index:]
-                                 if item.id in ready and minimum_requests(item) <= capacity]
+                    selected_id = step.id
+                    ready = [item.id for item in steps[index:] if set(item.depends_on) <= set(done)
+                             and truncated_refs.isdisjoint(item.requirement_ids)
+                             and (not refit_step_ids or item.id in refit_step_ids)]
+                    if revision_failures and not ready and not truncated_refs and not refit_step_ids:
+                        for row in plan[index:]:
+                            missing = sorted(set(row['depends_on']) - set(done))
+                            row.update(status='blocked', blocked_dependencies=missing)
+                            blocked_requirements.update(row['requirement_ids'])
+                            self.control.emit(dict(event='plan_step_blocked', step=row['id'],
+                                requirement_ids=row['requirement_ids'], blocked_dependencies=missing))
+                        pending = pending_work()
+                        break
+                    if revision_failures and selected_id not in ready and ready:
+                        selected_id = ready[0]
+                    if truncated_refs and not ready:
+                        return scheduling_stop('coverage_incomplete')
+                    preferred = []
+                    if strict_preflight:
+                        self.control.check()
+                        ready, preferred = self._preflight_pending(steps[index:], plan[index:], set(done))
                         if not ready:
-                            return result('stopped', 'budget_insufficient')
-                        actions = [dict(id=item.id, dependencies=list(item.depends_on),
-                            observation_key=observation_key(item), minimum_requests=minimum_requests(item),
-                            requirement_ids=list(item.requirement_ids), estimated_cost=self.control.limits.step_requests,
-                            expected_gain=float(len(item.requirement_ids)), confidence=.25, risk=0., required=True)
-                            for item in steps[index:]]
-                        decision = self.budget_planner.select(actions, remaining=dict(requests=min(remaining(),
-                            self.control.limits.requests - self.control.requests),
-                            tools=self.control.limits.tools - self.control.tools,
-                            seconds=max(0, self.control.deadline - self.control.clock())), completed=done, allowed=ready)
-                        self.control.emit(dict(event='budget_decision', **decision))
+                            reason = 'requirement_dependencies_pending'
+                            for row in plan[index:]:
+                                check = row['verification_preflight']
+                                if check['unresolved'] and not check['pending_step_dependencies']:
+                                    reason = 'requirement_constraints_unresolved'
+                                    row['status'] = 'blocked_before_implementation'
+                                else:
+                                    row['status'] = 'waiting_for_dependencies'
+                                row['verification_status'] = 'BLOCKED'
+                            failed = dict(phase='verification_preflight', reason=reason)
+                            self.control.emit(dict(event='verification_preflight_blocked', reason=reason,
+                                                   pending_requirement_ids=pending))
+                            self.control.stop('verification_blocked')
+                    if strict_preflight or self.budget_planner is not None:
+                        capacity = step_capacity(request_ceiling=step_ceiling)
+                        ready = [item.id for item in steps[index:]
+                                 if item.id in ready and minimum_requests(item) <= min(capacity,
+                                     slice_ceilings.get(item.id, phase_ceiling) - self.control.work_requests)
+                                 and (index != 0 or not deferred_scope or _refits_deferred_scope(item, deferred_scope))]
+                        if not ready:
+                            return scheduling_stop('budget_insufficient')
+                        preferred = [ref for ref in ready if ref in preferred]
+                        selected_id = (preferred or ready)[0]
+                    if self.budget_planner is not None:
+                        actions = []
+                        profiles = {}
+                        time_pressure = {}
+                        deadline = min(self.control.deadline, self.phase_deadline()) if self.phase_deadline else self.control.deadline
+                        review_scope = (self.control.policy.enabled and not getattr(self.budget_planner, 'fixed_order', False)
+                                        and self.control.control_state in {'WARNING', 'PROBATION'}
+                                        and capacity < planned_window)
+                        for item in steps[index:]:
+                            action = dict(id=item.id, dependencies=list(item.depends_on),
+                                observation_key=observation_key(item), minimum_requests=minimum_requests(item),
+                                requirement_ids=list(item.requirement_ids), estimated_cost=self.control.limits.step_requests or minimum_requests(item),
+                                request_ceiling=capacity, expected_gain=float(len(item.requirement_ids)),
+                                confidence=.25, risk=0., required=True)
+                            if item.id in ready:
+                                profiles[item.id] = cost_profile(item)
+                                sample = self.budget_planner.estimate_cost(profiles[item.id])
+                                selected_probe = getattr(self.behavior_validator, 'selected_scenario_probe', None)
+                                probe = selected_probe(item) if callable(selected_probe) else None
+                                scenario_id = probe.get('scenario_id') if isinstance(probe, dict) else None
+                                optional_observer = getattr(self.behavior_validator, 'can_schedule_observation', None)
+                                if ((strict_preflight or probe or (callable(optional_observer) and optional_observer(item, capacity)))
+                                        and callable(getattr(self.behavior_validator, 'step_budget', None))):
+                                    action.update(self.behavior_validator.step_budget(item))
+                                action.update(sample)
+                                if (adaptive_slices and item.id not in slice_children and (completed or constructed)
+                                        and callable(getattr(self.behavior_validator, 'step_slice_runway', None))):
+                                    request_seconds, check_seconds = self.behavior_validator.step_slice_runway(item)
+                                    runway = self.budget_planner.step_runway(profiles[item.id],
+                                        remaining_seconds=max(0, deadline - self.control.clock()),
+                                        request_seconds=request_seconds, check_seconds=check_seconds)
+                                    if runway['fits'] is False:
+                                        time_pressure[item.id] = runway
+                                        action['estimated_seconds'] = max(action.get('estimated_seconds') or 0,
+                                                                          runway['required_seconds'])
+                                if review_scope:
+                                    origin = sample.get('estimate_source')
+                                    closed = (isinstance(origin, dict)
+                                              and origin.get('requirement_ids') == sorted(item.requirement_ids)
+                                              and origin.get('scenario_id') == scenario_id
+                                              and origin.get('disposition') in {'committed', 'constructed_unverified'})
+                                    # A measured closure can support a grouped step. With no such
+                                    # sample prefer a ready smaller unit, or ask the planner to refit.
+                                    action['review_scope'] = (len(item.requirement_ids) > 1 and
+                                                              (not closed or sample['estimated_cost'] > capacity))
+                                action['scenario_id'] = scenario_id
+                            actions.append(action)
+                        tools_left = self.control.limits.tools - self.control.tools
+                        if self.tools_remaining is not None:
+                            tools_left = min(tools_left, self.tools_remaining())
+                        resources = dict(requests=min(remaining(), self.control.remaining_physical_requests()),
+                                         hard_requests=self.control.remaining_physical_requests(),
+                                         tools=tools_left, seconds=max(0, deadline - self.control.clock()))
+                        resources['can_replan_scope'] = (not refit_step_ids
+                                                         and self.control.replans < self.control.limits.replans
+                                                         and resources['requests'] >= 2)
+                        # A partially checkable step cannot commit under strict policy. Run
+                        # an affordable, fully checkable independent step first when possible.
+                        first = [next_slice] if next_slice in ready else preferred or ready
+                        decision = self.budget_planner.select(actions, remaining=resources, completed=done, allowed=first)
+                        if decision['action_id'] is None and first != ready:
+                            decision = self.budget_planner.select(actions, remaining=resources, completed=done, allowed=ready)
+                        eligible_score = next((r['score'] for r in decision['trace']
+                                               if r['action_id'] == decision['action_id']), float('-inf'))
+                        constrained = sorted((r for r in decision['trace'] if r['action_id'] in time_pressure
+                                              and r['limiting_resource'] == 'seconds' and r['score'] >= eligible_score),
+                                             key=lambda r: -r['score'])
+                        reconsider = False
+                        for row in constrained:
+                            if next_slice:
+                                break
+                            position = next(i for i in range(index, len(steps)) if steps[i].id == row['action_id'])
+                            parent = steps[position]
+                            started_requests = self.control.requests
+                            inserted = insert_slice(parent, position, capacity, 'implementation_time', time_pressure[parent.id])
+                            if inserted or self.control.requests != started_requests:
+                                # A declined proposal may still have spent a request and wall time.
+                                reconsider = True
+                                break
+                        if reconsider:
+                            continue
+                        self.control.emit(dict(event='budget_decision', planned_step_window=reported_requests(planned_window),
+                                               step_request_limit=reported_requests(capacity), **decision))
                         if decision['action_id'] is None:
-                            return result('stopped', decision.get('reason') or 'budget_insufficient')
-                        selected = next(pos for pos in range(index, len(steps)) if steps[pos].id == decision['action_id'])
+                            if decision.get('reason') == 'step_window_changed':
+                                if truncated_refs:
+                                    return scheduling_stop('coverage_incomplete')
+                                deferred_row = next(row for row in plan[index:] if row['id'] == decision['deferred_action_id'])
+                                deferred_row['status'] = 'deferred_for_replan'
+                                failed = dict(step=deferred_row['id'], reason='step_window_changed',
+                                              requirement_ids=deferred_row['requirement_ids'], goal=deferred_row['goal'],
+                                              acceptance=deferred_row['acceptance'], depends_on=deferred_row['depends_on'],
+                                              planned_step_window=reported_requests(planned_window), step_request_limit=reported_requests(capacity),
+                                              control_state=self.control.control_state, validation={})
+                                deferred_row['scope_review'] = failed
+                                self.control.emit(dict(event='step_scope_review', **failed))
+                                break
+                            cost_budget_exhausted = any(row['limiting_resource'] in {'tools', 'seconds'}
+                                for row in decision['trace'] if row['action_id'] in ready)
+                            return scheduling_stop(decision.get('reason') or 'budget_insufficient',
+                                          cost_budget_exhausted=cost_budget_exhausted)
+                        selected_id = decision['action_id']
+                        next_slice = None
+                        request_share = decision['request_share']
+                        chosen = next(row for row in actions if row['id'] == selected_id)
+                        if 'protected_closeout' in chosen:
+                            self.control.protected_final_tools = chosen['protected_closeout']['tools']
+                    if selected_id != step.id:
+                        selected = next(pos for pos in range(index, len(steps)) if steps[pos].id == selected_id)
                         steps[index], steps[selected] = steps[selected], steps[index]
                         plan[index], plan[selected] = plan[selected], plan[index]
                         step = steps[index]
-                        request_share = decision['request_share']
-                    pending = list(dict.fromkeys(ref for s in steps[index:] for ref in s.requirement_ids))
+                    pending = pending_work()
                     self.control.check()
                     if remaining() <= 0:
-                        return result('stopped', 'request_allowance')
+                        return scheduling_stop('request_allowance')
+                    if step.id in slice_ceilings:
+                        step_ceiling = min(step_ceiling or phase_ceiling, slice_ceilings[step.id])
+                    step_allowance = step_capacity(request_ceiling=step_ceiling)
+                    if request_share is not None and self.control.limits.step_requests is not None:
+                        step_allowance = min(step_allowance, max(0, int(request_share)))
+                    if step_allowance < minimum_requests(step):
+                        return scheduling_stop('budget_insufficient')
+                    can_alternate = (self.control.policy.enabled and self.budget_planner is not None
+                        and getattr(self.behavior_validator, 'retain_unverified', False) is True)
+                    independent = any(item.id in ready and item.id != step.id
+                        and set(step.requirement_ids).isdisjoint(item.requirement_ids) for item in steps[index+1:])
+                    can_split_initial = (len(step.requirement_ids) > 1 and len(steps) < self.control.limits.plan_steps
+                        and self.control.replans < self.control.limits.replans and step_allowance >= 4)
                     self.control.plan_progress = dict(
                         revision=len(history), current_step=step.id,
-                        request_ceiling=started + allowance,
+                        can_isolate_truncation=bool((completed or constructed) and can_alternate and len(ready) > 1),
+                        can_refit_public_slice=may_slice(step) and step_allowance >= 2,
+                        can_alternate_initial_empty_step=bool(index == 0 and len(history) == 1 and can_alternate
+                            and not self.control.initial_empty_step_alternated and (independent or can_split_initial)),
+                        request_ceiling=reported_requests(min(phase_ceiling, step_ceiling) if step_ceiling is not None else phase_ceiling),
                         phase_requirement_ids=list(phase_refs),
                         whole_task=whole_task is True,
-                        remaining_steps=len(steps) - index,
+                        remaining_steps=sum('replacement_step_ids' not in row for row in plan) - len(done),
                         remaining_requirement_count=len(pending),
                         completed_step_ids=done,
                         unverified_step_ids=[item['id'] for item in plan[:index]
                                              if item['status'] == 'constructed_unverified'],
-                        remaining_steps_summary=[dict(id=item.id,
-                            requirement_ids=list(item.requirement_ids),
-                            depends_on=list(item.depends_on)) for item in steps[index:]])
-                    step_allowance = step_capacity()
-                    if request_share is not None:
-                        step_allowance = min(step_allowance, max(0, int(request_share)))
-                    if step_allowance < minimum_requests(step):
-                        return result('stopped', 'budget_insufficient')
+                        unresolved_steps=[row['id'] for row in plan[:index] if row['status'] not in {
+                            'completed', 'constructed_unverified'} and 'replacement_step_ids' not in row],
+                        remaining_steps_summary=[dict(id=row['id'], requirement_ids=list(row['requirement_ids']),
+                            depends_on=list(row['depends_on']), status=row['status']) for row in plan
+                            if row['status'] not in {'completed', 'constructed_unverified'}
+                            and 'replacement_step_ids' not in row])
+                    if deferred:
+                        self.control.plan_progress['plan_window_requirement_ids'] = window
+                    if ('plan_window_requirement_ids' in document or refit_step_ids
+                            or (awaiting_alternative and self.control.initial_empty_step_alternated)):
+                        self.control.plan_progress['compact_source_claims'] = True
+                    if awaiting_alternative:
+                        # The previous draft remains in its own transaction's history.
+                        # It cannot be offered as the current step's source on failure.
+                        candidate.clear()
+                        awaiting_alternative = False
                     plan[index]['status'] = 'running'
-                    capability = getattr(self.behavior_validator, 'verification_available', None)
-                    self.control.verification_available = (capability(step) is not False) if callable(capability) else True
-                    self.control.emit(dict(event='step_verification_capability', step=step.id,
-                                           available=self.control.verification_available))
-                    checkpoint = SourceTransaction(self.tools, self.control)
-                    step_started = self.control.requests
-                    self.control.set_task_state('CODE', reason='step_execution')
+                    plan[index]['initial_request_allowance'] = reported_requests(step_allowance)
+                    attempt_start = self.control.cost_snapshot()
+                    step_start = attempt_start
+                    step_work_started = self.control.work_requests
+                    checkpoint = None
+                    disposition = 'interrupted'
+                    phases = {}
                     outcome = StepOutcome({})
                     eligible = False
+                    initial_empty = False
+                    public_truncation = False
                     behavior_validation_active = False
                     verification_interruption = None
                     try:
+                        capability = getattr(self.behavior_validator, 'verification_available', None)
+                        self.control.verification_available = (capability(step) is not False) if callable(capability) else True
+                        self.control.emit(dict(event='step_verification_capability', step=step.id,
+                                               available=self.control.verification_available))
+                        checkpoint = SourceTransaction(self.tools, self.control)
+                        self.control.set_task_state('CODE', reason='step_execution')
                         repair_allowance = 0
                         for attempt in range(2):
+                            if attempt:
+                                repair_start = self.control.cost_snapshot()
+                                finish_attempt(step, vars(outcome), attempt_start, repair_start, phases, 'sent_for_repair', None)
+                                attempt_start = repair_start
+                                phases = {}
                             outcome = StepOutcome({})
+                            slice_observed = step.id not in slice_children
                             plan[index].pop('verification_status', None)
-                            attempt_started = self.control.requests
-                            outcome.execution = (self.executor(step, step_allowance) if attempt == 0 else
-                                                 self.repairer(step, repair_diagnostic, repair_allowance))
+                            attempt_work_started = self.control.work_requests
+                            with self.control.measure_phase(phases, 'repair' if attempt else 'implementation'):
+                                outcome.execution = (self.executor(step, step_allowance) if attempt == 0 else
+                                                     self.repairer(step, repair_diagnostic, repair_allowance))
                             self.control.check()
+                            terminal = outcome.execution.get('reason')
+                            if terminal in {'settled_step_truncation', 'settled_initial_empty_step', 'settled_public_step_truncation'}:
+                                outcome.execution['reason'] = 'truncated'
+                                initial_empty = terminal == 'settled_initial_empty_step'
+                                public_truncation = ((initial_empty or terminal == 'settled_public_step_truncation')
+                                                     and may_slice(step) and not checkpoint.implementation_changed())
+                                if (terminal == 'settled_public_step_truncation' and not public_truncation
+                                        and not self.control.plan_progress['can_isolate_truncation']):
+                                    self.control.stop('truncated')
+                                if initial_empty:
+                                    self.control.initial_empty_step_alternated = True
+                                awaiting_alternative = True
+                                raise ExecutionStopped('truncated')
                             closeout = (self.before_closeout is not None
                                 and outcome.execution.get('reason') in {'request_allowance', 'verification_due'}
-                                and self.control.requests > attempt_started)
+                                and self.control.work_requests > attempt_work_started)
                             eligible = outcome.execution.get('status') == 'complete' or closeout
+                            if outcome.execution.get('engineering_feedback'):
+                                eligible = closeout = False
                             if closeout:
                                 self.before_closeout()
                             if eligible:
                                 self.control.set_task_state('BUILD', reason='step_static_validation')
-                                outcome.static_validation = self.validator(step)
+                                with self.control.measure_phase(phases, 'static_validation'):
+                                    outcome.static_validation = self.validator(step)
                                 self.control.check()
                                 self.control.record_verification(stage='BUILD',
                                     passed=outcome.static_validation.get('passed') is True,
@@ -898,9 +1532,21 @@ class PlanExecutor:
                             if static_passed and self.behavior_validator:
                                 self.control.set_task_state('TEST', reason='step_behavior_validation')
                                 behavior_validation_active = True
-                                outcome.behavior_validation = self.behavior_validator(step, min(remaining(),
-                                    step_allowance - (self.control.requests - step_started)))
+                                with self.control.measure_phase(phases, 'behavior_validation'):
+                                    outcome.behavior_validation = self.behavior_validator(step, min(remaining(),
+                                        step_allowance - (self.control.work_requests - step_work_started)))
                                 self.control.check()
+                                if step.id in slice_children:
+                                    validation = outcome.behavior_validation
+                                    observation = validation.get('selected_scenario') or {}
+                                    slice_observed = (observation.get('status') in {'passed', 'observed'}
+                                        and observation.get('scenario_id') == slice_children[step.id][1]
+                                        and observation.get('requirement_id') in step.requirement_ids
+                                        and observation.get('source_sha256') == self.control.current_source)
+                                    if (not slice_observed and not validation.get('review_observation')
+                                            and validation.get('reason') in {None, 'requirement_constraints_unresolved'}):
+                                        outcome.behavior_validation = dict(validation, passed=False, failure_kind='verification',
+                                            reason=observation.get('reason') or 'slice_observation_unavailable')
                                 verification_status = behavior_verification_status(outcome.behavior_validation)
                                 outcome.behavior_validation = dict(outcome.behavior_validation,
                                     verification_status=verification_status, passed=verification_status == 'PASS',
@@ -912,7 +1558,7 @@ class PlanExecutor:
                                     verification_status=verification_status,
                                     reason=outcome.behavior_validation.get('reason'),
                                     failure_kind=outcome.behavior_validation.get('failure_kind'),
-                                    requests=self.control.requests, source_recoveries=self.control.recovery_count,
+                                    requests=self.control.requests, source_recoveries=self.control.source_recovery_count,
                                     replans=self.control.replans))
                                 if (outcome.behavior_validation.get('passed') is True
                                         or outcome.behavior_validation.get('failure_kind') == 'behavior'):
@@ -923,54 +1569,122 @@ class PlanExecutor:
                                         failure_kind=outcome.behavior_validation.get('failure_kind'),
                                         requirement_ids=outcome.behavior_validation.get('requirement_ids', step.requirement_ids),
                                         failed_ids=outcome.behavior_validation.get('failed_requirement_ids'))
-                            plan[index].setdefault('attempts', []).append(vars(outcome).copy())
                             checked = outcome.validation
                             repairable = (eligible and (
                                 outcome.static_validation is not None and outcome.static_validation.get('passed') is False
                                 or outcome.behavior_validation is not None
-                                and outcome.behavior_validation.get('verification_status') == 'FAIL'))
-                            if (attempt or self.repairer is None or not repairable
+                                and (outcome.behavior_validation.get('verification_status') == 'FAIL'
+                                     or outcome.behavior_validation.get('review_observation') is True)))
+                            if (attempt or self.repairer is None or self.repair_request_limit == 0 or not repairable
                                     or self.control.control_state not in {'RUNNING', 'WARNING'}):
                                 break
-                            # One defect-directed correction inside this transaction and its
-                            # original physical-request envelope. No new retry/replan budget.
+                            if self.can_fund_repair is not None and not self.can_fund_repair():
+                                self.control.emit(dict(event='step_repair_unavailable', step=step.id,
+                                                       reason='request_not_admissible'))
+                                break
+                            # One defect-directed correction inside this transaction.
+                            # Adaptive shares may renew after observable source progress;
+                            # every physical request still spends the phase/global ledgers.
+                            # Legacy keeps the original step envelope.
                             reserve = (self.behavior_validator.request_reserve(step)
                                        if self.behavior_validator is not None else 0)
-                            available = min(remaining(), step_allowance - (self.control.requests - step_started),
-                                            self.control.limits.requests - self.control.requests)
+                            spent = self.control.work_requests - step_work_started
+                            runway = min(remaining(), self.control.remaining_physical_requests(),
+                                slice_ceilings.get(step.id, phase_ceiling) - self.control.work_requests)
+                            if step_ceiling is not None:
+                                runway = min(runway, step_ceiling - self.control.work_requests)
+                            repair_window = request_horizon(self.repair_request_limit)
+                            if self.adaptive_progress:
+                                repair_window = min(repair_window, request_horizon(self.control.policy.recovery_requests))
+                            observed_defect = (outcome.static_validation and outcome.static_validation.get('passed') is False
+                                or checked.get('verification_status') == 'FAIL')
+                            if self.adaptive_progress and observed_defect:
+                                other_minima = [minimum_requests(item) for item in steps[index + 1:]
+                                                if item.id in ready]
+                                tools_left = self.control.limits.tools - self.control.tools
+                                if self.tools_remaining is not None:
+                                    tools_left = min(tools_left, self.tools_remaining())
+                                deadline = self.control.deadline
+                                if self.phase_deadline is not None:
+                                    deadline = min(deadline, self.phase_deadline())
+                                # Without an explicit correction limit a bounded initial
+                                # share can be renewed once at its own size. An unbounded
+                                # existing share already permits any funded correction.
+                                quantum = step_allowance if repair_window == math.inf else repair_window
+                                renewal = renewal_policy.renew(current_share=reported_requests(step_allowance),
+                                    spent=spent, remaining=dict(requests=reported_requests(max(0, runway)),
+                                        tools=tools_left-self.control.protected_final_tools,
+                                        seconds=deadline-self.control.clock()),
+                                    request_quantum=reported_requests(quantum + reserve), minimum_requests=1 + reserve,
+                                    protected_requests=min(other_minima, default=0),
+                                    source_progress=construction_digest(self.control.source(self.tools.project_dir))
+                                                    != construction_digest(checkpoint.before))
+                                step_allowance = request_horizon(renewal['request_share'])
+                                plan[index].setdefault('request_renewals', []).append(renewal)
+                                self.control.emit(dict(event='step_request_renewal', step=step.id,
+                                    observed_defect=checked.get('failure_kind') or 'static_validation', **renewal))
+                                if renewal['reason'] == 'hard_resource_exhausted':
+                                    break
+                            plan[index]['request_allowance'] = reported_requests(step_allowance)
+                            available = min(runway, step_allowance - spent)
                             repair_allowance = self.control.soft_request_allowance(
-                                min(self.control.policy.recovery_requests, max(0, available - reserve)), stage='CODE')
+                                min(repair_window, max(0, available - reserve)), stage='CODE')
                             if repair_allowance <= 0:
                                 break
                             repair_diagnostic = dict(requirement_ids=list(step.requirement_ids),
                                 static_validation=outcome.static_validation,
                                 behavior_validation=outcome.behavior_validation)
                             self.control.emit(dict(event='step_repair_started', step=step.id,
-                                request_allowance=repair_allowance, requests_used=self.control.requests - step_started,
-                                original_step_allowance=step_allowance, source_sha256=self.control.current_source))
+                                request_allowance=reported_requests(repair_allowance), requests_used=self.control.requests - step_start[0],
+                                work_requests_used=self.control.work_requests - step_work_started,
+                                original_step_allowance=plan[index]['initial_request_allowance'],
+                                current_step_allowance=reported_requests(step_allowance), source_sha256=self.control.current_source))
                             self.control.set_task_state('CODE', reason='observed_step_defect')
                         checked = outcome.validation
-                        retain = (getattr(self.behavior_validator, 'retain_unverified', False) is True
-                                  and eligible and static_passed
+                        retain_unverified = getattr(self.behavior_validator, 'retain_unverified', False) is True
+                        retain = (retain_unverified and eligible and static_passed and slice_observed
+                                  and (step.id not in slice_children or checked.get('reason') == 'requirement_constraints_unresolved')
                                   and self.behavior_validator.can_retain(checked))
                         if not eligible or not static_passed or not (checked.get('passed') or retain):
                             original_stop = next((checked.get(key) for key in sorted(('reason', 'author_status'),
                                 key=lambda key: checked.get(key) in PHASE_BUDGET_STOPS)
                                 if checked.get(key) in BUDGET_STOP_REASONS | SOURCE_SAFETY_STOPS
-                                | {'usage_unknown', 'request_usage_unknown', 'budget_exhausted', 'total_token_budget'}
+                                | {'usage_unknown', 'usage_unknown_or_out_of_bounds', 'request_usage_unknown',
+                                   'budget_exhausted', 'total_token_budget'}
                                 if checked.get(key) not in PHASE_BUDGET_STOPS
                                 or checked.get('verification_status') in {None, 'DEFERRED'}), None)
                             phase_reason = original_stop if original_stop in PHASE_BUDGET_STOPS else None
-                            reason = (original_stop or 'step_behavior_unverified' if outcome.behavior_validation is not None
+                            reason = (original_stop or checked.get('reason') or 'step_behavior_unverified' if outcome.behavior_validation is not None
                                       else outcome.execution.get('reason') or 'static_validation_failed')
                             failed = dict(step=step.id, requirement_ids=list(step.requirement_ids),
                                           reason=reason,
                                           detail=str(outcome.execution.get('detail') or '')[:1000], validation=checked)
+                            static = outcome.static_validation or {}
+                            observation = static.get('selected_scenario')
                             if checked.get('failure_kind') in {'verification', 'phase_stop'} or phase_reason:
                                 failed.update(quarantine(checkpoint))
+                            elif (closeout and reason == 'request_allowance' and original_stop is None
+                                  and outcome.execution.get('status') == 'stopped'
+                                  and retain_unverified and self.quarantine_source is not None
+                                  and (remaining() < 2 or self.control.replans >= self.control.limits.replans)
+                                  and static.get('passed') is False and static.get('source_claims_only') is True
+                                  and (observation is None or isinstance(observation, dict)
+                                       and observation.get('status') == 'passed')):
+                                # Retain the draft with this failure. Publish its identity only after
+                                # rollback and a stop without requests for another plan and edit.
+                                try:
+                                    failed.update(checkpoint.quarantine(self.quarantine_source,
+                                        stop_reason=SOURCE_CLAIMS_DRAFT, candidate_step=step.id,
+                                        candidate_revision=len(history), candidate_attempt=attempt + 1))
+                                except ExecutionStopped:
+                                    raise
+                                except (OSError, RuntimeError) as error:
+                                    failed['candidate_capture_error'] = type(error.__cause__ or error).__name__
                             plan[index]['failure'] = failed
                         else:
-                            committed_source = checkpoint.commit()
+                            with self.control.measure_phase(phases, 'commit'):
+                                committed_source = checkpoint.commit()
+                            disposition = 'committed' if checked.get('passed') else 'constructed_unverified'
                     except BaseException as error:
                         if isinstance(error, ExecutionStopped) and behavior_validation_active:
                             observed = outcome.behavior_validation
@@ -991,12 +1705,21 @@ class PlanExecutor:
                             if isinstance(observed, dict):
                                 verification_interruption['observed_validation'] = dict(observed)
                         failure = dict(step=step.id, reason=getattr(error, 'reason', type(error).__name__))
-                        if (isinstance(error, ExecutionStopped) and error.reason in MODEL_ONLY_STOPS | PHASE_BUDGET_STOPS
+                        plan[index]['failure'] = failure
+                        if isinstance(error, ExecutionStopped) and error.reason == 'truncated':
+                            candidate.clear()
+                            if checkpoint is not None and self.quarantine_source is not None:
+                                failure.update(quarantine(checkpoint, stop_reason=error.reason,
+                                    candidate_step=step.id, candidate_revision=len(history),
+                                    candidate_attempt=len(plan[index].get('attempts', [])) + 1))
+                        elif (isinstance(error, ExecutionStopped) and error.reason in MODEL_ONLY_STOPS | PHASE_BUDGET_STOPS
                                 and eligible and outcome.static_validation
                                 and outcome.static_validation.get('passed') and self.behavior_validator):
                             failure.update(quarantine(checkpoint))
-                        plan[index]['failure'] = failure
-                        if (isinstance(error, ExecutionStopped) and self.control.stopped is None
+                        if awaiting_alternative and isinstance(error, ExecutionStopped) and error.reason == 'truncated':
+                            if not public_truncation:
+                                truncated_refs.update(step.requirement_ids)
+                        elif (isinstance(error, ExecutionStopped) and self.control.stopped is None
                                 and self.control.control_state == 'CIRCUIT_OPEN'):
                             failed = dict(failure, requirement_ids=list(step.requirement_ids), validation=outcome.validation)
                         else:
@@ -1009,52 +1732,167 @@ class PlanExecutor:
                             reported_outcome['behavior_validation'] = verification_interruption
                             plan[index]['verification_status'] = verification_interruption['verification_status']
                         plan[index]['outcome'] = reported_outcome
-                        if not checkpoint.finished:
-                            try:
-                                warning_rollback = (self.control.control_state == 'WARNING'
-                                    and self.control.warning_reason in QUALITY_WARNINGS
-                                    and self.control.recovery_count < self.control.policy.recovery_attempts)
-                                if (self.control.stopped is None
-                                        and (self.control.control_state == 'CIRCUIT_OPEN' or warning_rollback)):
-                                    self.control.recover('source_rollback', checkpoint.rollback, source_changed=True)
-                                else:
-                                    checkpoint.rollback()
-                            except ExecutionStopped as rollback_error:
-                                plan[index].update(
-                                    status='rollback_failed' if rollback_error.reason == 'rollback_failed' else 'rollback_blocked',
-                                    rollback_reason=rollback_error.reason)
-                                raise
-                            plan[index]['status'] = 'rolled_back'
+                        try:
+                            if checkpoint is not None and not checkpoint.finished:
+                                try:
+                                    with self.control.measure_phase(phases, 'rollback'):
+                                        warning_rollback = (self.control.control_state == 'WARNING'
+                                            and self.control.warning_reason in QUALITY_WARNINGS
+                                            and self.control.control_recovery_available)
+                                        if (not awaiting_alternative and self.control.stopped is None
+                                                and (self.control.control_state == 'CIRCUIT_OPEN' or warning_rollback)):
+                                            self.control.recover('source_rollback', checkpoint.rollback, source_changed=True)
+                                        else:
+                                            checkpoint.rollback()
+                                except ExecutionStopped as rollback_error:
+                                    plan[index].update(
+                                        status='rollback_failed' if rollback_error.reason == 'rollback_failed' else 'rollback_blocked',
+                                        rollback_reason=rollback_error.reason)
+                                    raise
+                                plan[index]['status'] = 'rolled_back'
+                        finally:
+                            step_record = plan[index]
+                            if step_record['status'].startswith('rollback') or step_record['status'] == 'rolled_back':
+                                disposition = step_record['status']
+                            reason = step_record.get('rollback_reason') or step_record.get('failure', {}).get('reason')
+                            end = self.control.cost_snapshot()
+                            finish_attempt(step, reported_outcome, attempt_start, end, phases, disposition, reason)
+                            if self.budget_planner is not None:
+                                source = dict(observation_key=observation_key(step), attempts=len(step_record['attempts']),
+                                              disposition=disposition, profile=profiles[step.id],
+                                              requirement_ids=sorted(step.requirement_ids), scenario_id=chosen['scenario_id'])
+                                measured = self.control.cost_since(step_start, end)
+                                implementations = [a['cost']['phases']['implementation']['seconds']
+                                    for a in step_record['attempts'] if 'implementation' in a['cost']['phases']]
+                                if implementations:
+                                    measured['construction_seconds'] = sum(implementations)
+                                self.budget_planner.observe_cost(profiles[step.id], source, measured)
                     if self.budget_planner is not None:
                         behavior = outcome.behavior_validation
-                        self.budget_planner.observe(observation_key(step), requests=self.control.requests - step_started,
+                        self.budget_planner.observe(observation_key(step), requests=self.control.requests - step_start[0],
                             verified_gain=(float(len(step.requirement_ids)) if behavior and behavior.get('passed') else 0.)
                                 if behavior and (behavior.get('passed') or behavior.get('failure_kind') == 'behavior') else None,
                             passed=behavior.get('passed') is True
                                 if behavior and (behavior.get('passed') or behavior.get('failure_kind') == 'behavior') else None)
+                    if awaiting_alternative:
+                        self.control.emit(dict(event='plan_step_truncated', step=step.id, revision=len(history),
+                                               requirement_ids=list(step.requirement_ids),
+                                               restored_source_sha256=self.control.current_source))
+                        if public_truncation:
+                            capacity = step_capacity(request_ceiling=step_work_started + step_allowance)
+                            if insert_slice(step, index, capacity, 'zero_write_truncation'):
+                                awaiting_alternative = False
+                                continue
+                            truncated_refs.update(step.requirement_ids)
+                        if initial_empty and not independent:
+                            refit_ceiling = step_work_started + step_allowance
+                            requests_left = min(remaining(), refit_ceiling - self.control.work_requests,
+                                                self.control.remaining_physical_requests())
+                            tools_left = self.tools_remaining() if self.tools_remaining is not None else (
+                                self.control.limits.tools - self.control.tools)
+                            if (not can_split_initial or requests_left < 2
+                                    or tools_left <= self.control.protected_final_tools):
+                                self.control.stop('truncated')
+                            self.control.plan_progress = None
+                            self.control.set_task_state('PLAN', reason='initial_step_empty_truncation')
+                            self.control.replan()
+                            split_start = self.control.cost_snapshot()
+                            try:
+                                split = self._split_initial_step(step, steps[index+1:], requests_left=requests_left,
+                                                                 implementation_reserve=minimum_requests(step))
+                            finally:
+                                self.control.emit_cost(dict(event='planning_cost', run=budget_scope, revision=len(history),
+                                    purpose='initial_step_split', **self.control.cost_since(split_start)))
+                            if split is None:
+                                self.control.stop('truncated')
+                            child_ids, replacements = split
+                            refit_step_ids.update(child_ids)
+                            plan[index]['replacement_step_ids'] = list(child_ids)
+                            steps[index+1:] = replacements
+                            plan[index+1:] = [dict(id=item.id, goal=item.goal, requirement_ids=list(item.requirement_ids),
+                                depends_on=list(item.depends_on), acceptance=item.acceptance, status='pending')
+                                for item in replacements]
+                            truncated_refs.difference_update(step.requirement_ids)
+                            pending = pending_work()
+                            self.control.emit(dict(event='initial_step_split', step=step.id,
+                                replacement_step_ids=list(child_ids), request_ceiling=reported_requests(refit_ceiling)))
+                            if self.control.control_state != 'PROBATION':
+                                self.control.record_verification(stage='PLAN', passed=True,
+                                    source_sha256=source_digest(self.control.source(self.tools.project_dir)),
+                                    evidence_id=f'plan-{len(history)}-initial-step-split')
+                        index += 1
+                        continue
                     if failed is not None:
+                        if (outcome.execution.get('engineering_feedback')
+                                and failed['reason'] in {'request_allowance', 'model_incomplete'} and not isolatable(failed)):
+                            return result('stopped', failed['reason'], phase='implementation',
+                                          detail=outcome.execution['engineering_feedback'])
+                        pending = pending_work()
+                        if isolatable(failed):
+                            recorded = dict(failed, revision=len(history),
+                                            source_sha256=self.control.current_source)
+                            revision_failures.append(recorded)
+                            local_failures.append(recorded)
+                            self.control.emit(dict(event='plan_step_failure_isolated', **recorded))
+                            # The failed transaction was rolled back. Independent
+                            # validated rows can still make useful progress, while
+                            # its dependents remain unavailable in this revision.
+                            failed = None
+                            index += 1
+                            continue
                         break
+                    if candidate and candidate.get('candidate_base_sha256') != committed_source:
+                        # A quarantined branch was based on an older checkpoint.
+                        # Later independent commits must remain the delivery
+                        # base. Retain the old receipt in its failure/history, but
+                        # do not hand a stale branch to candidate closeout.
+                        self.control.emit(dict(event='candidate_reference_superseded',
+                            candidate_source_sha256=candidate.get('candidate_source_sha256'),
+                            candidate_base_sha256=candidate.get('candidate_base_sha256'),
+                            current_source_sha256=committed_source))
+                        candidate.clear()
                     verified = checked.get('passed') is True
                     destination = completed if verified else constructed
                     plan[index]['status'] = 'completed' if verified else 'constructed_unverified'
+                    refit_step_ids.discard(step.id)
+                    progress_source = construction_digest(checkpoint.committed_files)
                     destination.append(dict(id=step.id, revision=len(history), goal=step.goal,
                         requirement_ids=list(step.requirement_ids), source_sha256=committed_source,
+                        implementation_source_sha256=progress_source,
+                        source_changed=progress_source != construction_digest(checkpoint.before),
                         acceptance='step_verified' if verified else 'construction_only'))
+                    if step.id in slice_children:
+                        destination[-1]['slice_parent'], destination[-1]['scenario_id'] = slice_children[step.id]
                     if self.behavior_validator:
                         destination[-1]['behavior_validation'] = checked
                     if outcome.closed_by_controller:
                         destination[-1]['closed_by_controller'] = True
-                    pending = list(dict.fromkeys(ref for remaining_step in steps[index + 1:]
-                                                 for ref in remaining_step.requirement_ids))
+                    pending = pending_work()
+                    blocked_requirements.intersection_update(pending)
                     self.control.emit(dict(event='plan_step_completed' if verified else 'plan_step_constructed',
                                            **destination[-1]))
+                    if not verified and retain:
+                        self.control.observe_retained_scenario(step, checked, committed_source)
                     # Publishing accepted diagnostics is post-commit bookkeeping.
                     # A failure here stops execution, but cannot relabel verified,
                     # committed source as rolled back or omit its completed record.
                     if self.behavior_validator and verified:
                         self.behavior_validator.accept(step, checked)
+                    index += 1
+                isolated_revision = failed is None and bool(revision_failures)
+                if isolated_revision:
+                    failed = dict(revision_failures[0], local_failures=list(revision_failures),
+                                  blocked_requirement_ids=sorted(blocked_requirements.intersection(pending)))
                 if failed is None:
-                    pending = []
+                    if truncated_refs:
+                        self.control.stop('truncated')
+                    if deferred:
+                        # Every row in this window reached its normal disposition; pending_work()
+                        # already carried the untouched requirements forward.
+                        feedback = None
+                        continue
+                    if pending:
+                        return result('stopped', 'dependency_blocked')
                     return result('complete')
                 if failed['reason'] in PHASE_BUDGET_STOPS:
                     # The phase has yielded resources to final verification.
@@ -1062,18 +1900,35 @@ class PlanExecutor:
                     # local stop into a global replan-limit stop.
                     return result('stopped', failed['reason'])
                 if failed['reason'] in ALLOCATION_STOP_REASONS | SOURCE_SAFETY_STOPS | CONTROLLER_STATE_STOPS | {
-                        'usage_unknown', 'request_usage_unknown', 'budget_exhausted', 'total_token_budget'}:
+                        'usage_unknown', 'usage_unknown_or_out_of_bounds', 'request_usage_unknown',
+                        'budget_exhausted', 'total_token_budget'}:
                     self.control.stop(failed['reason'])
                 if failed['validation'].get('failure_kind') == 'verification':
                     self.control.stop('verification_blocked')
+                if truncated_refs or refit_step_ids:
+                    self.control.stop('truncated')
                 # Replan only unmet work; a failed dependent step can share IDs
                 # with an earlier step, so use the remaining steps rather than
                 # subtracting IDs covered by earlier successful edits.
-                pending = list(dict.fromkeys(ref for s in steps[index:] for ref in s.requirement_ids))
-                self.control.replan()
+                pending = pending_work()
+                self.control.check_planning_resources()
+                if remaining() < 2:
+                    return result('stopped', 'request_allowance')
+                # Only a revision whose remaining failures were all isolated may
+                # yield. Preserve any hard stop and the shared replan allowance.
+                if (isolated_revision and self.has_independent_followup
+                        and self.has_independent_followup(tuple(pending))):
+                    return result('stopped', failed['reason'], phase='implementation',
+                                  yielded_to_independent_window=True)
+                progress = [item for item in completed + constructed
+                            if self.adaptive_progress and item['revision'] == len(history) and item.get('source_changed')]
+                self.control.replan(committed_progress=progress)
                 feedback = failed
         except ExecutionStopped as error:
             return result('stopped', error.reason)
         finally:
             self.control.plan_progress = None
+            self.control.retained_requirement_ids = self.control.prior_retained_requirement_ids
             self.control.verification_available = True
+            self.control.protected_final_tools = previous_final_tools
+            self.control.external_tool_capacity = None

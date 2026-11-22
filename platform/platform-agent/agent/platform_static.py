@@ -222,7 +222,7 @@ def missing_coverage(project, ir, work_ids=None):
     return missing
 
 
-def validate_source(project, tests=None, *, include_test_evidence=True):
+def validate_source(project, tests=None, *, include_test_evidence=True, edited_from=None):
     files=snapshot_project(Path(project))
     errors=contract_errors(project)
     manifests=[]
@@ -239,16 +239,28 @@ def validate_source(project, tests=None, *, include_test_evidence=True):
         errors.append(dict(path='deploy.sh',error='A custom layout must provide a root deploy.sh honoring HOST and PORT'))
     if 'deploy.sh' in files and 'package.json' in manifests:
         package=json.loads(files['package.json'])
-        dependencies={**package.get('dependencies',{}),**package.get('devDependencies',{})}
+        dependency_groups = [package.get(key, {}) for key in ('dependencies', 'devDependencies')]
+        if any(not isinstance(group, dict) for group in dependency_groups):
+            errors.append(dict(path='package.json', error='dependencies and devDependencies must be objects'))
         deploy=files['deploy.sh'].decode('utf-8',errors='replace')
-        if dependencies and not _has_deploy_install_before_build(deploy):
+        if any(dependency_groups) and not _has_deploy_install_before_build(deploy):
             errors.append(dict(path='deploy.sh',error='Fresh platform has no node_modules. Add a direct dependency install command (including build-time devDependencies) in deploy.sh before build/start; comments and uncalled package scripts do not install dependencies.'))
     sources=[]
     for name,data in sorted(files.items()):
         if name.startswith('requirements/') or Path(name).suffix not in {'.js','.jsx','.ts','.tsx','.cjs','.mjs','.mts','.cts'}: continue
         if name.endswith('.d.ts'): continue
-        try: sources.append(dict(path=name,content=data.decode('utf-8')))
-        except UnicodeError: errors.append(dict(path=name,error='source is not UTF-8'))
+        try:
+            row = dict(path=name, content=data.decode('utf-8'))
+        except UnicodeError:
+            errors.append(dict(path=name,error='source is not UTF-8'))
+            continue
+        if edited_from is not None and name in edited_from and edited_from[name] != data:
+            previous = edited_from[name]
+            try:
+                row['previous'] = None if previous is None else previous.decode('utf-8')
+            except UnicodeError:
+                pass  # The prior bytes cannot establish a new source observation.
+        sources.append(row)
     if not sources: errors.append(dict(path='.',error='No JavaScript or TypeScript application source'))
     node=shutil.which('node')
     if not node: raise RuntimeError('Trusted static parser requires Node from the official runner')
@@ -258,12 +270,14 @@ def validate_source(project, tests=None, *, include_test_evidence=True):
         text=True,encoding='utf-8',errors='replace',timeout=30,check=False,env=clean,cwd=str(checker.parent))
     if result.returncode: raise RuntimeError('Trusted parser failed: '+result.stderr[-1200:])
     parsed=json.loads(result.stdout)
+    observations = []
     for row in parsed['files']:
         if not row['valid']:
             errors.append(dict(path=row['path'],error=row['error']))
             continue
         for name in row.get('unbound',[]):
             errors.append(dict(path=row['path'],error='Undeclared runtime identifier '+name))
+        observations.extend(dict(path=row['path'], **item) for item in row.get('observations', []))
         for reference in row['imports']:
             if not reference.startswith('.'): continue
             base=posixpath.normpath(posixpath.join(posixpath.dirname(row['path']),reference.split('?',1)[0]))
@@ -278,5 +292,8 @@ def validate_source(project, tests=None, *, include_test_evidence=True):
     errors.extend(ir_coverage_errors(project))
     if has_scaffold_seed_loader(project):
         errors.extend(validate_seeds(Path(project)))
-    return dict(passed=not errors,kind='STATIC_SYNTAX_IMPORTS_AND_PAGE_SCOPE',
-                functional_status='UNRUN',formal_status='UNVERIFIED',files=len(sources),errors=errors[:30])
+    report = dict(passed=not errors,kind='STATIC_SYNTAX_IMPORTS_AND_PAGE_SCOPE',
+                  functional_status='UNRUN',formal_status='UNVERIFIED',files=len(sources),errors=errors[:30])
+    if observations:
+        report['observations'] = observations[:8]
+    return report

@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from .platform_seed import parse_seed_prerequisites, public_scenario_id, scenario_given_sources
 from .task_bundle import declared_requirement_dependencies
 from .visual_contracts import parse_visual_tail
 
@@ -29,6 +30,7 @@ SCHEMA_DESCRIPTION = (
     "target: {role: string or null, name: string or null}, value: string or null, text: string}, "
     "then: list of {kind: visible|hidden|text|count|persisted|url|unknown, target, value, text}. "
     "Visual properties are deterministic public contracts only; this callback cannot infer visual expectations. "
+    "Public seed_prerequisites are parsed from source requirements only; this callback cannot add or replace them. "
     "entities: list of {id, name, fields: list of strings, lifecycle: SEED|RUNTIME|null, seed_records: list of objects}. "
     "pages: list of {name, path: string or null, reference: string or null}. "
     "Auth is not accepted from this callback."
@@ -149,10 +151,18 @@ def build_task_ir(requirements_path, project_dir, *, model_fill=None) -> dict:
     pages = _pages(tree)
     public_pages = [dict(page) for page in pages]
     work_items, scenarios, blobs = _walk(tree, entities)
+    from .reference_visual import inventory as pixel_inventory
+    source_path = Path(requirements_path)
+    reference_root = source_path if source_path.is_dir() else source_path.parent
+    pixel_assets = pixel_inventory(reference_root, work_items)
     elements = _collect_elements(blobs)
     auth = _auth(elements)
     fragments = _fragments(work_items, scenarios, elements)
     work_ids = {item["id"] for item in work_items}
+    parents = {item['parent'] for item in work_items}
+    # Preserve public ancestry when callers project just work_items.
+    parent_contexts = {item['id']: {k: item[k] for k in ('id', 'parent', 'page', 'references') if k in item}
+                       for item in work_items if item['id'] in parents}
     rejected.extend(_apply_model_fill(
         model_fill,
         fragments,
@@ -166,9 +176,12 @@ def build_task_ir(requirements_path, project_dir, *, model_fill=None) -> dict:
         "version": 1,
         "task": _task(tree),
         "work_items": work_items,
+        "parent_contexts": parent_contexts,
         "entities": entities,
         "pages": pages,
         "public_pages": public_pages,
+        "reference_availability": _reference_availability(requirements_path, public_pages, work_items),
+        **({'pixel_reference_assets': pixel_assets} if pixel_assets else {}),
         "ui_elements": elements,
         "scenarios": scenarios,
         "auth": auth,
@@ -491,6 +504,40 @@ def _page(item: Any) -> dict[str, Any] | None:
     return {"name": name, "path": path, "reference": reference}
 
 
+def _reference_availability(requirements_path, pages, work_items):
+    """Inspect only explicitly named public local assets under the input directory."""
+    from urllib.parse import unquote, urlsplit
+    from .task_bundle import is_test_path
+    source = Path(requirements_path).resolve()
+    base = source if source.is_dir() else source.parent
+    references = [page['reference'] for page in pages if page.get('reference')]
+    references.extend(row['reference'] for item in work_items for row in item.get('references', []))
+    result = {}
+    for reference in dict.fromkeys(references):
+        try:
+            url = urlsplit(reference)
+            relative = Path(unquote(url.path).replace(chr(92), '/'))
+            if url.scheme or url.netloc or relative.is_absolute() or '..' in relative.parts:
+                result[reference] = 'outside_local_input'
+                continue
+            if is_test_path(relative.as_posix()):
+                result[reference] = 'excluded_by_input_policy'
+                continue
+            path = (base / relative).resolve()
+            if not path.is_relative_to(base):
+                result[reference] = 'outside_local_input'
+            elif is_test_path(path.relative_to(base).as_posix()):
+                result[reference] = 'excluded_by_input_policy'
+            elif not path.is_file():
+                result[reference] = 'missing'
+            else:
+                with path.open('rb') as asset:
+                    result[reference] = 'readable' if asset.read(1) else 'empty'
+        except (OSError, ValueError, RuntimeError):
+            result[reference] = 'unreadable'
+    return result
+
+
 def _looks_like_reference(value: str) -> bool:
     text = value.strip()
     return "/" in text or "\\" in text or Path(text).suffix.casefold() in _IMAGE_SUFFIXES
@@ -506,8 +553,9 @@ def _description_images(value):
     """Preserve structured public references without inventing a pixel oracle."""
     if not isinstance(value, list):
         return None
-    if any(not isinstance(row, dict) or not {'reference'} <= set(row) <= {'id', 'reference', 'page'}
-           or any(not isinstance(v, str) or not v.strip() for v in row.values()) for row in value):
+    if any(not isinstance(row, dict) or not {'reference'} <= set(row) <= {'id', 'reference', 'page', 'capture'}
+           or any(not isinstance(v, str) or not v.strip() for key, v in row.items() if key != 'capture')
+           or ('capture' in row and not isinstance(row['capture'], dict)) for row in value):
         return None
     return [dict(row) for row in value]
 
@@ -518,7 +566,7 @@ def _walk(tree: dict[str, Any], entities: list[dict[str, Any]]):
     blobs: list[tuple[str, str, str | None]] = []
     seen: set[str] = set()
 
-    def visit(node: Any, parent: str | None) -> None:
+    def visit(node: Any, parent: str | None, source_path: str) -> None:
         if not isinstance(node, dict):
             return
         if parent is None and not _looks_like_work_item(node):
@@ -555,7 +603,8 @@ def _walk(tree: dict[str, Any], entities: list[dict[str, Any]]):
         raw_scenarios = node.get("scenarios")
         if isinstance(raw_scenarios, list):
             for index, raw in enumerate(raw_scenarios):
-                scenario, texts = _scenario(item_id, raw, index, entities)
+                scenario, texts = _scenario(item_id, raw, index, entities,
+                                           source_path=f"{source_path}.scenarios[{index}]")
                 if scenario is None:
                     continue
                 scenarios.append(scenario)
@@ -575,10 +624,10 @@ def _walk(tree: dict[str, Any], entities: list[dict[str, Any]]):
                                   when=[], then=described_visuals, source="parsed"))
         children = node.get("children")
         if isinstance(children, list):
-            for child in children:
-                visit(child, item_id)
+            for index, child in enumerate(children):
+                visit(child, item_id, f"{source_path}.children[{index}]")
 
-    visit(tree, None)
+    visit(tree, None, "requirements")
     return work_items, scenarios, blobs
 
 
@@ -599,25 +648,22 @@ def _work_id(node: dict[str, Any], seen: set[str], index: int) -> str:
     return item_id
 
 
-def _scenario(work_id: str, raw: Any, index: int, entities: list[dict[str, Any]]):
+def _scenario(work_id: str, raw: Any, index: int, entities: list[dict[str, Any]], *, source_path: str = ""):
+    scenario_id = public_scenario_id(work_id, raw, index)
     if isinstance(raw, str) and raw.strip():
         text = raw.strip()
         return {
-            "id": f"{work_id}::scenario-{index + 1}",
+            "id": scenario_id,
             "work_item": work_id,
             "name": text[:80],
-            "given": _given([text], entities),
+            "given": _given([text], entities, sources=scenario_given_sources(
+                raw, requirement_id=work_id, scenario_id=scenario_id, source_path=source_path)),
             "when": [],
             "then": [],
             "source": "parsed",
         }, [text]
     if not isinstance(raw, dict):
         return None, []
-    sid = raw.get("id")
-    if isinstance(sid, (str, int)) and not isinstance(sid, bool) and str(sid).strip():
-        scenario_id = str(sid).strip()
-    else:
-        scenario_id = f"{work_id}::scenario-{index + 1}"
     name = raw.get("name") if isinstance(raw.get("name"), str) and raw.get("name").strip() else None
     if name is None and isinstance(raw.get("title"), str) and raw.get("title").strip():
         name = raw.get("title").strip()
@@ -626,8 +672,13 @@ def _scenario(work_id: str, raw: Any, index: int, entities: list[dict[str, Any]]
     thens: list[dict[str, Any]] = []
     steps = raw.get("steps")
     ordered = [] if isinstance(steps, (list, str)) else None
+    public_steps = []
     if isinstance(steps, list):
-        for step in steps:
+        for position, step in enumerate(steps):
+            if isinstance(step, dict) and ('id' in step or 'references' in step):
+                metadata = {key: step[key] for key in ('id', 'references') if key in step}
+                public_steps.append(dict(index=position, **metadata))
+                step = {key: value for key, value in step.items() if key not in metadata}
             _consume_step(step, givens, whens, thens, ordered)
     elif isinstance(steps, str) and steps.strip():
         _consume_step(steps, givens, whens, thens, ordered)
@@ -651,10 +702,12 @@ def _scenario(work_id: str, raw: Any, index: int, entities: list[dict[str, Any]]
         "id": scenario_id,
         "work_item": work_id,
         "name": name or scenario_id,
-        "given": _given(givens, entities),
+        "given": _given(givens, entities, sources=scenario_given_sources(
+            raw, requirement_id=work_id, scenario_id=scenario_id, source_path=source_path)),
         "when": whens,
         "then": thens,
         **({"ordered_steps": ordered} if ordered is not None else {}),
+        **({"public_steps": public_steps} if public_steps else {}),
         "source": "parsed",
     }, texts
 
@@ -673,11 +726,11 @@ def _consume_step(step: Any, givens: list[str], whens: list[dict[str, Any]], the
     if not isinstance(step,dict) or not step:unsupported();return
     phases={k:str(k).lower() for k in step if str(k).lower() in {'given','when','then'}}
     if phases:
-        if len(phases)!=len(step):unsupported()
         for key,kind in phases.items():
             value=step[key]
             if not isinstance(value,str) or not value.strip():unsupported()
             else:_put(kind,value.strip(),givens,whens,thens,ordered)
+        if len(phases)!=len(step):unsupported()
         return
     if set(step)-{'keyword','type','content','text'}:unsupported();return
     keyword=step.get('keyword',step.get('type'));content=step.get('content',step.get('text'))
@@ -752,7 +805,7 @@ def _strict_statement(text: str, phase: str) -> dict | None:
             except (ValueError, TypeError, OverflowError):
                 return None
             return dict(kind="visual", target=parsed_target(visual_match), value=visual_value, text=text)
-        for kind,predicate in [('visible',r'is visible|可见'),('hidden',r'is hidden')]:
+        for kind,predicate in [('visible',r'is visible|可见'),('hidden',r'is hidden'),('tabbable',r'is reachable by Tab')]:
             match = re.fullmatch(annotation+r'\s+(?:'+predicate+r')'+end,text,re.I)
             if match and parsed_target(match) is not None:
                 return dict(kind=kind,target=parsed_target(match),value=None,text=text)
@@ -859,12 +912,28 @@ def _then_value(text: str, kind: str) -> str | None:
     return None
 
 
-def _given(parts: list[str], entities: list[dict[str, Any]]) -> dict[str, Any]:
+def _given(parts: list[str], entities: list[dict[str, Any]], *, sources=None) -> dict[str, Any]:
     text = "\n".join(parts)
-    session = _session(text)
-    refs = _mentioned_records(text, entities)
+    if sources is None:
+        parsed = [parse_seed_prerequisites(part, source_path=f"Given[{index}]")
+                  for index, part in enumerate(parts)]
+    else:
+        parsed = [source["seed_prerequisites"] for source in sources]
+    entries = [entry for item in parsed for entry in item["entries"]]
+    issues = [issue for item in parsed for issue in item["issues"]]
+    active = [item for item in parsed if item["status"] != "absent"]
+    status = "absent"
+    if active:
+        status = ("parsed" if all(item["status"] == "parsed" for item in active) else
+                  "partial" if any(entry["parse_status"] == "parsed" for entry in entries) else "unparsed")
+    remaining = "\n".join(item["remaining_text"] for item in parsed).strip()
+    # A declared account or prose inside a seed object is not a signed-in session.
+    session = _session(remaining)
+    refs = _mentioned_records(remaining, entities)
     account = _account_ref(refs, entities) if session == "authenticated" else None
-    return {"session": session, "account": account, "data": refs, "text": text}
+    return {"session": session, "account": account, "data": refs, "text": text,
+            "seed_prerequisites": {"status": status, "entries": entries,
+                                   "remaining_text": remaining, "issues": issues}}
 
 
 def _session(text: str) -> str:
@@ -934,8 +1003,6 @@ def _contains_token(text: str, token: str) -> bool:
 
 
 def _account_ref(refs: list[str], entities: list[dict[str, Any]]) -> str | None:
-    if len(refs) == 1:
-        return refs[0]
     if not refs:
         return None
     by_id = {str(entity["id"]): entity for entity in entities}
@@ -1205,6 +1272,8 @@ def _valid_scenario(item: Any, work_ids: set[str], used_ids: set[str]):
     given = item.get("given")
     if not isinstance(given, dict):
         return None, "invalid given"
+    if "seed_prerequisites" in given:
+        return None, "inferred seed_prerequisites are not public declarations"
     session = given.get("session")
     if session not in _SESSIONS:
         return None, "invalid session"

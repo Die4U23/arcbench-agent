@@ -13,6 +13,7 @@ from .group_setup import bind_group_setup
 from .group_exclusions import bind_group_exclusions
 from .group_source_coverage import grouped_source_program
 from .public_scenario_metadata import normalize_public_scenario, bind_public_step_references
+from .collection_layout import layout_plan_evidence
 
 MAX_STEPS = 24
 
@@ -959,17 +960,26 @@ def plan_coverage(plan,ir):
             if not isinstance(step,dict) or not isinstance(step.get('op'),str):
                 raise ValueError(f'invalid_plan_structure: cases[{index}] has an invalid step')
     contracts=requirement_contracts(ir);missing=[];unresolved=[];covered=[];matched={}
+    layout_evidence = []
 
     for ref,contract in contracts.items():
         unresolved.extend(dict(requirement_id=ref,reason=x) for x in contract['unresolved'])
         cases=[c for c in plan.get('cases',[]) if c.get('requirement_id')==ref]
         before=len(missing);matched[ref]=[]
+        layouts = getattr(contract, 'layouts', {})
+        layout_cases = {}
+        for sid, review in layouts.items():
+            evidence = layout_plan_evidence(cases,review)
+            layout_evidence.append(dict(requirement_id=ref, **evidence))
+            layout_cases[sid] = [cases[i] for i in evidence['matched_case_indices']]
+            if evidence['status'] != 'planned':
+                missing.append(dict(requirement_id=ref, scenario_id=sid, reason='reviewed_layout_obligations_missing_or_wrong_state'))
         if 'controller_cases' in contract:
             # JSON also distinguishes Boolean values from integer count assertions.
             expected = contract['controller_cases']
             if json.dumps(cases, sort_keys=True) != json.dumps(expected, sort_keys=True):
                 missing.append(dict(requirement_id=ref, reason='source_bound_controller_cases_incomplete'))
-            elif not contract['unresolved']:
+            elif not contract['unresolved'] and len(missing) == before:
                 matched[ref] = [dict(scenario_id=contract['scenarios'][0]['id'], case=c['name']) for c in cases]
                 covered.append(ref)
             continue
@@ -994,6 +1004,8 @@ def plan_coverage(plan,ir):
         for scenario in contract['scenarios']:
             found=False
             for case in cases:
+                if scenario['id'] in layout_cases and case not in layout_cases[scenario['id']]:
+                    continue
                 if scenario.get('exact_navigation'):
                     if navigation_guards(scenario, case['steps']) is None:
                         continue
@@ -1015,7 +1027,8 @@ def plan_coverage(plan,ir):
                     for c in cases for step in c.get('steps',[])):
                 missing.append(dict(requirement_id=ref,target=element,reason='public_role_not_verified'))
         if not contract['unresolved'] and len(missing)==before: covered.append(ref)
-    return dict(complete=bool(contracts) and not missing and not unresolved,covered=covered,missing=missing,unresolved=unresolved,matched=matched,contract_hashes={r:c['sha256'] for r,c in contracts.items()})
+    return dict(complete=bool(contracts) and not missing and not unresolved,covered=covered,missing=missing,unresolved=unresolved,matched=matched,contract_hashes={r:c['sha256'] for r,c in contracts.items()},
+                **({'reviewed_layouts':layout_evidence} if layout_evidence else {}))
 
 def require_coverage(plan,ir):
     result=plan_coverage(plan,ir)

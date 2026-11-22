@@ -166,6 +166,8 @@ def compile_group_probe(ir, ref, scenario_id, entry_path='/', *, suffix='arc'):
     from .behavior_contracts import public_route
     from .behavior_checks import _emit_plan
     from .group_setup import bind_group_setup
+    from .group_fixture_titles import fixture_bindings, title_evidence, title_sources
+    from .shared_public_checks import _lineage
     item = _single(row for row in ir['work_items'] if row['id'] == ref)
     scenario = _single(row for row in ir['scenarios'] if row['id'] == scenario_id and row['work_item'] == ref)
     scenario = normalize_public_scenario(ir, scenario)
@@ -174,5 +176,10 @@ def compile_group_probe(ir, ref, scenario_id, entry_path='/', *, suffix='arc'):
                              identity_field=probe['identity_field'])
     steps = [dict(op='goto', value=public_route(entry_path)), *setup, *probe['steps']]
     case = dict(name=scenario_id, requirement_id=ref, steps=steps)
+    if title_sources(_lineage(ir, item), probe):
+        case['fixture_titles'] = fixture_bindings(ir, probe, probe['members'])
+        probe['title_witnesses'] = title_evidence(case, probe, setup_start=1, setup_count=len(setup),
+                                                  readback_count=len(probe['steps']),
+                                                  controller_binding=case['fixture_titles'])
     probe.update(steps=steps, source=_emit_plan(dict(cases=[case]), {ref:dict(scenarios=[])}))
     return probe

@@ -4,6 +4,7 @@ The model returns data only. This compiler owns all executable code, and the
 frozen suite lives outside the editable application throughout repair rounds.
 """
 from __future__ import annotations
+from copy import deepcopy
 
 from graphlib import CycleError, TopologicalSorter
 import hashlib
@@ -11,6 +12,7 @@ import json
 from pathlib import Path
 from .behavior_contracts import requirement_contracts, plan_coverage, require_coverage, public_route, project_requirements
 from .behavior_contracts import MAX_STEPS, navigation_guards, scenario_guards
+from .collection_layout import LAYOUT_OP, LAYOUT_OBSERVER_JS, LAYOUT_SNAPSHOT_JS
 from .group_fixture_titles import locator_name, runtime_setup, value_expr
 from .visual_contracts import normalize_visual, VISUAL_RUNTIME_JS
 from .reference_visual import PIXEL_OP, PIXEL_RUNTIME_JS, asset_name, normalize_value as normalize_pixel, suite_assets
@@ -78,6 +80,8 @@ Step schemas (no extra fields):
 {"op":"visual","target":TARGET,"value":{"properties":{"background-color":"rgb(255, 0, 0)","width":"80px","height":"80px","border-radius":"50%","shape":"circle"},"viewport":{"width":1280,"height":720}}}.
 A reference_pixels step is allowed only as an exact copy of the supplied public obligation.
 Preserve its state marker, capture protocol and published asset binding as written.
+When reviewed_layouts is supplied, copy each collection_layout assertion after its declared action
+in the same case, before another interaction. All reviewed states and their named records are required.
 For visual, copy the supplied public contract target and full value. Never infer a color, size,
 shape, tolerance or viewport from current source, screenshots without an oracle, or vague prose.
 Properties allowed: background-color, color, border-color, width, height, border-radius, shape.
@@ -222,6 +226,9 @@ def requirement_bindings(ir):
     contracts = requirement_contracts(ir)
     for ref, binding in bindings.items():
         binding['contract'] = contracts.get(ref)
+        if layouts := getattr(binding['contract'], 'layouts', {}):
+            binding['reviewed_layouts'] = {sid: deepcopy({k:row[k] for k in ('sources','pairs','member_sources','state_sources')})
+                                           for sid, row in layouts.items()}
         # A scoped child can cite a public visual obligation inherited from its ancestor.
         for scenario in (binding['contract'] or {}).get('scenarios', []):
             if scenario.get('inherited_from'):
@@ -238,7 +245,7 @@ def _matching_navigation(contract, steps):
 def _validate_case_steps(steps, contract, case_index):
     """Validate the bounded browser operations without granting requirement coverage."""
     actions = {'click', 'fill', 'select', 'check', 'uncheck', 'press'}
-    assertions = {'visible', 'text', 'contains_text', 'value', 'count', 'url', 'visual', 'checked', 'tabbable', 'record_fields', PIXEL_OP}
+    assertions = {'visible', 'text', 'contains_text', 'value', 'count', 'url', 'visual', 'checked', 'tabbable', 'record_fields', PIXEL_OP, LAYOUT_OP}
     if not isinstance(steps, list) or not 2 <= len(steps) <= MAX_STEPS:
         raise ValueError('step count outside bounds')
     exact_navigation = _matching_navigation(contract, steps)
@@ -253,7 +260,7 @@ def _validate_case_steps(steps, contract, case_index):
         keys = {'op'}
         if op in actions | (assertions - {'url'}) | {'hidden'}:
             keys.add('target')
-        if op in {'goto', 'url', 'fill', 'select', 'press', 'text', 'contains_text', 'value', 'count', 'visual', 'checked', 'record_fields', PIXEL_OP}:
+        if op in {'goto', 'url', 'fill', 'select', 'press', 'text', 'contains_text', 'value', 'count', 'visual', 'checked', 'record_fields', PIXEL_OP, LAYOUT_OP}:
             keys.add('value')
         if op not in actions | assertions | {'goto', 'reload', 'hidden'}:
             raise ValueError('unsupported browser operation')
@@ -299,6 +306,9 @@ def _validate_case_steps(steps, contract, case_index):
             if visual_viewport is not None and visual_viewport != canonical['viewport']:
                 raise ValueError('visual_viewport_conflict_within_case')
             visual_viewport = canonical['viewport']
+        elif op == LAYOUT_OP:
+            if not any(step == check for review in getattr(contract, 'layouts', {}).values() for _, check in review['pairs']):
+                raise ValueError('collection_layout_requires_reviewed_public_assertion')
         elif op == 'checked':
             if type(step['value']) is not bool or step['target'].get('role') != 'checkbox' or not step['target'].get('name'):
                 raise ValueError('checked requires a named checkbox and a Boolean value')
@@ -414,8 +424,9 @@ def _emit_plan(plan, contracts):
                   "await page.addInitScript(install,{op,binding});await page.evaluate(install,{op,binding});",
                   "await perform();if(observed===undefined){await expect(page).toHaveURL(expected);}else{expect(observed).toBe(expected);}",
                   "}"]
-    if any(step['op'] in {'rendered_lines', 'record_fields'} for case in plan['cases'] for step in case['steps']):
-        lines.append(r"""function readRecordFields(root, args) {
+    field_ops = {step['op'] for case in plan['cases'] for step in case['steps']} & {'rendered_lines', 'record_fields', LAYOUT_OP}
+    if field_ops:
+        read_fields = r"""function readRecordFields(root, args) {
   const grouped = !Array.isArray(args);
   const [title, ...body] = grouped ? args.fields : args;
   const auxiliary = 'button,input,select,textarea,nav,dialog,[role=button],[role=menu],[role=menuitem],[role=tooltip],[role=region],[role=status]';
@@ -515,7 +526,11 @@ def _emit_plan(plan, contracts):
     return lines.length === 1 && lines[0] === title;
   });
   return titleControls.length === 1 && matches(read(root, titleControls[0]));
-}""")
+}"""
+        if field_ops - {LAYOUT_OP}:
+            lines.append(read_fields)
+        if LAYOUT_OP in field_ops:
+            lines.extend(['function readLayoutSnapshot(root,args){\n' + read_fields + LAYOUT_SNAPSHOT_JS, LAYOUT_OBSERVER_JS])
     if any(step['op'] == 'visual' for case in plan['cases'] for step in case['steps']):
         lines += ['test.use({deviceScaleFactor:1,isMobile:false,hasTouch:false,colorScheme:"light"});', VISUAL_RUNTIME_JS]
     if any(step['op'] == PIXEL_OP for case in plan['cases'] for step in case['steps']):
@@ -634,6 +649,8 @@ def _emit_plan(plan, contracts):
                 expected = js(str(step['value']).lower())
                 line = (f'await expect({loc}).toBeVisible();\n'
                         f'await expect({loc}).toHaveAttribute("aria-pressed", {expected});')
+            elif op == LAYOUT_OP:
+                line = f'await assertCollectionLayout({loc},{arg});'
             elif op == 'visual':
                 line = f'await assertPublicVisual(page,{loc},{js(normalize_visual(step["value"]))});'
             elif op == PIXEL_OP:

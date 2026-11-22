@@ -61,7 +61,8 @@ def grouped_source_program(ir, item, scenario, lineage, group, setup, exclusions
     for index, probe in enumerate(exclusions):
         add_case(f'{sid}-exclusion-{index + 1}', probe['steps'], probe['sources'][0]['text'], probe['members'])
     title_witnesses = (title_evidence(cases[0], group, setup_start=len(entry), setup_count=len(setup),
-                                      readback_count=len(group['steps'])) if title_clauses else [])
+                                      readback_count=len(group['steps']), controller_binding=cases[0]['fixture_titles'])
+                       if title_clauses else [])
 
     names = [c['name'] for c in cases]
     sources, issues = [], list(shared.get('issues', []))

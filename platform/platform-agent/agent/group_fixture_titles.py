@@ -89,7 +89,39 @@ def fixture_bindings(ir, group, members):
     return dict(field=field, role=group['record_role'], examples=examples, actions=actions)
 
 
-def title_evidence(case, group, *, setup_start, setup_count, readback_count):
+def _fixture_input(step, binding):
+    target = step.get('target', {})
+    value = step.get('value')
+    if (isinstance(binding, dict) and isinstance(binding.get('field'), str)
+            and isinstance(binding.get('examples'), dict) and isinstance(target, dict)
+            and step.get('op') == 'fill' and target.get('role') == 'textbox'
+            and isinstance(target.get('name'), str) and target['name'].casefold() == binding['field'].casefold()
+            and isinstance(value, str) and value in binding['examples']):
+        return value
+    return None
+
+
+def fixture_title_derivation(case, fill_step, *, controller_binding=None, example=None):
+    """Describe the compiler's actual input provider. A data literal has no runtime identity."""
+    steps = case.get('steps', [])
+    base = dict(planned=False, execution='not_run', fill_step=fill_step)
+    if type(fill_step) != int or not 0 <= fill_step < len(steps):
+        return dict(base, reason='title_step_unbound')
+    step = steps[fill_step]
+    binding = case.get('fixture_titles')
+    if binding is not None and (controller_binding is None or binding != controller_binding):
+        return dict(base, reason='untrusted_fixture_title_binding')
+    reference = _fixture_input(step, binding)
+    if reference is None:
+        return dict(base, reason='literal_title_has_no_runtime_identity' if step.get('op')=='fill' else 'not_a_title_fill')
+    source = binding['examples'][reference]
+    if not isinstance(source, str) or not source or (example is not None and source != example):
+        return dict(base, reason='source_example_unbound')
+    return dict(base, planned=True, example=source, reference=reference, provider='fixture_titles',
+                dimensions={'run':'ARC_FIXTURE_RUN_ID','worker':'testInfo.workerIndex','case':'testInfo.testId'})
+
+
+def title_evidence(case, group, *, setup_start, setup_count, readback_count, controller_binding=None):
     """A named public input commits, then the exact same title is returned in its owned record."""
     steps = case['steps']
     boundary = setup_start + setup_count
@@ -104,6 +136,10 @@ def title_evidence(case, group, *, setup_start, setup_count, readback_count):
         if len(fills) != 1:
             return []
         filled, target = fills[0]
+        derivation = fixture_title_derivation(case, filled, controller_binding=controller_binding,
+                                             example=member['base'])
+        if not derivation['planned']:
+            return []
         modal = target.get('within')
         if not modal or modal.get('role') != 'dialog':
             return []
@@ -118,7 +154,8 @@ def title_evidence(case, group, *, setup_start, setup_count, readback_count):
         if len(observed) != 1:
             return []
         witnesses.append(dict(example=member['base'], reference=title, fill_step=filled, commit_step=closed-1,
-                              saved_record_step=observed[0], case=case['name'], requirement_id=case['requirement_id']))
+                              saved_record_step=observed[0], derivation=derivation,
+                              case=case['name'], requirement_id=case['requirement_id']))
     return witnesses
 
 
@@ -144,7 +181,8 @@ def review_title_sources(program, record, review):
                 found = next((i for i in range(start,len(steps)) if steps[i] == expected), None)
             witness = dict(original, saved_record_step=found)
             if not steps:
-                witness.update(fill_step=None, commit_step=None)
+                witness.update(fill_step=None, commit_step=None,
+                               derivation=dict(planned=False, execution='not_run', reason='title_case_unbound'))
             witnesses.append(witness)
         return dict(source, program=name, witnesses=witnesses,
                     planned=all(w['saved_record_step'] is not None for w in witnesses))
@@ -167,9 +205,24 @@ def runtime_setup(binding):
         'if (!fixtureRun || !testInfo || !Number.isInteger(testInfo.workerIndex) || testInfo.workerIndex < 0 '
         '|| typeof testInfo.testId !== "string" || !testInfo.testId) '
         'throw new Error("Missing process.env.ARC_FIXTURE_RUN_ID or Playwright worker/case identity");',
-        'const fixtureSuffix = fixtureRun + "-w" + testInfo.workerIndex + "-" + testInfo.testId;',
-        'const fixtureTitles = Object.fromEntries(Object.entries(' + json.dumps(binding['examples']) +
-        ').map(([reference,base]) => [reference,base+" "+fixtureSuffix+"-"+reference.slice(base.length+1)]));'
+        'const fixtureIdentity = {run:fixtureRun,worker:testInfo.workerIndex,case:testInfo.testId};',
+        'const fixtureTitle = (base,reference,identity) => base+" "+identity.run+"-w"+identity.worker+"-"'
+        '+identity.case+"-"+reference.slice(base.length+1);',
+        'const fixtureTitles = Object.create(null); const derivations = [];',
+        'for (const [reference,base] of Object.entries(' + json.dumps(binding['examples']) + ')) {',
+        '  const resolve = identity => fixtureTitle(base,reference,identity);',
+        '  const title = resolve(fixtureIdentity);',
+        '  fixtureTitles[reference] = title;',
+        '  const checks = {example:title.startsWith(base+" "), deterministic:resolve(fixtureIdentity)===title};',
+        '  for (const [key,changed] of Object.entries({run:fixtureIdentity.run+"-other",'
+        'worker:fixtureIdentity.worker+1,case:fixtureIdentity.case+"-other"}))',
+        '    checks[key] = resolve({...fixtureIdentity,[key]:changed}) !== title;',
+        '  derivations.push({reference,base,title,checks});',
+        '}',
+        'await testInfo.attach("arc-fixture-title-derivation",{body:JSON.stringify({identity:fixtureIdentity,derivations}),'
+        'contentType:"application/json"});',
+        'if (derivations.some(row=>Object.values(row.checks).includes(false))) '
+        'throw new Error("Runtime fixture title derivation failed: "+JSON.stringify(derivations));',
     ]
 
 
@@ -198,9 +251,9 @@ def value_expr(step, binding):
     value = step.get('value')
     if binding:
         target = step.get('target', {})
-        if (step['op'] == 'fill' and target.get('role') == 'textbox'
-                and target['name'].casefold() == binding['field'].casefold() and value in binding['examples']):
-            return _name_expr(value, value)
+        reference = _fixture_input(step, binding)
+        if reference is not None:
+            return _name_expr(reference, reference)
         title = target.get('name')
         if target.get('role') == binding['role'] and title in binding['examples']:
             if step['op'] == 'record_fields' and value and value[0] == title:

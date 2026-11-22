@@ -245,11 +245,13 @@ adaptive 控制策略下，纯粹获取新信息不累加实现质量停滞窗�
 
 现有 `RunControl` 同时记录任务阶段与执行许可；它仍是唯一执行控制器，原 token 账本、步骤事务和运行器继续使用。任务阶段为 `PLAN/CODE/BUILD/TEST/COMPLETE/STOPPED`，执行许可为 `RUNNING/WARNING/CIRCUIT_OPEN/RECOVERING/PROBATION/TERMINATED`。阶段标签描述正在做的工作，不代替证据：静态语法检查不等同于构建通过，需求覆盖声明不等同于行为测试通过。只有完整、同源的最终自测与导出检查通过才允许完成。
 
-`ARC_CONTROL_POLICY=adaptive`（默认）启用警告与有界恢复；`legacy` 保留旧的停滞终止策略。读取新内容或修改源码只算活动，只有实际验证才能提供质量证据并解除对应警告。正常 BUILD/TEST 等待不当作 CODE 停滞。恢复复用当前步骤检查点的源码回滚，也允许下述一次传输方式切换；不是自动重启任意服务，也不会另起任务循环。`ARC_RECOVERY_ATTEMPTS` 默认 1，可设为 0，范围 0–10；两类恢复共享此额度，还受原有全局重规划、请求、工具与截止时间限制。硬额度耗尽、未知用量、时间截止、源码并发变化和回滚失败不因恢复重置。
+`ARC_CONTROL_POLICY=adaptive`（默认）在步骤失败时可使用检查点恢复源码。每次恢复都计入累计次数，默认没有全场次数上限。部署方可用 `ARC_RECOVERY_ATTEMPTS` 指定 0 至 10 的上限，设为 0 会禁用此类恢复。仅在当前源码上实际执行的运行检查能提供质量证据。恢复沿用全场 token、请求、工具、重规划和时间预算。已消耗额度及未知用量预留继续计入账本。`legacy` 沿用原有的停滞终止策略。
+
+同一故障反复回到同一实现检查点时，控制器按公开需求范围和场景累计未解决的恢复次数。达到 `ARC_REPEAT_LIMIT`（默认 3）后，再次出现同一故障会记录 `source_recovery_storm`，回滚当前失败事务并终止。不同需求在同一运行内各自独立恢复，累计恢复总数继续写入日志。
 
 ### 流格式故障的有界调整
 
-质量警告下的失败步骤回滚可消耗一次既有恢复额度进入 `PROBATION`，继续累计质量债务和全局协议修复计数。`WARNING` 和 `PROBATION` 默认沿用外层请求额度，以及全局 token、工具和截止时间约束。显式配置 `ControlPolicy.probation_requests` 后，CODE、BUILD 和 TEST 的物理请求及作者请求共用该上限，PLAN 请求计入全局账本。只有当前源码的真实行为检查通过才能解除质量警告。观察期内行为检查失败会终止恢复。覆盖更新提示使用工具 schema 的实际条数上限，要求当前步骤的增量声明分开调用，不能拼接 JSON 或放宽参数校验。
+步骤因质量警告回滚后进入 `PROBATION`。质量观察和全局协议纠正次数持续累计。`WARNING` 与 `PROBATION` 默认沿用外层资源限制。显式设置 `ControlPolicy.probation_requests` 时，CODE、BUILD 与 TEST 的物理请求及作者请求共享该窗口，PLAN 请求计入全局账本。当前源码上的真实行为检查决定质量警告能否解除。覆盖声明继续遵循工具 schema 和单次调用的条数限制。
 
 平台适配器仅在 assembled stream 出现 `JSONDecodeError` 或缺少完整终帧/用量时，尝试一次改用完整 JSON 响应。同一模型、注入端点、原始阶段/计划/全局请求上限和截止时间保持不变。下一请求说明前次响应已丢弃，继续依据已确认的工具结果工作；部分工具调用不执行。第二次失败不再切换或循环重发。已有源码恢复试运行不能借此重置窗口，质量告警也不因传输恢复解除。
 
@@ -271,7 +273,7 @@ adaptive 控制策略下，纯粹获取新信息不累加实现质量停滞窗�
 ## Independent API recovery and explicit live pause (v23 candidate)
 
 API recovery and source rollback now own different counters. `ARC_RECOVERY_ATTEMPTS`
-continues to limit source/quality recovery (default 1). By default the API
+can explicitly limit source/quality recovery (default: no run-wide count cap). By default the API
 has no per-call or cumulative retry count ceiling. Operators can set
 `ARC_API_RETRIES_PER_CALL` (0..4) or `ARC_API_RETRIES_TOTAL` (0..20).
 `ARC_API_WAIT_SECONDS` limits cumulative waiting (default 60, range 0..300).
@@ -609,6 +611,8 @@ An ordered public scenario can explicitly open a same-origin path between other 
 
 When an entire When or Then is unrecognized, the same action or assertion compiler can process its top-level semicolon- or sentence-separated clauses. Each bound clause and each remaining blocker retains its source slice and order. Quoted names, literal values and structured locator arguments keep their punctuation. The entire scenario must still fit one browser case. An unresolved clause prevents full admission even when a neighboring clause supplies a valid operation.
 
+Parsed scenarios can also carry `clause_analysis`. Its character offsets index the original When or Then text. For an unresolved action, `action_cue` preserves the authored verb and the range of its unparsed operand. An explicit role and name can identify a candidate control. Planning and implementation previews include the source and share the existing scenario context budget. The browser contract compiler checks the original text independently. It expands an explicitly ordered sequence when every constituent operation binds, and keeps conditions with the clauses they can govern.
+
 The list-and-return phrasing is one supported input form. A cited public list contract can supply the allowed roles for a named seed entry. When it requires keyboard access, Chromium checks that a single enabled entry is visible in the region and reaches it with Tab. Other seed fields remain explicit blockers until their values can be verified. A legacy scene envelope can supply its original step only when its text, order and structured contents agree with the archived IR.
 
 A public PNG can serve as an exact viewport checkpoint when its image declaration includes a capture protocol. The declaration supplies the public page path, the ID of a visible state in the journey, the viewport dimensions, device scale factor 1, light color scheme, en-US locale and UTC time zone. Set `capture.mode` to `exact_rgba` and `capture.scope` to `viewport`. The frozen suite includes the original PNG. Chromium compares the rendered pixels at the bound state and records the number of differences. Image-only requirements and unresolved page-level visual references remain blocked. A description image cited by a functional scenario stays available in the contract. Written appearance constraints still require their own checks, including when the image has no capture declaration.
@@ -640,7 +644,7 @@ scenario directory exceeds the inline budget, the planner can page through a
 read-only catalog to find a scenario's source file and character range.
 Reading the catalog and reading the original requirement yield separate receipts.
 
-A response with `finish_reason="length"` settles its reported usage. Each eligible interrupted request can use one replacement within its current stage and the remaining task resources. A later planning decision or implementation turn can use a replacement even if an earlier one already did. `ARC_RECOVERY_ATTEMPTS=0` explicitly disables replacements. Positive values still bound circuit recovery and source rollback. The ledger counts settled replacements separately and charges each dispatched request. The controller discards every tool frame in a truncated batch and asks for a fresh, smaller edit based on confirmed source and observations. Complete edits go through ordinary batch validation. Durations of dispatched requests, including truncations and transport failures, enter the request-time estimate.
+A response with `finish_reason="length"` settles its reported usage. Each eligible interrupted request can use one replacement within its current stage and the remaining task resources. A later planning decision or implementation turn can use a replacement even if an earlier one already did. `ARC_RECOVERY_ATTEMPTS=0` explicitly disables replacements. Explicit positive values bound circuit recovery and source rollback across the run. The ledger counts settled replacements separately and charges each dispatched request. The controller discards every tool frame in a truncated batch and asks for a fresh, smaller edit based on confirmed source and observations. Complete edits go through ordinary batch validation. Durations of dispatched requests, including truncations and transport failures, enter the request-time estimate.
 
 When both responses on the first implementation step are empty, adaptive candidate delivery can roll back and select a dependency-ready step with disjoint requirements. If all remaining steps depend on the first, the executor can use one replan to partition its requirements into smaller steps. The original step's remaining request allowance funds the split and its children. When it can also fund implementation and required verification, the planner may batch its reads in one request and submit the partition in the next. The last planning request has no tools. A complete first response proceeds directly to implementation. Successors wait for the replacement prerequisites. This choice is available once per run. Exhaustion, an unusable split or another unrecoverable truncation leads to closeout.
 

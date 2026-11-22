@@ -74,6 +74,7 @@ RUNTIME_REPAIR_MIN_FRACTION = 0.25
 SEED_SUMMARY_CHARS = 6000
 PUBLIC_FLOW_REFERENCE = re.compile(r'(?<!\\)\\ref\[(requirement|scenario)\]\(([^()\r\n]+)\)')
 PUBLIC_FLOW_EVIDENCE_BYTES = 12_000
+SCENARIO_CONTEXT_BYTES = 16_000
 PUBLIC_SCENARIO_CATALOG = 'evidence/scenarios.jsonl'
 RUNTIME_SKIP_STATUSES = {'test_harness_failed'}
 WALKTHROUGH_INSTRUCTIONS = (
@@ -1467,12 +1468,6 @@ class PlatformGenerationModel(CompetitionModel):
             refs = step.requirement_ids
             if isinstance(repair_feedback, dict) and repair_feedback.get('repair_requirement_ids'):
                 refs = repair_feedback['repair_requirement_ids']
-            prerequisites = scenario_prerequisites(task_ir, refs, details=True)
-            if prerequisites['total']:
-                context['scenario_prerequisites'] = prerequisites
-                instructions += (' Use the public scenario prerequisites and their source references to distinguish '
-                    'startup data from the UI interactions that establish state. Inspect the authored Given when '
-                    'its details are omitted or unresolved.')
         if slice_probe:
             context['public_step_slice'] = {key: slice_probe[key] for key in ('requirement_id', 'scenario_id')}
             instructions += (' This child owns the selected public action and its observable outcome. '
@@ -1513,6 +1508,13 @@ class PlatformGenerationModel(CompetitionModel):
                     'under their stated prerequisites. Preserve each authored name, including compound names. '
                     'Read omitted cases from the public source as needed. Directly dependent steps describe '
                     'later uses of this implementation; implement only the current step.')
+        if task_ir:
+            _add_scenario_context(context, task_ir, refs, details=True,
+                                  selected=(slice_probe or {}).get('scenario_id') or context.get('selected_scenario_id'))
+            if 'scenario_prerequisites' in context:
+                instructions += (' Use the public scenario prerequisites and their source references to distinguish '
+                    'startup data from the UI interactions that establish state. Inspect the authored Given when '
+                    'its details are omitted or unresolved.')
         message = dict(role='user', content=json.dumps(context, ensure_ascii=False))
         return instructions, message
 
@@ -2796,16 +2798,54 @@ def planning_evidence(project, requirement_ids, *, public_index=None, repository
                 ownership.setdefault(path, set()).add(row['ref'])
     shared = [dict(path=path, requirement_ids=sorted(refs)) for path, refs in sorted(ownership.items()) if len(refs) > 1]
     result = dict(requirement_dependencies=dependencies,
-                  scenario_prerequisites=scenario_prerequisites(public_ir, requirement_ids),
                   parent_groups={ref: items.get(ref, {}).get('parent') for ref in requirement_ids},
                   shared_source_claims=shared[:64], omitted_shared_sources=max(0, len(shared)-64),
                   source_claims_are_verified=False)
     if public_index is not None and public_index.nodes:
         result['public_scenarios'] = public_flow_evidence(public_index, requirement_ids, repository=repository)
+    _add_scenario_context(result, public_ir, requirement_ids)
     return result
 
 
-def scenario_prerequisites(ir, requirement_ids, *, details=False, max_chars=16_000):
+def _add_scenario_context(context, ir, requirement_ids, *, details=False, selected=None):
+    """Share the existing scenario budget between Given evidence and source-linked clauses."""
+    wanted = set(requirement_ids)
+    preview = dict(items=[], omitted=0, source_ref='docs/task-ir.json#/scenarios',
+                   interpretation='Use action_cue to identify the requested action. Its operand is source text '
+                                  'to interpret. Resolve target mentions against the actual UI. Parts without an '
+                                  'operation remain unresolved. Offsets are character positions in source_text.')
+    rows = []
+    for i, scenario in enumerate(ir.get('scenarios', ())):
+        if (not isinstance(scenario, dict) or scenario.get('work_item') not in wanted
+                or scenario.get('source', 'parsed') != 'parsed'
+                or (selected is not None and scenario.get('id') != selected)):
+            continue
+        analyses = scenario.get('clause_analysis')
+        if not isinstance(analyses, list):
+            continue
+        for analysis in analyses:
+            if not isinstance(analysis, dict) or not isinstance(analysis.get('parts'), list):
+                continue
+            phase, index = analysis.get('phase'), analysis.get('index')
+            steps = scenario.get(phase) if phase in ('when', 'then') else None
+            if not (isinstance(steps, list) and type(index) is int and 0 <= index < len(steps)
+                    and isinstance(steps[index], dict) and isinstance(steps[index].get('text'), str)):
+                continue
+            rows.append(dict(scenario_id=scenario['id'], requirement_id=scenario['work_item'],
+                             source_ref=f'docs/task-ir.json#/scenarios/{i}/{phase}/{index}/text',
+                             source_text=steps[index]['text'], parts=analysis['parts']))
+    preview_budget = 2_400 if rows else 0
+    given = scenario_prerequisites(ir, requirement_ids, details=details,
+                                   max_chars=SCENARIO_CONTEXT_BYTES - preview_budget)
+    if not details or given['total']:
+        context['scenario_prerequisites'] = given
+    if rows:
+        room = preview_budget - _public_json_bytes(preview) - 64
+        preview['items'], preview['omitted'] = _bounded_public_rows(rows, room)
+        context['scenario_clause_analysis'] = preview
+
+
+def scenario_prerequisites(ir, requirement_ids, *, details=False, max_chars=SCENARIO_CONTEXT_BYTES):
     """Bound the prompt preview while keeping the complete, source-scoped Given retrievable."""
     if type(max_chars) is not int or max_chars < 512:
         raise ValueError('prerequisite prompt budget must be at least 512 characters')
@@ -3341,7 +3381,7 @@ class StepBehaviorGate:
 
     @ir.setter
     def ir(self, value):
-        if value is not getattr(self, '_source_ir', None):
+        if value is not getattr(self, '_source_ir', object()):
             self._flow_options = {}
             self._flow_proposals = {}
             self._slice_programs = {}

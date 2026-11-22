@@ -105,7 +105,7 @@ class CandidateCloseout:
 class ControlPolicy:
     """Soft windows never replace the immutable execution limits."""
     enabled: bool = False
-    recovery_attempts: int = 1
+    recovery_attempts: int | None = None
     warning_turns: int = 3
     quality_window: int = 6
     recovery_requests: int | None = None
@@ -115,7 +115,7 @@ class ControlPolicy:
         if type(self.enabled) is not bool:
             raise ValueError('control policy enabled must be boolean')
         for name, value in vars(self).items():
-            if name in {'recovery_requests', 'probation_requests'} and value is None:
+            if name in {'recovery_attempts', 'recovery_requests', 'probation_requests'} and value is None:
                 continue
             if name != 'enabled' and (type(value) is not int or value < (0 if name == 'recovery_attempts' else 1)):
                 raise ValueError('invalid control policy: ' + name)
@@ -273,6 +273,8 @@ class RunControl:
         self.current_source = None
         self.verifications = {}
         self.recovery_count = self.source_recovery_count = 0
+        self._source_fault_attempts = Counter()
+        self._passed_evidence_ids, self._passed_observations = set(), set()
         self.truncation_replacements = 0
         self.quality_idle = self.warning_age = 0
         self.fault_reason = self.warning_reason = None
@@ -292,7 +294,8 @@ class RunControl:
 
     @property
     def control_recovery_available(self):
-        return self.recovery_count - self.truncation_replacements < self.policy.recovery_attempts
+        limit = self.policy.recovery_attempts
+        return limit is None or self.recovery_count - self.truncation_replacements < limit
 
     def _transition(self, state, reason):
         previous = self.control_state
@@ -375,7 +378,8 @@ class RunControl:
             if self.warning_age >= self.policy.warning_turns:
                 self._trip(self.warning_reason)
 
-    def recover(self, action, callback, *, source_changed=False):
+    def recover(self, action, callback, *, source_changed=False, requirement_ids=(), scenario_id=None,
+                checkpoint_source=None):
         """Apply a bounded checkpoint rollback or an accounted transport change."""
         warning_rollback = (self.control_state == 'WARNING' and self.warning_reason in QUALITY_WARNINGS
                             and action == 'source_rollback' and source_changed)
@@ -391,9 +395,28 @@ class RunControl:
         if warning_rollback:
             self.fault_reason = self.warning_reason
             self._transition('CIRCUIT_OPEN', self.fault_reason)
-        self.recovery_count += 1
         if action == 'source_rollback':
+            scope = tuple(sorted(set(requirement_ids)))
+            # Charge the checkpoint a failed transaction returns to, not a
+            # transient edit that might pass a check and then be rolled back.
+            fault = (self.fault_reason, scope, scenario_id, checkpoint_source or self.current_source)
+            attempts = self._source_fault_attempts[fault]
+            if attempts >= self.limits.repeated_actions:
+                # The failed transaction must still restore its checkpoint. No
+                # new recovery or probation window is admitted for that cleanup.
+                self.emit_cost(dict(event='source_recovery_storm', fault=self.fault_reason, requirement_ids=list(scope),
+                    scenario_id=scenario_id, checkpoint_source=fault[-1], unresolved_recoveries=attempts,
+                    repeat_limit=self.limits.repeated_actions))
+                try:
+                    callback()
+                except ExecutionStopped:
+                    raise
+                except Exception:
+                    self.stop('rollback_failed')
+                self.stop('recovery_exhausted')
+            self._source_fault_attempts[fault] += 1
             self.source_recovery_count += 1
+        self.recovery_count += 1
         self._transition('RECOVERING', action)
         try:
             result = callback()
@@ -412,7 +435,8 @@ class RunControl:
         return result
 
     def record_verification(self, *, stage, passed, source_sha256, evidence_id,
-                            failure_kind=None, requirement_ids=(), failed_ids=None, evidence_kind='runtime', closeout=None):
+                            failure_kind=None, requirement_ids=(), failed_ids=None, evidence_kind='runtime',
+                            closeout=None, implementation_source=None):
         if (stage not in {'PLAN', 'BUILD', 'TEST'} or type(passed) is not bool
                 or not source_sha256 or not evidence_id or evidence_kind not in {'runtime', 'static'}):
             raise ValueError('verification requires a stage, boolean result, source and evidence identity')
@@ -437,8 +461,14 @@ class RunControl:
             return receipt
         refs = set(requirement_ids)
         runtime_test = stage == 'TEST' and evidence_kind == 'runtime'
-        gain = runtime_test and passed and (bool(refs - self._passed_requirements)
-                                             or bool(self._failed_requirements & refs))
+        fresh_pass = False
+        if passed and stage in {'BUILD', 'TEST'} and evidence_kind == 'runtime':
+            observations = {(stage, implementation_source or source_sha256, ref) for ref in refs or {None}}
+            fresh_pass = evidence_id not in self._passed_evidence_ids and bool(observations - self._passed_observations)
+            self._passed_evidence_ids.add(evidence_id)
+            self._passed_observations.update(observations)
+        gain = runtime_test and fresh_pass and (bool(refs - self._passed_requirements)
+                                                or bool(self._failed_requirements & refs))
         if stage == 'PLAN' and passed:
             self.idle = 0
         if runtime_test:
@@ -452,7 +482,7 @@ class RunControl:
             self.quality_idle = 0
         elif runtime_test:
             self.quality_idle += 1
-        recovery_verified = passed and stage in {'BUILD', 'TEST'} and evidence_kind == 'runtime'
+        recovery_verified = fresh_pass
         if self.fault_reason in QUALITY_WARNINGS:
             recovery_verified = recovery_verified and stage == 'TEST' and bool(refs)
         if self.control_state == 'PROBATION' and recovery_verified:
@@ -460,7 +490,7 @@ class RunControl:
             self.warning_reason = self.fault_reason = None
             self._transition('RUNNING', 'recovery_verified')
         elif self.control_state == 'WARNING' and (
-                (self.warning_reason == 'activity_stagnation' and passed and evidence_kind == 'runtime')
+                (self.warning_reason == 'activity_stagnation' and fresh_pass)
                 or (self.warning_reason in QUALITY_WARNINGS and gain)):
             self.warning_age = 0
             self.warning_reason = None
@@ -1562,10 +1592,12 @@ class PlanExecutor:
                                     replans=self.control.replans))
                                 if (outcome.behavior_validation.get('passed') is True
                                         or outcome.behavior_validation.get('failure_kind') == 'behavior'):
+                                    checked_files = self.control.source(self.tools.project_dir)
                                     self.control.record_verification(stage='TEST',
                                         passed=outcome.behavior_validation.get('passed') is True,
-                                        source_sha256=source_digest(self.control.source(self.tools.project_dir)),
-                                        evidence_id=f'step-{len(history)}-{step.id}-behavior',
+                                        source_sha256=source_digest(checked_files),
+                                        implementation_source=construction_digest(checked_files),
+                                        evidence_id=f'{observation_key(step)}:behavior',
                                         failure_kind=outcome.behavior_validation.get('failure_kind'),
                                         requirement_ids=outcome.behavior_validation.get('requirement_ids', step.requirement_ids),
                                         failed_ids=outcome.behavior_validation.get('failed_requirement_ids'))
@@ -1741,12 +1773,20 @@ class PlanExecutor:
                                             and self.control.control_recovery_available)
                                         if (not awaiting_alternative and self.control.stopped is None
                                                 and (self.control.control_state == 'CIRCUIT_OPEN' or warning_rollback)):
-                                            self.control.recover('source_rollback', checkpoint.rollback, source_changed=True)
+                                            changed = self.control.source(self.tools.project_dir) != checkpoint.before
+                                            if changed or self.control.control_state == 'CIRCUIT_OPEN':
+                                                self.control.recover('source_rollback', checkpoint.rollback, source_changed=changed,
+                                                    checkpoint_source=construction_digest(checkpoint.before),
+                                                    requirement_ids=step.requirement_ids,
+                                                    scenario_id=chosen.get('scenario_id') if self.budget_planner is not None else None)
+                                            else:
+                                                checkpoint.rollback()
                                         else:
                                             checkpoint.rollback()
                                 except ExecutionStopped as rollback_error:
                                     plan[index].update(
-                                        status='rollback_failed' if rollback_error.reason == 'rollback_failed' else 'rollback_blocked',
+                                        status=('rolled_back' if checkpoint.finished else 'rollback_failed'
+                                                if rollback_error.reason == 'rollback_failed' else 'rollback_blocked'),
                                         rollback_reason=rollback_error.reason)
                                     raise
                                 plan[index]['status'] = 'rolled_back'

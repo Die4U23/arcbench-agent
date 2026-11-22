@@ -10,11 +10,13 @@ v14 从本次任务与当前工程生成行动，不携带预设业务计划。R
 
 每步由 `PlanExecutor` 持有一个源码检查点，统一决定接受或回滚。模型执行结束后，检查静态结构与当前步骤覆盖；启用步骤行为门禁时，还必须通过当前及已接受需求的累计诊断。全部必需检查通过后才提交该步骤；失败恢复步骤开始时的源码，保留之前成功步骤。重规划只包含未完成步骤所引用的需求，并带上成功步骤摘要和失败信息。重规划不能补充自己的预算。
 
-规划提示包含实际的单步请求数与单次输出上限，要求从当前工程出发拆分依赖；空工程首先建立可验证的运行基础。执行提示以当前步骤为范围，完整需求包是参考上下文，不能把包内的整体验收要求误当成本步骤必须一次写完的指令。源码工具使用项目相对路径，`application/` 只是上下文展示前缀。
+规划提示提供单步请求数和单次输出上限。首步从公开需求选择在当前前提和额度内可完成的用户流程，在目标中标明原文出处和动作，在验收条件中保留前提和可观察结果。工程缺少入口时，把该流程所需的最小运行基础放在同一步。若完整动作超出当前能力，优先选择公开要求中更小且可观察的前置行为。执行器将选定步骤的目标和验收条件传给实施模型，完整需求继续作为全计划的范围。源码工具使用项目相对路径，`application/` 是上下文展示前缀。
+
+自适应调度在每次派发前重新计算当前步骤可用的请求数。若警告或恢复观察期使原计划的窗口缩小，调度器优先选择依赖已满足的较小步骤，也可选择同一需求范围、所选场景和验证成本特征在这个窗口内有过闭合记录的组合步骤。只有宽步骤可选时，控制器可以在写入前使用原有的一次重规划机会。新计划须保留全部待办，并提供一个范围缩小或独立就绪的起始步骤。若重规划额度已用尽，仍可在实际窗口内尝试满足最低额度的步骤。步骤提交、未验证候选保留和回滚继续由各自的门禁决定。
 
 每个阶段开始时附加当前源码观察，包含有界文件目录、摘要和能完整放入额度的 UTF-8 文件。它覆盖初始包中较旧的应用源码观察；原始需求仍在需求包中。省略内容、二进制文件及不完整目录显式标记，模型可按需读取。观察重新从当前事务状态生成，回滚后的下一阶段不会收到失败编辑的旧缓存。原始需求镜像、评测测试、依赖锁文件及既有快照策略排除的凭据不进入这份附加上下文。规划器另收到本轮剩余总请求额度，执行器收到当前步骤的实际请求份额。
 
-规划器还收到剩余 token、下一请求完整预留和保守可负担轮数估计，据此建议计划规模并合并共享模块的端到端工作。估计不能作为强制步数上限，避免把工作塞进超过单步额度的大步骤；原有计划长度和单步请求硬限制保持有效。每次请求前追加控制器实时额度，实施阶段最后三次请求转入整合、覆盖记录和验证，最后一次明确要求必要编辑与验证同批完成。消息本身纳入上下文检查；这只是决策反馈，不延长预算或自动声称完成。当前阶段已完整提供且摘要未变的文件，重复整文件读取返回指向该观察的引用；定向行读取、内容变化或未完整提供的文件仍正常读取。引用不冒充文件内容，不删除消息或推理协议；重复动作照常计数。
+规划器还收到剩余 token、下一请求的预留状态和保守可负担轮数估计，据此建议计划规模并合并共享模块的端到端工作。估计不能作为强制步数上限，避免把工作塞进超过单步额度的大步骤；原有计划长度和单步请求硬限制保持有效。每次请求前追加控制器实时额度。普通实现回合由模型结合公开需求、当前步骤、源码及已确认工具结果，选择并执行一项可验证的行为修改。修改可以涉及多个相关文件，缺少必要事实时可先读取。普通实现及收尾会给模型一个单回合源码编辑体积建议，默认最多建议 4,096 个 UTF-8 字节。超过建议大小的完整修改在通过既有批次、路径、工具和预算校验后正常执行，同一工具调用按原参数写入并记账。`length` 响应中的工具片段继续整批丢弃。已有文件宜替换短的唯一片段，新文件先写能接入当前程序的小实现，后续根据真实回执扩展。实施阶段最后三次请求转入整合、覆盖记录和验证，最后一次明确要求必要编辑与验证同批完成。消息本身纳入上下文检查；这只是决策反馈，不延长预算或自动声称完成。当前阶段已完整提供且摘要未变的文件，重复整文件读取返回指向该观察的引用；定向行读取、内容变化或未完整提供的文件仍正常读取。引用不冒充文件内容，不删除消息或推理协议；重复动作照常计数。
 
 `update_coverage` 可批量更新明确指定的 kind/ref/status/files，保留其他条目并校验引用及源码路径；它不自动声称完成，不接受评测输入或元数据充当实现。验证当前计划步骤时，除结构检查外还检查该步骤的源码覆盖声明，缺失时允许在本步骤剩余预算内修正，不能提前提交该步骤。覆盖声明仍不构成行为验收。
 
@@ -52,31 +54,41 @@ v14 从本次任务与当前工程生成行动，不携带预设业务计划。R
 
 ## 共享限制
 
+普通实现按可用的物理请求次数安排读取。需要补查的源码或公开条款应在还有后续请求时按范围读取。最后一次请求提供 `write_files`、`replace_text`、`update_coverage` 和 `validate_source`。源码已就绪时可直接验证；缺少关键事实时可返回 `{"status":"incomplete"}`。回包按该次实际发送的工具清单做整批检查，包括占用最后一次请求的传输重试和截断恢复。
+
 | 环境变量 | 默认值 | 作用 |
 | --- | ---: | --- |
 | `ARC_EXECUTION_MODE` | `plan_execute` | 可选 `react` 或 `plan_execute` |
-| `ARC_REASONING_EFFORT` | 不发送 | 显式提供方推理设置：`none` / `low` / `medium` / `high` / `max`；部署方须核对模型支持 |
+| `ARC_PLAN_WINDOW_REQUIREMENTS` | 8 | 自适应计划模式每个规划窗口的原子需求数，可设 1 至 128。各窗口沿用同一账本和时间限制。 |
+| `ARC_REASONING_EFFORT` | `max` | 显式指定 `none` / `low` / `medium` / `high` / `max` 优先，对所有阶段生效 |
 | `ARC_MAX_OUTPUT_TOKENS` | 16384 | 单次响应上限，同时计入上下文预留与请求前 token 预算预留 |
-| `ARC_REQUEST_LIMIT` | 400 | 同一运行所有阶段的请求上限 |
+| `ARC_TOKEN_LIMIT` | 按公开需求规模计算 | 单次运行的 token 总额。默认 300 万，加上每个场景 6 万、每个原子需求 2 万、每个数据实体 1 万，最高 1200 万。显式配置直接作为总额。 |
+| `ARC_REQUEST_LIMIT` | 无次数上限 | 显式设置时，限制全场物理请求总数，含服务失败与重试 |
 | `ARC_TOOL_LIMIT` | 2000 | 所有阶段工具调用预留上限 |
-| `ARC_EXECUTION_SECONDS` | 3600 | 执行器与运行时修复共享的墙钟截止时间 |
+| `ARC_EXECUTION_SECONDS` | 86400 | Agent 整场执行的墙钟上限，单位为秒。显式设置较短值时按该值截止 |
+| `ARC_RUNTIME_SECONDS` | 86400 | 运行验证的墙钟上限，单位为秒。启用步骤行为验证时，实施与收尾共享两个上限中较短的时间窗 |
 | `ARC_TOOL_BATCH_LIMIT` | 16 | 每个模型响应的工具数上限 |
 | `ARC_REPEAT_LIMIT` | 3 | 同动作、同参数、同源码状态的重复上限；同时限制源码状态振荡 |
 | `ARC_IDLE_TURNS` | 6 | 连续无源码变化或新读取证据的轮数上限 |
 | `ARC_PLAN_STEPS` | 24 | 单份计划步骤上限 |
-| `ARC_PLAN_REQUESTS` | 4 | 每次只读规划请求份额 |
-| `ARC_STEP_REQUESTS` | 12 | 每个实现步骤的请求份额 |
+| `ARC_PLAN_REQUESTS` | 无次数上限 | 显式设置时，限制每次只读规划的工作请求 |
+| `ARC_STEP_REQUESTS` | 无次数上限 | 显式设置时，限制每个实现步骤的工作请求 |
+| `ARC_IMPLEMENT_REQUESTS` | 无次数上限 | 显式设置时，限制实现阶段的工作请求 |
+| `ARC_REPAIR_REQUESTS` | 无次数上限 | 显式设置时，限制修复的工作请求 |
+| `ARC_REVIEW_REQUESTS` | 无次数上限 | 显式设置时，限制审查与检查编写的工作请求 |
 | `ARC_REPLAN_LIMIT` | 1 | 整次运行可用的重规划次数 |
 | `ARC_PROTOCOL_REPAIRS` | 2 | 计划结构、JSON 格式、工具批次纠正共享的整次运行上限；0 关闭纠正 |
 | `ARC_WORKSPACE_CONTEXT_BYTES` | 200000 | 当前源码观察的序列化字节上限，进一步受剩余上下文限制；0 关闭，目录最多 300 项 |
 
-既有 `ARC_IMPLEMENT_REQUESTS`、`ARC_REPAIR_REQUESTS`、`ARC_REVIEW_REQUESTS` 与 token 账本仍进一步限制阶段资源。每次请求和工具动作前后检查共享截止时间；实际 HTTP 请求期限也收紧至剩余执行时间。超时、截断、未知 usage 和连接中断不自动重发。
+次数上限未配置时，报告使用 JSON `null`。每次发起调用前，账本核对已结算用量、此前未知用量、本次完整 token 预留和收尾预留。工具额度、累计退避和运行截止时间分别检查。502、503 计入物理请求和费用风险记录，收到这类响应的步骤保留其工作机会。无进展检测、协议纠正和源码恢复各自沿用原有条件。
 
-推理强度与输出额度独立配置，不按任务名称或评分结果自动调整。总量仍由 `ARC_TOKEN_LIMIT` 约束。提供方返回的 `reasoning_content` 在工具续接与一次有界 JSON 格式纠正时原样保留；格式纠正不能丢失协议字段。这里保留的是提供方续接协议，不将推理文本当作通过证据。
+规划器首次按公开输入包和工作区上下文的大小估算可负担的请求数。有实际结算后，改用本次运行的单次 token 用量峰值估算，并受阶段额度、剩余请求数与自测预留约束。当实施与收尾都能预留整个上下文时，账本沿用完整输入上界。接近收尾时，竞赛默认网关及 DeepSeek 官方端点上的已知 Flash 文本请求，可以按最终消息、工具定义、历史工具参数和模板开销计算输入上界，另加完整输出上限。规划时尚未组装请求，`next_request_reserve` 此时为 `null`，`request_bound_requires_prepared_payload` 为 `true`。发送前核对本次实际预留、历史未知用量及完整收尾预留。其他端点、模型或多模态输入沿用完整输入上界。
+
+规划、源码实施、诊断提案、修复、审阅及验收模型请求默认发送 `reasoning_effort=max`。工具续接采用同一设置。有效输出上限、总预算和收尾预留由原账本控制。服务如何执行该设置取决于代理和上游。工具续接与一次有界 JSON 格式纠正保留提供方返回的协议字段。
 
 整批工具在副作用前检查工具是否暴露、参数是否为有界 JSON 对象、调用 ID 是否重复、validate_source 是否为末项，以及批量/全局额度。动作指纹包含规范化参数与当前源码摘要；有意义的源码变化允许重新读取，重复失败或无效写入不能通过切换阶段清零。
 
-无效工具批次整体不执行，记录有界的拒绝原因并在剩余请求与共享协议额度内允许重新生成。被拒绝的调用只作为文本引用返回模型，不能伪造已执行的工具结果；提供方 reasoning_content 继续保留。计划先按严格字段、类型、覆盖与 DAG 规则校验，最多一次格式纠正后重新校验，不能忽略额外字段或放宽引用规则。纠正同样扣减请求、token 和时间，回滚/重规划不恢复协议额度。执行失败的具体 detail 进入重规划反馈。截断、超时、未知 usage 等传输故障仍不重发。
+无效工具批次整体不执行，记录有界的拒绝原因并在剩余请求与共享协议额度内允许重新生成。被拒绝的调用只作为文本引用返回模型，不能伪造已执行的工具结果；提供方 reasoning_content 继续保留。计划先按严格字段、类型、覆盖与 DAG 规则校验，最多一次格式纠正后重新校验，不能忽略额外字段或放宽引用规则。纠正同样扣减请求、token 和时间，回滚/重规划不恢复协议额度。执行失败的具体 detail 进入重规划反馈。截断响应不进入此类协议纠正。
 
 ## 事务与并发
 
@@ -108,7 +120,7 @@ v14 从本次任务与当前工程生成行动，不携带预设业务计划。R
 
 规划上下文提供公开IR的显式需求依赖、父级分组和覆盖声明指向的共享源码文件。共享文件最多展示64项并报告遗漏数量，属于未验证线索，不能据此声称功能正确。当前待办内的显式前置依赖必须同一步实现，或通过计划depends_on连接到祖先步骤；已完成/范围外需求不被伪造为新节点。重规划重新读取当前线索，不引用回滚前的状态。
 
-完整单次预留不足时，token账本持久停止后续模型请求；调用前可用额度检查避免复查阶段继续空转。时间与源码安全允许时，模型额度耗尽仍可在隔离副本进行构建/HTTP诊断，但不能额外调用模型复查或修复。执行截止、恢复失败或并发源码变更继续阻断。
+实施请求占用收尾预留时，控制器在发送前结束该阶段，保护后续自测。总额度连当前请求都无法承担时，账本拒绝发送。时间与源码安全允许时，模型额度耗尽仍可在隔离副本进行构建/HTTP诊断，但不能额外调用模型复查或修复。执行截止、恢复失败或并发源码变更继续阻断。
 
 每次交付生成 .arc/platform-budget/<task>/verification.json，绑定交付源码摘要，并分别列出静态结构、源码覆盖声明、运行时诊断与正式行为评测。requirements_only的基础运行时范围为build_and_http；若启用下述冻结行为诊断，则单独标记build_http_and_authored_diagnostics。正式行为始终UNRUN，病例数未知；源码覆盖、HTTP和自生成诊断通过均不能提升为正式行为通过。
 
@@ -122,7 +134,7 @@ v14 从本次任务与当前工程生成行动，不携带预设业务计划。R
 
 后续作者批次失败时，已冻结的合法用例仍通过同一个运行器执行，记录实际结果和缺失需求。部分套件只做本地诊断，不触发模型修复或源码复查；即使这些用例全部通过，完整需求验收仍失败。该路径继续受原有时间、工具和源码安全限制，不增加运行额度。
 
-实现阶段在原共享预算内保护一次作者请求，并为最终作者和本地检查预留时间。初始 token 总额能容纳两次完整请求上界时，额外保护一次作者的 token 缓冲；否则记为 `token_reserve_unfunded`，避免新增缓冲使实现完全无法开始，每次实际请求的完整上界预留仍不变。最终按有界批次补齐缺失需求，已有冻结用例不重写；释放的是未来阶段准入预留，不是已消费或用量未知的额度。工具或其他硬额度不足仍停止并报告未完成。预留提高自测执行机会，不保证任意复杂任务都能在任意预算内完成。
+实现阶段在原共享预算内保护一次作者请求，并为最终作者和本地检查预留时间。初始 token 总额能容纳两次完整请求上界时，额外保护一次作者的 token 缓冲；否则记为 `token_reserve_unfunded`，避免新增缓冲使实现完全无法开始，这种情况下每次实际请求使用完整输入和输出上界。最终按有界批次补齐缺失需求，已有冻结用例不重写；释放的是未来阶段准入预留，不是已消费或用量未知的额度。工具或其他硬额度不足仍停止并报告未完成。预留提高自测执行机会，不保证任意复杂任务都能在任意预算内完成。
 
 自测成功仅表示这些公开需求驱动的诊断通过。每个需求至少一个用例不代表所有分支都已验证，也不等同于正式平台验收；正式状态仍由独立评测器确定。
 
@@ -144,7 +156,7 @@ v14 从本次任务与当前工程生成行动，不携带预设业务计划。R
 
 ## 执行中的资源视图
 
-每次模型请求可见当前计划的剩余步骤、需求引用、已完成步骤和依赖；重规划及退出清除旧视图。预算账本用已结算请求的峰值消耗估计还能负担的请求数，并显示完整下一次请求预留后的余额。估计只是调度提示，后续源码增长可能使其下降；它不改变完整预留、单步上限、共享总额度或完成判定。未知用量、熔断或额度不足时可准入请求数为零。
+每次模型请求可见当前计划的剩余步骤、需求引用、已完成步骤和依赖；重规划及退出清除旧视图。预算账本用已结算请求的峰值消耗估计还能负担的请求数，并在能够事先确定预留时显示预留后的余额。只有最终请求可确定预留时，该余额显示为 `null`。调度估计使用已结算用量，实际准入仍受共享额度和独立的收尾预留约束。未知用量、熔断或额度不足时可准入请求数为零。
 
 计划阶段另行显示包含当前请求在内的剩余请求配额；每步可分配请求估计取阶段余额与全局可负担估计的较小值，再为收尾留出空间。重规划沿用阶段开始时的请求上限，已经消耗的请求不会返还；缺少 token 消耗估计时仍显示阶段配额，不能把全局余额误当作当前计划可用额度。
 
@@ -200,7 +212,7 @@ top-level `text` fallback remains available when the description is not textual.
 ## 模型非成功终态
 
 JSON 与流式响应遵循同一执行边界：只有 `stop` 或 `tool_calls` 允许进入动作执行；
-`length` 仍作为截断停止，其他终态作为 `model_terminated` 停止并阻止后续阶段请求。
+普通实现回合遇到已结算的空 `length` 时，可在本阶段剩余预算内发起一次替补请求。后续工作点独立判断替补资格。首步连续两次空截断时，自适应交付策略可转向独立步骤或拆分首步；没有可行路径时进入截断收尾。其他终态以 `model_terminated` 停止。
 中止响应的部分工具内容不执行。响应模型和用量均通过校验后才结算；缺少终帧、
 用量未知、用量越界或模型不一致仍保留预留。只有下述已分类的流格式故障允许一次改变传输方式；外部连接中断、超时、模型不一致和越界用量仍停止。
 
@@ -237,7 +249,7 @@ adaptive 控制策略下，纯粹获取新信息不累加实现质量停滞窗�
 
 ### 流格式故障的有界调整
 
-质量警告下的失败步骤回滚可消耗一次既有恢复额度进入 `PROBATION`，不清零历史质量债务或全局协议修复计数。重规划仍受原 PLAN 上限及全部全局预算约束，但不消耗实现/验证的四次恢复请求窗口；CODE、BUILD 和 TEST 请求共享该窗口，作者预留也在其中。写入和静态检查不能解除质量警告，只有当前源码的真实行为检查通过才能恢复；失败或窗口耗尽仍停止。覆盖更新提示使用工具 schema 的实际条数上限，要求当前步骤的增量声明分开调用，不能拼接 JSON 或放宽参数校验。
+质量警告下的失败步骤回滚可消耗一次既有恢复额度进入 `PROBATION`，继续累计质量债务和全局协议修复计数。`WARNING` 和 `PROBATION` 默认沿用外层请求额度，以及全局 token、工具和截止时间约束。显式配置 `ControlPolicy.probation_requests` 后，CODE、BUILD 和 TEST 的物理请求及作者请求共用该上限，PLAN 请求计入全局账本。只有当前源码的真实行为检查通过才能解除质量警告。观察期内行为检查失败会终止恢复。覆盖更新提示使用工具 schema 的实际条数上限，要求当前步骤的增量声明分开调用，不能拼接 JSON 或放宽参数校验。
 
 平台适配器仅在 assembled stream 出现 `JSONDecodeError` 或缺少完整终帧/用量时，尝试一次改用完整 JSON 响应。同一模型、注入端点、原始阶段/计划/全局请求上限和截止时间保持不变。下一请求说明前次响应已丢弃，继续依据已确认的工具结果工作；部分工具调用不执行。第二次失败不再切换或循环重发。已有源码恢复试运行不能借此重置窗口，质量告警也不因传输恢复解除。
 
@@ -245,7 +257,7 @@ adaptive 控制策略下，纯粹获取新信息不累加实现质量停滞窗�
 
 这是替换原先“所有未知用量均永久停止”的窄范围策略，不是忽略异常。恢复成功只证明新的响应与用量通过协议检查；最终源码仍须经过完整自生成测试、真实执行、摘要绑定与报告导出才能成功。当前 300 万 token 配置未增加：一次完整未知预留可能使实现恢复与最终作者无法同时负担，届时必须准确失败。合成高额度测试只验证机制，不构成新的付费预算授权。
 
-`ARC_BUDGET_POLICY=adaptive`（默认）在计划执行中，只从依赖已完成且控制器允许的步骤选择下一步。初始收益使用公开需求数量的低置信度估计，考虑可解锁的依赖工作；实际行为验证反馈与请求消耗更新后续选择。未知质量保留有界探测机会，必需工作不会只因估计收益为零就被当作完成或删除。决策记录候选、收益依据、预计成本、选择原因和软请求份额；每次实际请求仍按原完整输入/输出上界准入。策略不修改已消费计数和未知用量预留。`legacy` 使用原步骤顺序与份额分配。
+`ARC_BUDGET_POLICY=adaptive`（默认）在计划执行中，只从依赖已完成且控制器允许的步骤选择下一步。初始收益使用公开需求数量的低置信度估计，考虑可解锁的依赖工作；实际行为验证反馈与请求消耗更新后续选择。未知质量保留有界探测机会，必需工作不会只因估计收益为零就被当作完成或删除。决策记录候选、收益依据、预计成本、选择原因和软请求份额；每次实际请求按适用的输入上界和完整输出上限准入。策略不修改已消费计数和未知用量预留。`legacy` 使用原步骤顺序与份额分配。
 
 这是一项单任务内、计划步骤级的确定性启发式策略。它尚不包含跨任务调度、自动模型切换或基于正式评分的收益学习；本地模拟结果不能证明真实模型成本降低或正式得分提升。
 
@@ -259,23 +271,25 @@ adaptive 控制策略下，纯粹获取新信息不累加实现质量停滞窗�
 ## Independent API recovery and explicit live pause (v23 candidate)
 
 API recovery and source rollback now own different counters. `ARC_RECOVERY_ATTEMPTS`
-continues to limit source/quality recovery (default 1). API admission uses
-`ARC_API_RETRIES_PER_CALL` (default 2, range 0..4), `ARC_API_RETRIES_TOTAL`
-(default 4, range 0..20), and `ARC_API_WAIT_SECONDS` (default 60, range 0..300).
-These are additional ceilings, not token allocations. Every physical request
-still increments the existing durable requests/token ledger and RunControl request
-count. Step, phase, planning, author reserve, and PROBATION windows still count
-physical requests. `logical_requests` separately records controller invocations;
-this version does not convert task capacity to logical-request accounting.
+continues to limit source/quality recovery (default 1). By default the API
+has no per-call or cumulative retry count ceiling. Operators can set
+`ARC_API_RETRIES_PER_CALL` (0..4) or `ARC_API_RETRIES_TOTAL` (0..20).
+`ARC_API_WAIT_SECONDS` limits cumulative waiting (default 60, range 0..300).
+Every physical attempt counts against the run request limit. An explicit 502
+or 503 delivers no model decision, so it leaves the planning, step and phase
+work allowance available. Its full unknown token reservation remains charged.
+The self-test reserve and any configured PROBATION request limit use physical request counts.
+`logical_requests` records controller invocations, including those interrupted
+before a complete response. Cost reports continue to count physical attempts.
 Protocol correction and business replanning remain ordinary charged invocations.
 
-Only explicit HTTP 503 and the existing classified assembled-stream protocol
-fallback are admitted. HTTP 503 preserves the current transport. Authentication,
+Explicit HTTP 502 and 503 share the same retry limits and preserve the current
+transport. The existing assembled-stream fallback handles classified protocol faults. Authentication,
 configuration, other HTTP errors, deadlines, ambiguous transport failures,
 changed sources and sticky controller termination do not gain a retry. API retry
-may proceed in a live PROBATION only while its original physical request window
-still permits it; it neither clears quality debt nor consumes/resets source
-recovery. SDK automatic retries remain disabled.
+may proceed during PROBATION while the controller and remaining budgets allow it.
+The retry preserves source recovery state and quality debt. SDK automatic retries
+remain disabled.
 
 Each HTTP retry waits with equal jitter between half and all of an exponentially
 growing base, capped at 30 seconds. A valid Retry-After delay-seconds or aware
@@ -323,7 +337,7 @@ unconfirmed: bundled paused/resumed APIs only emit state events.
 
 ### Optional error pause and clean final-verification transfer (v24)
 
-`--pause-on-api-error` opts into supervised pauses after an eligible HTTP 503 or
+`--pause-on-api-error` opts into supervised pauses after an eligible HTTP 502, HTTP 503 or
 incomplete stream has already passed recovery admission. Unknown usage stays
 fully reserved; the admitted API retry is already charged. A separate checkpoint
 is published under `api-error-pause/<cumulative-retry>/`. Use the same `continue`
@@ -379,7 +393,7 @@ PlanExecutor records `verification_status` as PASS, FAIL, DEFERRED or BLOCKED in
 
 ### Independent service gate
 
-The run ledger tracks AVAILABLE, RETRY_WAIT and terminal OPEN separately from source/quality control. Only existing HTTP 503 recovery can enter the service retry path. Every existing request, token, phase, self-test reserve and wait bound remains authoritative. OPEN blocks subsequent model entry before counters, reservations or pause hooks; no half-open probes or additional retry allowance exist. A complete accepted response exits RETRY_WAIT, but never refunds unknown usage or retry/wait costs. Terminal transitions retain a bounded diagnostic reason alongside the original stop reason. State persistence failure fails closed in memory; reopening a ledger after process restart remains unsupported. This is not a cross-run provider health monitor.
+The run ledger tracks AVAILABLE, RETRY_WAIT and terminal OPEN separately from source and quality control. HTTP 502 and 503 share the service retry path. Diagnostics retain the original HTTP status. Each retry uses the remaining request, token, phase and wait budgets and protects the self-test reserve. A complete accepted response returns the service to AVAILABLE and keeps prior unknown usage and retry costs charged. OPEN closes model admission for the rest of the run, before counters, reservations or pause hooks. Terminal transitions record the original stop reason and a bounded diagnostic reason. If persistence fails, the live process keeps admission closed. The service gate applies to a single live run.
 
 
 ### Interrupted behavior evidence
@@ -400,10 +414,16 @@ source. Reading still spends budget and retains that debt; existing repeated
 action and request limits remain in force. A subsequent editing turn, explicit
 completion or the original request-allowance closeout still reaches verification.
 
+For ordinary candidate delivery, a new controller-run public scenario on the
+exact retained source resolves an unknown-quality warning. Each scenario can
+provide this signal once per run. The step keeps its construction-only status,
+and the existing requirement evidence, resource counters and recovery limits
+continue to govern acceptance and execution.
+
 A concrete static failure or behavior FAIL may receive one defect-directed
 repair inside the same source transaction, before rollback and replanning. Its
-request allowance is bounded by the original step and phase allowance, global
-remaining requests and `recovery_requests`; any needed test-authoring request
+request allowance respects configured step, phase and global request limits, and
+`ControlPolicy.recovery_requests` when set. Any needed test-authoring request
 stays reserved. The bounded repair returns to verification without consuming
 quality-warning turns solely for editing. It cannot reset counters, extend the
 deadline, reopen a hard stop, or repair a BLOCKED/DEFERRED verification result.
@@ -426,8 +446,28 @@ refund real usage or enlarge the global budget. `PLATFORM_BATCH_BUDGET` records
 allocation, actual spending, released allocation and the remaining pool.
 # Candidate delivery and full verification
 
-`ARC_DELIVERY_POLICY=verified` preserves strict complete self-test acceptance.
-The explicit `runnable_candidate` policy separates construction from acceptance:
+Ordinary adaptive plan execution defaults to `runnable_candidate` when runtime
+and behavior checks are enabled. Explicit `ARC_DELIVERY_POLICY=verified`, the
+default final-verification handoff, and configurations without candidate support
+use strict acceptance. An explicitly requested candidate still requires a
+compatible execution mode and both verification layers.
+
+Adaptive planning processes up to `ARC_PLAN_WINDOW_REQUIREMENTS` atomic
+requirements at a time. After the current plan has tried its independent steps,
+an isolated failure can yield to a later window with work outside its dependency
+chain. The failed source transaction stays rolled back and its original reason
+is recorded. The handoff consumes no replan credit and renews no budget.
+If all earlier windows complete, the last eligible step sees the full coverage
+ledger, including parent requirements and shared scenarios. The planner still
+selects only the current window's atomic requirements. Earlier failures and
+unstarted work remain in the backlog. A subsequent implementation round
+requires changed application source, known
+pending owners and available shared resources. `construction-progress.json`
+records the requests, source identity, decision and unresolved work. Gateway
+attempts remain on the physical request ledger even when they do not consume a
+local work opportunity. An unset request ceiling stays unset across windows.
+
+Under `runnable_candidate`,
 static-valid source may be retained with `constructed_unverified` status when
 public constraints cannot be compiled, or after a bounded repair still leaves
 an observed behavioral failure. Those steps are not added to verified steps,
@@ -440,8 +480,20 @@ stagnation, repeated actions, oscillation and all original hard budgets remain
 active. Previous quality warnings and consumed resources are not reset.
 
 Final delivery builds and starts an isolated copy, opens it in Chromium using a
-controller-frozen smoke test, reruns known authored suites, and rechecks source
-and suite hashes. The terminal state is `READY_FOR_EVALUATION`, distinct from
+controller-frozen smoke test, and reruns authored checks on the selected source.
+The runtime uses the root package when present. For the supported split layout
+without a root package it installs the frontend and backend separately, respects
+each lockfile, and runs their declared builds within the shared stage deadlines.
+For a root package using the bundled launcher, the preliminary install uses the
+same npm registry as that launcher. Projects with custom launchers use their
+own npm configuration.
+A usable root `deploy.sh` remains the preferred launcher; otherwise the split
+application starts with `npm start` from the backend directory.
+If another frozen suite contains all the same requirement scripts, case plans and
+assets, its run covers the smaller suite. The receipt's `replayed_in` names the
+actual runtime signal for each historical suite. All original suites are still
+integrity-checked and exported. Tool charges cover the suites actually scheduled.
+The terminal state is `READY_FOR_EVALUATION`, distinct from
 `COMPLETE`. Exit 0 reports successful export of this evidenced candidate, not
 complete requirement acceptance. `self-tests/report.json` retains `accepted`,
 all original reasons and exported suites, plus the independent `delivery`
@@ -450,10 +502,18 @@ identity. Official evaluation remains `UNRUN` until the independent evaluator ru
 
 Candidate mode checks request admission against the original phase/hard cutoff
 before spending a physical request. Its allowance is the greater of 30 seconds
-and 1.25 times the slowest of the last eight complete responses, capped by an
-explicit provider request ceiling. This estimate is not a completion guarantee.
+and 1.25 times the observed request duration, capped by an explicit provider
+request ceiling. A partial window uses its slowest observation. With eight
+physical requests on record, the estimate uses the greater of the most recent
+duration and the second slowest duration. Interrupted requests also enter the
+window. A recent slowdown immediately raises the estimate.
 Recovery must also fit its backoff. A refused request yields the phase without
 changing the hard deadline or refunding earlier work.
+
+An activity-stagnation warning clears when a subsequent observation changes the
+source or contributes new information. Quality warnings retain their own
+evidence criteria. If inactivity persists through the warning window, the ledger
+records the consecutive idle count, both thresholds and the current source identity.
 
 If a request still times out, bounded candidate closeout can use the remaining
 diagnostic time after an eligible model-only stop. Closeout seals new model calls
@@ -506,6 +566,12 @@ Every returned plan defines its own dependency graph. `requirement_ids` referenc
 
 Unknown dependencies remain invalid. Bounded error feedback identifies the offending edge and provides current-step ID guidance for the existing protocol correction. It never silently removes an edge, maps a requirement to a step, or turns historical construction into verified acceptance. Correcting one error can reveal another, such as a cycle or an exhausted scope; all corrections still share the original request and protocol-repair limits.
 
+### 步骤因缺少源码声明而回滚后的候选交付
+
+在普通候选交付策略下，如果步骤耗尽请求，实际工程静态检查通过，当前步骤仅缺少源码声明，控制器可以在回滚前隔离含业务修改的草稿。当重规划次数已用完，或剩余请求不足以各进行一次规划和实施时，分别保留原始停止原因 `replan_limit` 或 `request_allowance`。收尾先核对对应基线的身份，再决定能否重验草稿。
+
+收尾为基线重验保留工具和时间。资源允许时，先在草稿上重新构建、启动，并用 Chromium 重跑根页面、既有套件和该基线源码上通过的公开场景。报告记录每个重跑场景对应的两份源码。草稿出现回归或剩余资源只够重验基线时，选择器转回基线。缺失的声明和待完成需求保留在报告中。
+
 ### Candidate checks after invalid planning
 
 An exhausted plan correction returns `status=stopped`, `reason=invalid_plan`, and a separate bounded `detail`. The plan executor adds `phase=planning` and retains step history, pending requirements and construction receipts. Consumers classify the stable code rather than parsing the error text.
@@ -532,3 +598,62 @@ The public work plan expands folder prerequisites and inherited prerequisites in
 Step feedback lists intrinsic binding errors in `unresolved`, immediate unavailable prerequisite IDs in `blocked_dependencies`, and the frozen suite's requirement IDs and runtime counts when execution reaches the harness. Observed authored failures identify their requirement through the frozen spec file. If an independent case passes while another requirement is blocked, the step stays unverified. A failing test, changed suite, unavailable harness, or exhausted budget retains its actual failure classification.
 
 Strict final verification reuses eligible frozen cases and executes diagnostics against the selected source. Complete acceptance still requires source-bound evidence for every required ID. Candidate readiness reports each requirement's binding errors and dependency blockers alongside the separate smoke and authored-suite results.
+
+In strict plan execution, the controller checks public contract capability before opening a source transaction. Page references are resolved from public page identities, routes and inherited requirements. Unmapped references keep an explicit ownership ambiguity. A reference used for an exact screenshot assertion needs a bound pixel comparison. A local description image accompanying written requirements and parsed scenarios is retained as source material. Its presence alone does not add an exact screenshot assertion. The capability report records the public clause or reference behind each binding problem. CSS and geometry checks cover only their declared properties.
+
+Each remaining plan step records its current runnable requirements, unresolved obligations and unmet prerequisites. An affordable, fully checkable independent step takes priority. If no current requirement can run, the controller records the preflight stop before spending implementation or browser budget on that step. Mixed steps can still produce independent diagnostic evidence, and strict acceptance requires the full set. On a verification stop, the self-test report records the primary reason, the disposition of each affected step and the source identities for candidate diagnostics and final static validation.
+
+A public postcondition can assert the Boolean state of a precisely named checkbox. The controller binds the complete English predicate to one parsed accessible identity in the same requirement. It preserves other clauses and their source when a compound postcondition is only partly supported. The generated browser check observes the native state or explicit ARIA state, including after a required reload. A missing, duplicated or mixed-state target cannot establish an unchecked result.
+
+An ordered public scenario can explicitly open a same-origin path between other actions and assertions. The compiler binds the starting page from the public context, consumes the declared operations in order and checks the destination URL. The browser checks prior absence only when an action is required to open a named target. Authors may add visible and URL observations. Additional actions, unknown clauses and ambiguous names keep the scenario from passing.
+
+When an entire When or Then is unrecognized, the same action or assertion compiler can process its top-level semicolon- or sentence-separated clauses. Each bound clause and each remaining blocker retains its source slice and order. Quoted names, literal values and structured locator arguments keep their punctuation. The entire scenario must still fit one browser case. An unresolved clause prevents full admission even when a neighboring clause supplies a valid operation.
+
+The list-and-return phrasing is one supported input form. A cited public list contract can supply the allowed roles for a named seed entry. When it requires keyboard access, Chromium checks that a single enabled entry is visible in the region and reaches it with Tab. Other seed fields remain explicit blockers until their values can be verified. A legacy scene envelope can supply its original step only when its text, order and structured contents agree with the archived IR.
+
+A public PNG can serve as an exact viewport checkpoint when its image declaration includes a capture protocol. The declaration supplies the public page path, the ID of a visible state in the journey, the viewport dimensions, device scale factor 1, light color scheme, en-US locale and UTC time zone. Set `capture.mode` to `exact_rgba` and `capture.scope` to `viewport`. The frozen suite includes the original PNG. Chromium compares the rendered pixels at the bound state and records the number of differences. Image-only requirements and unresolved page-level visual references remain blocked. A description image cited by a functional scenario stays available in the contract. Written appearance constraints still require their own checks, including when the image has no capture declaration.
+
+For a public scenario that creates a finite set of named records and assigns each record exclusively to a named collection, the controller derives its required checks from the source and the UI setup. Version 2 proposals submit literal checks for these obligations. The gate matches the record identity, collection scope, operation and expected value. A classification clause can require several such checks and an independently grounded state for each fixture record. Other leaf and ancestor clauses retain their own evidence requirements.
+
+`semantic-proposal.json` records which obligations a proposal covers. After an admitted strict suite runs, `check-N.json` attributes observations to the verified requirement and ordered frozen case. A complete suite pass can prove its matched checks. An aggregate failure without a trustworthy step location leaves individual outcomes unknown.
+
+A grouped scenario can use a referenced public scenario to connect setting a named Boolean control in the editor to the state of the same saved record. The source must identify the save effect, record, state and observation before a further mutation. The emitted setup sets the required pressed value and checks the resulting state. The subsequent read targets the action on the named record inside its declared collection. Preflight records planned obligations and remaining source clauses in `reviewed_contract`. Observations belong to the later browser run.
+
+When a public fixture requires a deterministic run, worker and case suffix, the frozen program binds the example name to the suite run ID and Playwright's worker and test identities at execution. The application receives that complete value through its public input and must display it on the corresponding saved record. Missing runtime identity is a harness precondition. Fixture identity checks and application readback have separate failure evidence.
+
+### Measured attempt costs and admission
+
+Each entry in a step's `attempts` includes its run, plan revision, step ID, attempt number, disposition, physical request and charged-tool counter boundaries, and elapsed monotonic seconds. The existing audit also records `attempt_cost` on interrupted attempts. A repair closes the preceding attempt. The final attempt ends when the source transaction commits or finishes rollback, including failed rollback. Planning and replanning have task-level `planning_cost` events. Final authoring, checks and export share one `task_closeout_cost` interval for the selected task source.
+
+Phase measurements explain the enclosing interval. A behavior check's runtime duration ends before process cleanup. The enclosing attempt covers copying, cleanup and the source transaction. Adding the inner duration or the already charged validation-tool reservations to the attempt total would count the same work twice. Browser case counts describe reported execution and can be unknown. Response-purpose labels are joined by physical request ID within the recorded counter boundaries; a mixed source/coverage response consumes one request.
+
+Adaptive step selection uses the latest measured transaction with comparable verification scope in the same task planner. The sample includes its attempts and final disposition. The workload profile includes required, runnable, uncached and accepted requirement counts and known frozen case/operation counts when available. Strict step admission also works with a cold profile. It estimates one mixed implementation/coverage request, an author request if needed, and tool units for editing, declaring coverage, static validation and behavior checks. It budgets elapsed time for the requests and the runtime check, and protects resources for final verification. The decision trace identifies these initial estimates separately from comparable measured transactions. Fixed-order admission keeps plan order among affordable independent steps. The decision trace gives the sample source and limiting resource; quality observations retain their revision-specific identity. Admission compares measured tool units and elapsed time with remaining tool budget and the current phase deadline. Request estimates affect ranking; the existing step ceiling and shared hard controller still limit actual requests. A blocked step can supply a cost sample while yielding no verified step completion.
+
+### Closing a step after a truncated model response
+
+During task planning, a settled output-limit response containing text, tool frames or no visible output can use one remaining planning request for a fresh plan. The replacement receives the public inputs and confirmed observations, with no tools offered. The normal plan validator checks its complete requirement set and dependency graph before implementation. The ledger records the cutoff shape and either the recovery or the reason it could not proceed.
+
+If a whole-task planning response and its replacement both end at the output limit with no visible output, the controller can spend a remaining planning request on a smaller group of pending public requirements. It selects the group in dependency order and gives the planner the corresponding public material. The executor keeps work outside the group pending, schedules the next group after the current one succeeds or is retained under the delivery policy, and checks the original integration scope at the end. The same phase budget and closeout reserve apply throughout.
+
+Planning indexes scenarios owned by the pending requirements. When the public
+scenario directory exceeds the inline budget, the planner can page through a
+read-only catalog to find a scenario's source file and character range.
+Reading the catalog and reading the original requirement yield separate receipts.
+
+A response with `finish_reason="length"` settles its reported usage. Each eligible interrupted request can use one replacement within its current stage and the remaining task resources. A later planning decision or implementation turn can use a replacement even if an earlier one already did. `ARC_RECOVERY_ATTEMPTS=0` explicitly disables replacements. Positive values still bound circuit recovery and source rollback. The ledger counts settled replacements separately and charges each dispatched request. The controller discards every tool frame in a truncated batch and asks for a fresh, smaller edit based on confirmed source and observations. Complete edits go through ordinary batch validation. Durations of dispatched requests, including truncations and transport failures, enter the request-time estimate.
+
+When both responses on the first implementation step are empty, adaptive candidate delivery can roll back and select a dependency-ready step with disjoint requirements. If all remaining steps depend on the first, the executor can use one replan to partition its requirements into smaller steps. The original step's remaining request allowance funds the split and its children. When it can also fund implementation and required verification, the planner may batch its reads in one request and submit the partition in the next. The last planning request has no tools. A complete first response proceeds directly to implementation. Successors wait for the replacement prerequisites. This choice is available once per run. Exhaustion, an unusable split or another unrecoverable truncation leads to closeout.
+
+If an interrupted implementation transaction contains prior application edits, the controller saves the unverified files before rolling back. The receipt identifies the draft, its baseline and the interrupted attempt. With a previously retained step, the adaptive executor can continue another independently ready step from the restored source if the existing budget planner admits it. The interrupted requirements stay pending, as do steps depending on them. All charged usage carries forward. When implementation closes, the read-only closeout checks the selected source within the remaining time and charged-tool budget. It checks frozen diagnostics on that source when available. If no application edit survived, a starter alone cannot qualify.
+
+An otherwise empty workspace containing only a byte-matched mirror of the supplied public inputs receives the same generic scaffold as an empty directory. Existing projects and unrecognized mixed layouts keep their files.
+
+During ordinary plan execution with runnable candidate delivery, the controller checks the actual source after a tool batch changes it. The next implementation request receives the importing file and unresolved relative module or resource. The current step can edit multiple files and use its remaining requests to resolve the problem. This check charges the shared tool budget. When static checks pass and time and tools permit, the controller builds the changed application on a scratch copy, starts it and loads its root in Chromium. The first version that passes this probe can be retained as an engineering checkpoint. Requirement acceptance continues to use the step verification gates.
+
+When a later implementation turn is available, the controller can send observations from the last edit alongside its source identity. These include newly unused destructured parameters and up to 3,072 characters from the initial Chromium accessibility tree. Reading the tree costs one additional tool unit and uses the existing browser session. The step's scheduled checks and final delivery take priority. If the preview would overflow the next request, the controller omits it before shortening the outstanding source claims. A rendered role or name describes the initial page. A postcondition requires its own interaction and check.
+
+If a selected public scenario passes on the exact retained source of an otherwise blocked step, the controller can clear a pending `quality_unknown` warning. It credits each requirement and scenario pair once per run. The step keeps its construction-only disposition and the next step remains subject to normal resource admission.
+
+Closeout can select a prior committed step, a retained construction step or a saved engineering checkpoint. When missing source claims lead to a replan-limit or phase request-allowance stop, it can also recheck the saved draft from the rolled-back transaction. It binds the candidate identities before probing, replays the earlier successful public scenarios on the draft and reserves room to recheck the baseline if needed. The report identifies the source actually exported.
+
+In `verified` mode the activity is diagnostic. The exported self-test report keeps `candidate_readiness` with the checked and exported source identities; a smoke pass leaves full acceptance incomplete. In `runnable_candidate` mode a ready draft can be promoted and delivered under the existing bound permit. Unfunded or unavailable checks record why they did not run. Integrity, rollback and export failures still block delivery.

@@ -6,11 +6,13 @@
 
 ## 运行方式
 
-入口为 `platform-agent/main.py`。Runner 必须显式提供 `MODEL`、`OPENAI_BASE_URL` 和 `OPENAI_API_KEY`；默认不限制具体模型名称，部署方可设置 `ARC_ALLOWED_MODELS`。额度、HTTPS 端点约束、未知 usage 停止以及预算账本独占创建继续生效。
+入口为 `platform-agent/main.py`。竞赛 Runner 提供 `OPENAI_BASE_URL` 和 `OPENAI_API_KEY`。入口在 `MODEL` 缺省或为空时使用 `deepseek-flash`，也接受部署方显式指定的 `MODEL`。部署方可用 `ARC_ALLOWED_MODELS` 限制可选模型。额度、HTTPS 端点约束、未知 usage 停止以及预算账本独占创建继续生效。
 
 `ARC_EXECUTION_MODE=plan_execute` 为默认模式：只读规划、校验依赖、按步骤运行 ReAct、验证后提交步骤、失败回滚并有限重规划。设置 `ARC_EXECUTION_MODE=react` 可直接使用行动—观察循环。源码阅读按需要开放，动作和下一步由本次需求及观察结果决定。
 
 计划、实现、覆盖复查、运行时修复共享同一 RunControl，不能通过换阶段或回滚重置资源限制。源码回滚不退还 token、请求、工具次数或时间。执行状态与必要的计划/观察摘要写入 `.arc/platform-budget/<task>/context.jsonl` 和 `actions.json`；不依赖模型自述推断通过。
+
+普通自适应计划执行会读取公开原子需求的验证能力。公开输入有效、运行与行为检查均启用、但部分需求仍缺验收路径时，默认继续生成，并按现有工程门禁决定能否导出 `READY_FOR_EVALUATION` 候选。完整自测结果单独保存在 `self-tests/report.json` 的 `accepted` 字段。所有原子需求均可验证时走严格验收；设置 `ARC_DELIVERY_POLICY=verified` 可显式要求严格验收。
 
 模型只能操作允许的源码工具。原始需求、附带测试及控制器创建的任务 IR 不可写。默认 `ARC_INPUT_POLICY=requirements_only`：评分测试不进入上下文、seed 推断、静态反馈或运行时修复。生成期间进行源码校验、构建、HTTP探测，以及从公开需求独立生成并冻结的有界浏览器诊断；自生成诊断单独标注，不代表正式验收。输出目录不得含官方评测测试，正式评测在源码冻结后由独立评测器执行。行为诊断的预算、隔离和证据边界见[EXECUTION.md](EXECUTION.md)。
 
@@ -18,7 +20,7 @@
 
 详细状态、预算和回滚边界见 [EXECUTION.md](EXECUTION.md)。
 
-部署时可显式配置 `ARC_REASONING_EFFORT` 与 `ARC_MAX_OUTPUT_TOKENS`，避免提供方默认推理强度与响应额度不匹配。省略推理设置时不发送该参数；模型支持范围由部署方核对。提高单次输出上限不会提高 `ARC_TOKEN_LIMIT` 总预算，也不会开启截断重试。
+部署时可显式配置 `ARC_REASONING_EFFORT` 和 `ARC_MAX_OUTPUT_TOKENS`。所有模型请求默认发送 `reasoning_effort=max`，显式强度对所有阶段生效。实际推理取决于代理和上游。`ARC_TOKEN_LIMIT` 约束总预算。普通实现遇到已结算的空截断或被截断的工具批次时，每个新工作回合都可在剩余预算内替补一次。控制器丢弃被截断的整批工具调用，从已确认源码继续。连续两次空截断后的调度规则见[执行说明](EXECUTION.md)。
 
 ## 离线验证与打包
 

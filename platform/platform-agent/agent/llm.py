@@ -7,12 +7,11 @@ import time
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit
-from .model_transport import (CompletionClient, ModelRequestInterrupted,
+from .model_transport import (CompletionClient, ModelRequestInterrupted, SERVICE_HTTP_STATUS,
                               default_model_idle_timeout)
 from .request_metrics import RequestObservation
 
 LOGGER = logging.getLogger(__name__)
-DEFAULT_MAX_MODEL_REQUESTS = 250
 DEFAULT_MAX_TOTAL_TOKENS = 8_000_000
 
 
@@ -72,9 +71,10 @@ class ModelClient:
         self.last_request_interruption = None
         self.interrupted_requests = []
         self.max_turns, self.max_tool_calls = max_turns, max_tool_calls
-        self.max_model_requests = int(os.environ.get('ARCBENCH_MAX_MODEL_REQUESTS', DEFAULT_MAX_MODEL_REQUESTS))
+        request_limit = os.environ.get('ARCBENCH_MAX_MODEL_REQUESTS')
+        self.max_model_requests = int(request_limit) if request_limit is not None else None
         self.max_total_tokens = int(os.environ.get('ARCBENCH_MAX_TOTAL_TOKENS', DEFAULT_MAX_TOTAL_TOKENS))
-        if self.max_model_requests < 1 or self.max_total_tokens < 1:
+        if (self.max_model_requests is not None and self.max_model_requests < 1) or self.max_total_tokens < 1:
             raise ValueError('Request and token limits must be positive')
         self.tool_calls_used = self.model_requests_used = 0
         self.prompt_tokens_used = self.completion_tokens_used = 0
@@ -139,7 +139,7 @@ class ModelClient:
     def can_resume_after_service_error(self, expected) -> bool:
         return (isinstance(expected, ModelRequestInterrupted)
                 and expected is self.last_request_interruption
-                and isinstance(self.client, CompletionClient) and expected.reason == 'http_503')
+                and isinstance(self.client, CompletionClient) and expected.reason in SERVICE_HTTP_STATUS)
 
     def resume_after_service_error(self, expected) -> None:
         """Controller admits an accounted retry; the response protocol is unchanged."""
@@ -177,7 +177,7 @@ class ModelClient:
                 ("delivery_token_reserve", self.max_total_tokens, tokens_used,
                  min(400_000, self.max_total_tokens // 20)),
                 ("delivery_request_reserve", self.max_model_requests, requests_used,
-                 min(3, self.max_model_requests // 20)),
+                 min(3, self.max_model_requests // 20) if self.max_model_requests is not None else 0),
             ):
                 if reserve and used >= limit - reserve:
                     report = BudgetExhaustion(

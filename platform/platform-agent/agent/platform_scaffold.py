@@ -2,9 +2,13 @@
 from __future__ import annotations
 
 import json
+import logging
+import re
 from pathlib import Path
 
-DEPLOY = '''#!/usr/bin/env bash
+SCAFFOLD_NPM_REGISTRY = 'https://registry.npmjs.org'
+
+DEPLOY = f'''#!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")"
 exec > >(tee -a deployment.log) 2>&1
@@ -12,20 +16,25 @@ trap 'status=$?; printf "deployment exit=%s stage=%s\\n" "$status" "$stage"' EXI
 stage=dependencies
 export npm_config_fetch_retries=0
 export npm_config_fetch_timeout=30000
-export npm_config_registry=https://registry.npmjs.org
+export npm_config_registry={SCAFFOLD_NPM_REGISTRY}
 echo "deployment stage=$stage"
-if [ -f package-lock.json ]; then
-  npm ci --include=dev --no-audit --no-fund
-else
-  npm install --include=dev --no-audit --no-fund
-fi
+(
+  if node --report-exclude-network --version >/dev/null 2>&1; then
+    export NODE_OPTIONS="${{NODE_OPTIONS:+$NODE_OPTIONS }}--report-exclude-network"
+  fi
+  if [ -f package-lock.json ]; then
+    npm ci --include=dev --no-audit --no-fund
+  else
+    npm install --include=dev --no-audit --no-fund
+  fi
+)
 stage=build
 echo "deployment stage=$stage"
 npm run build
 stage=start
 echo "deployment stage=$stage"
-export HOST="${HOST:-0.0.0.0}"
-export PORT="${PORT:-3000}"
+export HOST="${{HOST:-0.0.0.0}}"
+export PORT="${{PORT:-3000}}"
 exec npm run start
 '''
 
@@ -614,17 +623,59 @@ def _effectively_empty(project: Path) -> bool:
     )
 
 
-def prepare_scaffold(project) -> bool:
+def starter_entries(project: Path):
+    """Visit application entries without opening runner or Git metadata."""
+    pending = [project]
+    while pending:
+        parent = pending.pop()
+        for path in parent.iterdir():
+            if path.is_symlink() or getattr(path, 'is_junction', lambda: False)():
+                raise ValueError(f'Linked starter entry: {path.relative_to(project)}')
+            if parent == project and (path.name == '.git' or path.name == '.arc' and path.is_dir()):
+                continue
+            yield path
+            if path.is_dir():
+                pending.append(path)
+
+
+def _first_project_entry(project, public_files):
+    """Identify a starter by anything outside the byte-matched public input mirror."""
+    public_roots = {path.parts[0] for path in map(Path, public_files) if len(path.parts) > 1}
+    for path in starter_entries(project):
+        relative = path.relative_to(project)
+        name = relative.as_posix()
+        if name in public_files:
+            expected = public_files[name]
+            if path.is_file() and path.stat().st_size == len(expected) and path.read_bytes() == expected:
+                continue
+        elif relative.parts[0] in public_roots and path.is_dir():
+            # The bundle describes files. Descendants still go through the same entry checks.
+            continue
+        return name
+    return None
+
+
+def prepare_scaffold(project, *, public_files=None) -> bool:
     """Inject the generic launcher, and the full neutral scaffold when the project is effectively empty.
 
     A project that already carries a package.json or deploy.sh anywhere keeps
     its own conventions untouched. A project with other substantive files gets
     only the launcher (package.json + deploy.sh), as in the earlier campaign rule.
+    With supplied public files, preserve every existing starter and install the
+    full scaffold only for an empty workspace or a matching requirements mirror.
     """
     project = Path(project)
-    if any(project.rglob('package.json')) or any(project.rglob('deploy.sh')):
-        return False
-    full = _effectively_empty(project)
+    if public_files is None:
+        if any(project.rglob('package.json')) or any(project.rglob('deploy.sh')):
+            return False
+        full = _effectively_empty(project)
+    else:
+        existing = _first_project_entry(project, public_files) if project.exists() else None
+        if existing is not None:
+            logging.info('PLATFORM_SCAFFOLD %s', json.dumps(dict(action='preserved_starter', entry=existing)))
+            return False
+        full = True
+        logging.info('PLATFORM_SCAFFOLD %s', json.dumps(dict(action='initialize_neutral_scaffold')))
     project.mkdir(parents=True, exist_ok=True)
     files = {
         'package.json': json.dumps(_package_manifest(), indent=2) + '\n',
@@ -654,10 +705,39 @@ def _scaffold_sources() -> dict:
     }
 
 
+def has_unchanged_starter_ui(files) -> bool:
+    return all(files.get(name) == content.encode('utf-8') for name, content in (
+        ('index.html', INDEX_HTML), ('src/main.jsx', SRC_MAIN_JSX), ('src/App.jsx', SRC_APP_JSX)))
+
+
+def has_only_starter_runtime(files) -> bool:
+    """Identify the neutral app even when metadata or the browser title changed."""
+    sources = _scaffold_sources()
+    inputs = {'package.json', 'docs/task-ir.json', 'docs/coverage.json'}
+    sources['deploy.sh'] = DEPLOY
+    if any(name not in sources and name not in inputs and not name.startswith('requirements/') for name in files):
+        return False
+    try:
+        package = json.loads(files.get('package.json', b'{}'))
+    except ValueError:
+        return False
+    if package != _package_manifest():
+        return False
+    title = re.compile(rb'<title\b[^>]*>[^<]*</title\s*>', re.IGNORECASE)
+    for name, content in sources.items():
+        data = files.get(name, b'')
+        expected = content.encode('utf-8')
+        if name == 'index.html':
+            data, expected = title.sub(b'', data, count=1), title.sub(b'', expected, count=1)
+        if data != expected:
+            return False
+    return True
+
+
 def is_scaffold(project) -> bool:
     """True when the generic launcher deploy.sh is present byte-for-byte."""
     path = Path(project) / 'deploy.sh'
-    return path.is_file() and path.read_text(encoding='utf-8') == DEPLOY
+    return path.is_file() and path.read_bytes().replace(b'\r\n', b'\n') == DEPLOY.encode('utf-8')
 
 
 def has_full_scaffold(project) -> bool:

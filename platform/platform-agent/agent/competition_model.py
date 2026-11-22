@@ -9,26 +9,30 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import re
 from collections.abc import Mapping
 from typing import Any
 
 from .campaign_budget import CampaignBudget, CampaignBudgetStopped
-from .model_transport import ModelRequestInterrupted
+from .coverage_store import LEDGER_PATH
+from .model_transport import ModelRequestInterrupted, TruncationShape, response_issue, truncated_output
 from .llm import ModelBudgetExceeded, ModelClient
-from .platform_settings import PlatformSettings, models_equivalent
-from .platform_execution import ExecutionStopped, QUALITY_WARNINGS, source_digest, validate_arguments
+from .platform_settings import DEFAULT_REASONING_EFFORT, PlatformSettings, models_equivalent
+from .platform_execution import ExecutionStopped, QUALITY_WARNINGS, request_horizon, source_digest, validate_arguments
 from .sandbox_files import snapshot_project
 from .tools import TOOL_SCHEMAS, MAX_OUTPUT_CHARS
 
 
 DEFAULT_CONTEXT_WINDOW_TOKENS = 32_768
 DEFAULT_OUTPUT_RESERVE_TOKENS = 16_384
-DEFAULT_REQUEST_ALLOWANCE = 8
+DEFAULT_REQUEST_ALLOWANCE = None
 DEFAULT_TOOL_CALL_LIMIT = 120
 MAX_TOOL_RESULT_CHARS = MAX_OUTPUT_CHARS
 MAX_CONTEXT_READ_CHARS = 8_000
 MAX_IDENTICAL_TOOL_FAILURES = 3
+MAX_TOOL_ARGUMENT_CHARS = 1_000_000
+PLANNING_TRUNCATION_SHAPES = frozenset({TruncationShape.EMPTY, TruncationShape.TEXT, TruncationShape.TOOL_CALLS})
 
 
 def same_campaign_model(requested, returned) -> bool:
@@ -52,6 +56,45 @@ _READ_ONLY_TOOLS = {"read_file", "read_files", "list_files", "search_text"}
 _WRITE_TOOLS = {"write_files", "replace_text"}
 
 
+def _edit_purposes(call, arguments=None, *, allowed=None):
+    """Classify requested edits without retaining paths or content in the audit."""
+    function = getattr(call, 'function', None)
+    name = getattr(function, 'name', None)
+    if not isinstance(name, str) or not name:
+        return {'unknown'}
+    if name == 'update_coverage':
+        return {'coverage'}
+    # A known read cannot declare an edit, even if this turn no longer offers it.
+    if name in _READ_ONLY_TOOLS or name in {'read_context', 'list_context'}:
+        return set()
+    if name not in _WRITE_TOOLS:
+        return {'unknown'} if allowed is not None and name not in allowed else set()
+    # A previous call or a batch limit may have stopped preflight before this
+    # declaration. Its original arguments still describe the requested target.
+    if arguments is None:
+        raw = getattr(function, 'arguments', None)
+        if not isinstance(raw, str) or len(raw) > MAX_TOOL_ARGUMENT_CHARS:
+            return {'unknown'}
+        try:
+            arguments = json.loads(raw)
+        except (ValueError, RecursionError):
+            return {'unknown'}
+    if not isinstance(arguments, dict):
+        return {'unknown'}
+    rows = arguments.get('files') if name == 'write_files' else [arguments]
+    if not isinstance(rows, list) or not rows:
+        return {'unknown'}
+    purposes = set()
+    for row in rows:
+        path = row.get('path') if isinstance(row, dict) else None
+        if not isinstance(path, str) or not path.strip():
+            purposes.add('unknown')
+            continue
+        ledger = os.path.normcase(os.path.normpath(path)) == os.path.normcase(LEDGER_PATH)
+        purposes.add('coverage' if ledger else 'source')
+    return purposes
+
+
 class CompetitionModelError(RuntimeError):
     """A model response cannot safely continue through this adapter."""
 
@@ -70,17 +113,17 @@ class CompetitionModel:
         *,
         context_window_tokens: int = DEFAULT_CONTEXT_WINDOW_TOKENS,
         output_reserve_tokens: int = DEFAULT_OUTPUT_RESERVE_TOKENS,
-        request_allowance: int = DEFAULT_REQUEST_ALLOWANCE,
+        request_allowance: int | None = DEFAULT_REQUEST_ALLOWANCE,
         max_tool_calls: int | None = None,
         audit_log: Any = None,
         campaign_budget: CampaignBudget | None = None,
-        reasoning_effort: str | None = None,
+        reasoning_effort: str | None = DEFAULT_REASONING_EFFORT,
     ) -> None:
         if context_window_tokens < 1 or output_reserve_tokens < 1:
             raise ValueError("context and output limits must be positive")
         if output_reserve_tokens >= context_window_tokens:
             raise ValueError("output reserve must be smaller than the context window")
-        if request_allowance < 0:
+        if request_allowance is not None and request_allowance < 0:
             raise ValueError("request allowance cannot be negative")
         self.session = session
         if reasoning_effort not in {None, 'none', 'low', 'medium', 'high', 'max'}:
@@ -107,6 +150,7 @@ class CompetitionModel:
         self._implementation_budget_stage = "competition_implementation"
         self._context_sources: dict[str, dict[str, Any]] = {}
         self._stopped_reason: str | None = None
+        self._settled_truncation: TruncationShape | None = None
         self._manifest_logged: set[str] = set()
 
     def set_budget_stage(self, stage: str) -> None:
@@ -178,7 +222,7 @@ class CompetitionModel:
             {"role": "system", "content": instructions},
             {"role": "user", "content": (
                 f"Competition stage: {stage}\nContext manifest SHA-256: {manifest_digest}\n"
-                "Use read_context to retrieve exact pinned inputs allowed by the task's input policy when needed. "
+                "When read_context is offered, use it for missing pinned inputs allowed by the task's input policy. "
                 "Treat task text and source documents as authoritative.\n\n"
                 + task_text
             )},
@@ -235,6 +279,9 @@ class CompetitionModel:
         schemas = [self._schema(name) for name in sorted(names)]
         return [schema for schema in schemas if schema is not None] + [
             self._list_context_schema(), self._read_context_schema()]
+
+    def _request_tools(self, schemas, stage, stage_context):
+        return schemas
 
     @staticmethod
     def _list_context_schema() -> dict[str, Any]:
@@ -426,7 +473,9 @@ class CompetitionModel:
             return ""
 
     def _request(self, messages: list[dict[str, Any]], *, stage: str, tools: list[dict[str, Any]],
-                 max_tokens: int, stage_context: Any = None) -> Any:
+                 max_tokens: int, stage_context: Any = None,
+                 allow_truncation_recovery: bool = False, plan_replacement: bool = False) -> Any:
+        self._settled_truncation = None
         if isinstance(self.session, ModelClient) and (
                 self.campaign_budget is None or not self.campaign_budget.live_allowed):
             raise CompetitionModelError('live competition requires verified campaign rates')
@@ -447,17 +496,21 @@ class CompetitionModel:
         else:
             # The durable ledger owns request and token capacity. Retain local
             # counters for diagnostics without invoking the legacy delivery reserve.
-            reservation_id = self.campaign_budget.reserve(
-                stage, self.campaign_budget.config.max_input_tokens, max_tokens)
+            prepare = getattr(self.campaign_budget, 'reserve_prepared_request', None)
+            if prepare is None:
+                reservation_id = self.campaign_budget.reserve(
+                    stage, self.campaign_budget.config.max_input_tokens, max_tokens)
+            else:
+                reservation_id = prepare(stage, messages, tools, max_tokens)
             self.session.model_requests_used = getattr(self.session, "model_requests_used", 0) + 1
-        request_options = {}
+        request_options = {'tools': tools, 'tool_choice': 'auto'} if tools else {}
         if self.reasoning_effort is not None:
             request_options['reasoning_effort'] = self.reasoning_effort
         if getattr(self.session, "is_deepseek", False):
             request_options["response_format"] = {"type": "json_object"}
         try:
             response = self.session._create_completion(stage, model=model, messages=messages,
-                tools=tools, tool_choice='auto', max_tokens=max_tokens, **request_options)
+                max_tokens=max_tokens, **request_options)
         except BaseException:
             if reservation_id is not None:
                 self.campaign_budget.freeze(reservation_id, "request_interrupted_usage_unknown")
@@ -488,9 +541,22 @@ class CompetitionModel:
             self._append_log({"stage": stage, "status": "stopped", "reason": "total_token_budget",
                               "limit": token_limit, "used": token_usage})
             return None
+        issue = response_issue(response, final_plan=plan_replacement)
+        if issue:
+            self._stopped_reason, detail = issue
+            if self.campaign_budget is not None:
+                self.campaign_budget.stop(self._stopped_reason)
+            self._append_log(dict(stage=stage, status="stopped", reason=self._stopped_reason,
+                                  response_issue=detail))
+            return None
         if self._finish_reason(response) == "length":
+            shape = truncated_output(response)
+            if allow_truncation_recovery and reservation_id is not None:
+                return shape
+            self._settled_truncation = shape
             self._stopped_reason = "truncated"
-            self._append_log({"stage": stage, "status": "stopped", "reason": "truncated"})
+            self._append_log({"stage": stage, "status": "stopped", "reason": "truncated",
+                              "truncation_shape": shape.value, "recovery_declined": "ineligible_stage_or_ledger"})
             return None
         if self._finish_reason(response) not in ("stop", "tool_calls"):
             self._stopped_reason = "model_terminated"
@@ -503,7 +569,7 @@ class CompetitionModel:
     def _run(self, packet: Any, tools: Any, *, stage: str, mode: str,
              instructions: str, max_tokens: int, request_allowance: int | None = None,
              initial_messages: list[dict[str, Any]] | None = None,
-             final_validator: Any = None, stage_context: Any = None) -> dict[str, Any]:
+             final_validator: Any = None, stage_context: Any = None, source_review: bool = False) -> dict[str, Any]:
         self._stopped_reason = None
         self._context_sources = {}
         reset_reads = getattr(getattr(packet, 'repository', None), 'reset_read_receipts', None)
@@ -511,14 +577,20 @@ class CompetitionModel:
             reset_reads()
         messages = initial_messages if initial_messages is not None else self._messages(packet, stage, instructions)
         schemas = self._tool_schemas(mode)
-        if not self._check_context(messages, schemas, stage, packet, max_tokens):
+
+        def context_fits():
+            return self._check_context(messages, self._request_tools(schemas, stage, stage_context),
+                                       stage, packet, max_tokens)
+
+        if not context_fits():
             return {"status": "stopped", "reason": self._stopped_reason, "turns": 0}
-        allowance = self.request_allowance if request_allowance is None else request_allowance
+        allowance = request_horizon(self.request_allowance if request_allowance is None else request_allowance)
         if allowance < 0:
             raise ValueError("request allowance cannot be negative")
         turns = 0
         failed_signatures: dict[str, int] = {}
         format_repairs = 0
+        coverage_correction = None
         seen_call_ids = set()
         control = getattr(self, "execution_control", None)
         while turns < allowance:
@@ -527,6 +599,7 @@ class CompetitionModel:
                     self.session._check_model_budget(reserve_for_delivery=False)
                 else:
                     self.campaign_budget.check_time(stage)
+                previous_request = control.requests if control is not None else None
                 response = self._request(messages, stage=stage, tools=schemas, max_tokens=max_tokens,
                                          stage_context=stage_context)
             except ExecutionStopped as exc:
@@ -540,35 +613,67 @@ class CompetitionModel:
                 return {"status": "stopped", "reason": self._stopped_reason, "turns": turns,
                         "budget": report.summary() if report is not None else str(exc)}
             if response is None:
-                return {"status": "stopped", "reason": self._stopped_reason, "turns": turns + 1}
+                turns += 1
+                if (mode == 'design' and self._stopped_reason == 'truncated'
+                        and self._settled_truncation in PLANNING_TRUNCATION_SHAPES):
+                    # This path owns only a settled read-only reply that has not
+                    # already been recovered by a ledger-aware adapter.
+                    if (format_repairs == 0 and turns < allowance
+                            and getattr(stage_context, 'has_followup_request', True)
+                            and (control is None or control.repair_protocol())):
+                        format_repairs += 1
+                        self._append_log(dict(stage=stage, event='planning_output_retry',
+                                              reason='truncated', turns=turns))
+                        messages.append(dict(role='user', content=(
+                            'The preceding planning response reached its output limit and was discarded in full. '
+                            'Generate a fresh, complete compact JSON object. Make goals and acceptance concise, '
+                            'preserve every required ID and dependency, and use the observations already supplied. '
+                            'Do not continue a partial JSON prefix or reread unchanged sources.')))
+                        self._stopped_reason = None
+                        if not context_fits():
+                            return dict(status='stopped', reason=self._stopped_reason, turns=turns)
+                        continue
+                    return dict(status='stopped', reason='planning_truncated', turns=turns, phase='planning',
+                                detail='Compact plan regeneration unavailable or exhausted')
+                return {"status": "stopped", "reason": self._stopped_reason, "turns": turns}
             turns += 1
+            can_follow_up = turns < allowance and getattr(stage_context, 'has_followup_request', True)
             calls = self._tool_calls(response)
+            receipt = None
+            if self.audit_log is not None and control is not None and control.requests > previous_request:
+                receipt = dict(event='model_response_purpose', stage=stage, mode=mode, request_id=control.requests,
+                               coverage_correction=coverage_correction)
+            coverage_correction = None
             if calls:
                 # Validate the whole response before the first side effect. A
                 # disallowed later call must not partially apply an earlier one.
-                allowed = {item['function']['name'] for item in schemas}
-                parameters = {item['function']['name']: item['function']['parameters'] for item in schemas}
+                # A transport retry can use the last physical turn inside this model-loop iteration.
+                sent_tools = getattr(stage_context, 'sent_tool_schemas', None)
+                response_schemas = schemas if sent_tools is None else sent_tools
+                parameters = {item['function']['name']: item['function']['parameters'] for item in response_schemas}
+                allowed = parameters.keys()
+                parsed = []
+                index = None
                 try:
                     if control is not None:
                         control.batch(calls)
-                    parsed = []
                     batch_ids = set()
                     for index, call in enumerate(calls):
                         if (not isinstance(call.id, str) or not call.id or call.id in seen_call_ids
                                 or call.id in batch_ids or call.function.name not in allowed):
                             raise ValueError('invalid, repeated or unexposed tool call')
-                        if len(call.function.arguments or '') > 1_000_000:
+                        if len(call.function.arguments or '') > MAX_TOOL_ARGUMENT_CHARS:
                             raise ValueError('tool arguments exceed bounded payload')
                         arguments = json.loads(call.function.arguments or '{}')
                         if not isinstance(arguments, dict):
                             raise ValueError('tool arguments must be a JSON object')
+                        parsed.append(arguments)
                         validate_arguments(arguments, parameters[call.function.name], call.function.name)
                         preflight = getattr(tools, 'preflight', None)
                         if callable(preflight):
                             preflight(call.function.name, arguments)
                         if call.function.name == 'validate_source' and index != len(calls) - 1:
                             raise ValueError('validation must be the last action in a batch')
-                        parsed.append(arguments)
                         batch_ids.add(call.id)
                     seen_call_ids.update(batch_ids)
                 except ExecutionStopped as exc:
@@ -579,7 +684,10 @@ class CompetitionModel:
                     detail = str(exc)[:1000]
                     self._append_log(dict(stage=stage, event='tool_batch_rejected', detail=detail,
                                           tool_names=[getattr(getattr(c, 'function', None), 'name', None) for c in calls]))
-                    if turns < allowance and control is not None and control.repair_protocol():
+                    if can_follow_up and control is not None and control.repair_protocol():
+                        if index is not None and 'coverage' in _edit_purposes(
+                                calls[index], parsed[index] if index < len(parsed) else None):
+                            coverage_correction = 'protocol'
                         # Rejected calls are quoted as text, never presented as
                         # executed tool calls or paired with invented results.
                         assistant = self._assistant_payload(response)
@@ -591,10 +699,19 @@ class CompetitionModel:
                             'Correct the batch using the exposed schemas. Use unique call IDs, valid '
                             'arguments, editable project-relative paths, and put validate_source last. '
                             'Do not repeat unchanged invalid calls. Rejection: ' + detail)))
-                        if not self._check_context(messages, schemas, stage, packet, max_tokens):
+                        if not context_fits():
                             return dict(status='stopped', reason=self._stopped_reason, turns=turns)
                         continue
                     return dict(status='stopped', reason='invalid_tool_batch', detail=detail, turns=turns)
+                finally:
+                    if receipt is not None:
+                        edits = {kind for i, call in enumerate(calls)
+                                 for kind in _edit_purposes(call, parsed[i] if i < len(parsed) else None, allowed=allowed)}
+                        if 'unknown' in edits:
+                            purpose = 'unknown'
+                        else:
+                            purpose = 'source_and_coverage' if len(edits) == 2 else next(iter(edits), 'other_tools')
+                        control.emit_cost(dict(receipt, purpose=purpose))
                 turn_before = (source_digest(snapshot_project(tools.project_dir))
                                if control is not None and hasattr(tools, 'project_dir') else '')
                 new_evidence = False
@@ -638,6 +755,8 @@ class CompetitionModel:
                     except Exception as exc:
                         logging.warning('MODEL_TOOL_ERROR %s',json.dumps({'tool':name,'error_type':type(exc).__name__,'detail':str(exc)[:800]}))
                         failed_signatures[signature] = failed_signatures.get(signature, 0) + 1
+                        if 'coverage' in _edit_purposes(call, args):
+                            coverage_correction = 'tool'
                         result = f"Tool error: {type(exc).__name__}: {exc}"
                         if failed_signatures[signature] >= MAX_IDENTICAL_TOOL_FAILURES:
                             self._stopped_reason = "repeated_tool_failure"
@@ -650,7 +769,7 @@ class CompetitionModel:
                     try:
                         handoff = bool(getattr(stage_context, 'can_yield_verification', False))
                         repair_handoff = bool(getattr(stage_context, 'verify_on_return', False))
-                        read_only_turn = all(call.function.name in _READ_ONLY_TOOLS | {'read_context', 'list_context'}
+                        read_only_turn = all(call.function.name in _READ_ONLY_TOOLS | {'read_context', 'list_context', 'inspect_ui'}
                                              for call in calls)
                         information_only = new_evidence and turn_before == after and read_only_turn
                         control.observe(turn_before, after, new_evidence=new_evidence,
@@ -663,16 +782,22 @@ class CompetitionModel:
                                                             new_evidence=new_evidence)
                     except ExecutionStopped as exc:
                         return dict(status='stopped', reason=exc.reason, turns=turns)
+                engineering_repair = getattr(stage_context, 'needs_engineering_repair', False)
+                if engineering_repair and stage_context.completed:
+                    tools.unseal()
+                    stage_context.completed = False
                 if stage_context is not None and stage_context.completed:
                     return {'status':'complete','turns':turns,'summary':'Agent requested validation and static checks passed; functional acceptance remains pending.','changed_paths':[]}
-                if (control is not None and handoff and not repair_handoff and not read_only_turn
+                if (control is not None and handoff and not repair_handoff and not engineering_repair and not read_only_turn
                         and control.control_state == 'WARNING' and control.warning_reason in QUALITY_WARNINGS):
                     self._append_log(dict(event='step_verification_yield', reason=control.warning_reason,
                         source_sha256=after, requests=control.requests, tools=control.tools))
                     return dict(status='stopped', reason='verification_due', turns=turns)
-                if not self._check_context(messages, schemas, stage, packet, max_tokens):
+                if can_follow_up and not context_fits():
                     return {"status": "stopped", "reason": self._stopped_reason, "turns": turns}
                 continue
+            if receipt is not None:
+                control.emit_cost(dict(receipt, purpose='final'))
             content = self._content(response).strip()
             if not content:
                 return {"status": "stopped", "reason": "empty_response", "turns": turns}
@@ -691,7 +816,7 @@ class CompetitionModel:
                     final_validator(value)
             except ValueError as error:
                 detail = str(error)[:1000]
-                if (format_repairs == 0 and turns < allowance
+                if (format_repairs == 0 and can_follow_up
                         and (control is None or control.repair_protocol())):
                     format_repairs += 1
                     messages.append(self._assistant_payload(response))
@@ -703,13 +828,20 @@ class CompetitionModel:
                          "Convert the answer you just produced into JSON only. ") +
                         "Do not reread files, change the implementation, or add prose or Markdown fences. "
                         "Validation error: " + detail)})
-                    if not self._check_context(messages, schemas, stage, packet, max_tokens):
+                    if not context_fits():
                         return {"status": "stopped", "reason": self._stopped_reason, "turns": turns}
                     continue
                 return {"status": "stopped", "reason": invalid_reason, "detail": detail, "turns": turns,
                         "raw": content[:MAX_TOOL_RESULT_CHARS]}
             if value.get('status') in {'failed', 'stopped', 'incomplete'}:
                 return dict(status='stopped', reason='model_incomplete', turns=turns)
+            if getattr(stage_context, 'needs_engineering_repair', False):
+                if can_follow_up:
+                    messages.append(self._assistant_payload(response))
+                    messages.append(dict(role='user', content='The current engineering check is still failing. '
+                        'Continue repairing this entry within the remaining step allowance.'))
+                    continue
+                return dict(status='stopped', reason='request_allowance', turns=turns)
             if control is not None and mode == 'implement':
                 state = source_digest(control.source(tools.project_dir)) if hasattr(tools, 'project_dir') else ''
                 try:
@@ -791,7 +923,7 @@ class CompetitionModel:
             stage = "competition_repair"
         if self.campaign_budget is None:
             stage = "competition_implementation"
-        return self._run(packet, tools, stage=stage, mode="implement",
+        return self._run(packet, tools, stage=stage, mode="implement", source_review=review,
                          instructions=instructions, max_tokens=self.output_reserve_tokens,
                          request_allowance=request_allowance, initial_messages=messages)
 

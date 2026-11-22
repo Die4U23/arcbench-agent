@@ -139,11 +139,11 @@ def initialize_self_test(app):
     return SelfTestArtifacts(directory, (info.st_dev, info.st_ino), content)
 
 
-def attach_candidate_delivery(state, delivery):
+def attach_candidate_delivery(state, delivery, *, diagnostic_only=False):
     """Add the independent delivery receipt without changing any self-test result."""
     _check_owned(state)
     report = json.loads(state.report_bytes)
-    report['delivery'] = delivery
+    report['candidate_readiness' if diagnostic_only else 'delivery'] = delivery
     content = _encoded(report)
     descriptor, temporary = tempfile.mkstemp(prefix='.report-', dir=state.directory)
     try:
@@ -301,7 +301,7 @@ def _runtime_summary(report, source):
 def finalize_self_test(state, *, required_ids, static, runtime_report, authored,
                        source_sha256, missing_coverage, behavior_enabled=True,
                        runtime_enabled=True, authored_suites=(), error=None,
-                       requirements_sha256=None, candidate=None):
+                       requirements_sha256=None, candidate=None, verification_stop=None):
     """Export exact known suites, then accept only complete source-bound tests.
 
     ``authored`` identifies the single final checked suite. ``authored_suites``
@@ -311,6 +311,8 @@ def finalize_self_test(state, *, required_ids, static, runtime_report, authored,
     """
     _check_owned(state)
     reasons, exported, frozen_files, frozen_ok = [], [], None, False
+    if verification_stop is not None:
+        reasons.append(verification_stop['reason'])
     if error:
         reasons.append('generation_error')
     if candidate and candidate.get('status') != 'promoted':
@@ -386,6 +388,8 @@ def finalize_self_test(state, *, required_ids, static, runtime_report, authored,
         expected_cases=expected, runtime=_runtime_summary(runtime_report, source_sha256), suites=exported)
     if candidate:
         report['candidate'] = candidate
+    if verification_stop is not None:
+        report['generation_stop'] = dict(verification_stop, exported_source_sha256=report['source_sha256'])
     _check_owned(state)
     content = _encoded(report)
     descriptor, temporary = tempfile.mkstemp(prefix='.report-', dir=state.directory)

@@ -177,13 +177,18 @@ def compile_public_step(phase, step):
     return None
 
 
-def _public_clauses(text):
-    """Return source slices separated by unquoted top-level sentence punctuation."""
+_SEQUENCE = re.compile(r'(?:,\s*(?:and\s+)?then\s+|\s+and\s+then\s+)', re.I)
+
+
+def _public_clauses(text, *, sequence=False):
+    """Split at top-level sentence punctuation and optional explicit sequence connectors."""
     pairs = {'(': ')', '[': ']', '{': '}'}
-    quotes = {'"': '"', "'": "'", '“': '”', '‘': '’', chr(96): chr(96)}
+    quotes = {'"': '"', "'": "'", '“': '”', '‘': '’', '「': '」', chr(96): chr(96)}
     stack, spans = [], []
     quote, escaped, start = None, False, 0
     for index, char in enumerate(text):
+        if index < start:
+            continue
         if quote:
             if escaped:
                 escaped = False
@@ -201,10 +206,14 @@ def _public_clauses(text):
         elif char in pairs.values():
             if not stack or stack.pop() != char:
                 return []
-        elif not stack and (char == ';' or
+        elif (sequence and not stack and (char == ',' or char.isspace() and index and not text[index - 1].isspace())
+              and (match := _SEQUENCE.match(text, index))):
+            spans.append((start, index))
+            start = match.end()
+        elif not stack and (char in ';；。' or
                             (char == '.' and index + 1 < len(text) and text[index + 1].isspace())):
             # Retain a sentence's terminal period in its exact source slice.
-            end = index + (char == '.')
+            end = index + (char in '.。')
             spans.append((start, end))
             start = index + 1
     if quote or stack:
@@ -224,7 +233,7 @@ def _public_clauses(text):
 
 
 def _bind_compound_step(phase, step, elements):
-    from .platform_task_ir import _then_step, _when_step
+    from .platform_task_ir import _QUOTED, _then_step, _when_step
     parse = _when_step if phase == 'when' else _then_step
     text = step['text']
     if step != parse(text):
@@ -233,12 +242,8 @@ def _bind_compound_step(phase, step, elements):
         whole = _checkbox_predicate(text.strip(), elements)
         if whole is not None:
             return [(0, len(text), whole)]
-    spans = _public_clauses(text)
-    if len(spans) < 2:
-        return []
-    parts = []
-    for start, end in spans:
-        clause = text[start:end]
+
+    def bind(clause):
         bound = compile_public_step(phase, parse(clause))
         if bound and bound['op'] == 'url':
             try:
@@ -247,8 +252,74 @@ def _bind_compound_step(phase, step, elements):
                 bound = None
         if bound is None and phase == 'then':
             bound = _checkbox_predicate(clause, elements)
-        parts.append((start, end, bound))
-    return parts if any(bound is not None for _, _, bound in parts) else []
+        return bound
+
+    def sentence_parts(sentence):
+        if len(sentence) > 1 and any(
+                len(parts) == 1 and parts[0][2] is None and re.search(
+                    r'\b(?:if|unless|otherwise|either|or|except|only|not|never|both|when|while|until|before|after)\b',
+                    _QUOTED.sub(' ', text[parts[0][0]:parts[0][1]]), re.I)
+                for parts in sentence):
+            # Conditions can govern semicolon neighbors in the same sentence.
+            return [(parts[0][0], parts[-1][1], None) for parts in sentence]
+        return [part for clause in sentence for part in clause]
+
+    parts, sentence = [], []
+    for start, end in _public_clauses(text):
+        clause = text[start:end]
+        bound = bind(clause)
+        sequence = _public_clauses(clause, sequence=True) if bound is None else []
+        clause_parts = [(start, end, bound)]
+        if len(sequence) > 1:
+            expanded = [(start + lo, start + hi, bind(clause[lo:hi])) for lo, hi in sequence]
+            # A modifier in either half may qualify the full sequence.
+            if all(operation is not None for _, _, operation in expanded):
+                clause_parts = expanded
+        sentence.append(clause_parts)
+        if clause.endswith(('.', '。')):
+            parts.extend(sentence_parts(sentence))
+            sentence = []
+    parts.extend(sentence_parts(sentence))
+    return parts if len(parts) > 1 and any(bound is not None for _, _, bound in parts) else []
+
+
+def analyze_public_clause(phase, step):
+    """Describe source-bound operations and explicit candidate targets of an unknown row."""
+    from .platform_task_ir import _annotation_spans, _leading_public_action, _then_step, _when_step, _QUOTED, _ROLE_TOKEN
+    if not isinstance(step, dict) or phase not in {'when', 'then'}:
+        return []
+    text = step.get('text')
+    if not isinstance(text, str) or step.get('action' if phase == 'when' else 'kind') != 'unknown':
+        return []
+    if step != (_when_step if phase == 'when' else _then_step)(text):
+        return []
+    spans = _bind_compound_step(phase, step, [])
+    if not spans and phase == 'when':
+        sentences = _public_clauses(text, sequence=True)
+        if (len(sentences) > 1 and all(text[a:b].endswith(('.', '。')) for a, b in sentences[:-1])
+                and all(_leading_public_action(text[a:b]) for a, b in sentences)):
+            spans = [(a, b, None) for a, b in sentences]
+    parts = []
+    for start, end, operation in spans or [(0, len(text), None)]:
+        part = dict(span=[start, end])
+        clause = text[start:end]
+        outer_names = {match.start() for match in _QUOTED.finditer(clause)}
+        targets = [dict(span=[start + lo, start + hi], role=role, name=name)
+                   for (lo, hi), name, role in _annotation_spans(clause) if lo in outer_names and _ROLE_TOKEN.fullmatch(role)]
+        if targets:
+            part['targets'] = targets
+        if operation:
+            part['operation'] = operation
+        elif phase == 'when' and (head := _leading_public_action(clause)):
+            cue_end = start + head.end()
+            part['action_cue'] = dict(text=head.group(), span=[start, cue_end])
+            operand = cue_end
+            while operand < end and text[operand].isspace():
+                operand += 1
+            if operand < end:
+                part['action_cue']['operand_span'] = [operand, end]
+        parts.append(part)
+    return parts if any(len(part) > 1 for part in parts) else []
 
 
 def _opening_declarations(text):

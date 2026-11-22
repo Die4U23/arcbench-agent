@@ -698,6 +698,7 @@ def _scenario(work_id: str, raw: Any, index: int, entities: list[dict[str, Any]]
     if ordered is not None:
         ordered.extend(dict(phase="when", index=i) for i in range(consumed_whens, len(whens)))
     texts = [*givens, *[step["text"] for step in whens], *[step["text"] for step in thens]]
+    clause_analysis = scenario_clause_analysis(whens, thens)
     return {
         "id": scenario_id,
         "work_item": work_id,
@@ -708,6 +709,7 @@ def _scenario(work_id: str, raw: Any, index: int, entities: list[dict[str, Any]]
         "then": thens,
         **({"ordered_steps": ordered} if ordered is not None else {}),
         **({"public_steps": public_steps} if public_steps else {}),
+        **({"clause_analysis": clause_analysis} if clause_analysis else {}),
         "source": "parsed",
     }, texts
 
@@ -765,6 +767,26 @@ def _ambiguous_statement(text: str) -> bool:
     return bool(re.search(r"(?i)\b(?:and|then|within|inside|in)\b|;|；|然后|并且|同时|范围|区域.*内", outside))
 
 
+_STRICT_ACTION_WORDS = {
+    'reload': ('Reload', 'Refresh', '刷新'), 'click': ('Click', 'Tap', '点击'),
+    'check': ('Check', '勾选'), 'uncheck': ('Uncheck', '取消勾选'), 'submit': ('Submit', '提交'),
+    'open': ('Open', '打开'), 'fill': ('Fill',), 'select': ('Select',),
+}
+_LEADING_ACTION = re.compile('|'.join(f"(?P<{op}>{'|'.join(map(re.escape, words))})"
+                                      for op, words in _STRICT_ACTION_WORDS.items()), re.I)
+_UNSPACED_ACTION_WORDS = {word for words in _STRICT_ACTION_WORDS.values() for word in words if not word.isascii()}
+
+
+def _leading_public_action(text):
+    """A lexical cue at the start of the source, independent of operand binding."""
+    match = _LEADING_ACTION.match(text)
+    if match and match.group() not in _UNSPACED_ACTION_WORDS and match.end() < len(text):
+        adjacent = text[match.end()]
+        if not adjacent.isspace() and adjacent not in '.,;:!?。；，：！？':
+            return None
+    return match
+
+
 def _strict_statement(text: str, phase: str) -> dict | None:
     """Finite whole-statement grammar; no verb-search interpretation of modifiers."""
     annotation = '(?:' + _ANNOTATION.pattern + r'|(?P<locator_kind>text|label|placeholder|css)\s+(?P<locator_json>"(?:\\.|[^"\\])*"))' + r'(?:\s+within\s+(?P<locator_scope>\{[^{}]*\}))?'
@@ -785,17 +807,25 @@ def _strict_statement(text: str, phase: str) -> dict | None:
     end = r"\s*[.。]?\s*"
     literal = r'(?P<literal>"(?:\\.|[^"\\])*")'
     if phase == 'when':
-        if re.fullmatch(r"(?:Reload(?: the current page)?|Refresh(?: the current page)?|刷新当前页面|刷新)"+end,text,re.I):
-            return dict(action='reload',target=dict(role=None,name=None),value=None,text=text)
-        for op,verb in [('click',r'Click|Tap|点击'),('check',r'Check|勾选'),('uncheck',r'Uncheck|取消勾选'),('submit',r'Submit|提交'),('open',r'Open|打开')]:
-            match = re.fullmatch(r'(?:'+verb+r')'+(r'\s*' if text.startswith(('点击','勾选','取消勾选','提交','打开')) else r'\s+')+annotation+end,text,re.I)
-            if match and parsed_target(match) is not None:
-                return dict(action=op,target=parsed_target(match),value=None,text=text)
-        for op,verb in [('fill','Fill'),('select','Select')]:
-            match=re.fullmatch(verb+r'\s+'+annotation+r'\s+with\s+'+literal+end,text,re.I)
-            if match:
-                if parsed_target(match) is None: return None
-                return dict(action=op,target=parsed_target(match),value=json.loads(match.group('literal')),text=text)
+        head = _leading_public_action(text)
+        if head is None:
+            return None
+        op = head.lastgroup
+        tail = text[head.end():]
+        spaced = head.group() not in _UNSPACED_ACTION_WORDS
+        if op == 'reload':
+            suffix = r'(?: the current page)?' if spaced else r'(?:当前页面)?'
+            if re.fullmatch(suffix + end, tail, re.I):
+                return dict(action=op, target=dict(role=None, name=None), value=None, text=text)
+            return None
+        takes_value = op in {'fill', 'select'}
+        grammar = (r'\s+' if spaced else r'\s*') + annotation
+        if takes_value:
+            grammar += r'\s+with\s+' + literal
+        match = re.fullmatch(grammar + end, tail, re.I)
+        if match and (locator := parsed_target(match)) is not None:
+            return dict(action=op, target=locator, value=json.loads(match.group('literal')) if takes_value else None,
+                        text=text)
     else:
         # Bind the whole statement. No ignored modifiers, approximate words or extra keys.
         visual_match = re.fullmatch(annotation + r"\s+(?P<visual_tail>(?:visual|CSS|width|height|border-radius|shape)\s+.*?)" + end, text, re.I)
@@ -849,8 +879,7 @@ def _kind(text: str) -> str:
     return "unknown"
 
 
-def _annotations(text: str) -> list[tuple[str, str]]:
-    found = []
+def _annotation_spans(text):
     for match in _ANNOTATION.finditer(text):
         name = next((match.group(group) for group in ("dn", "sn", "cn", "jn") if match.group(group) is not None), "")
         role = next((match.group(group) for group in ("rd", "rs", "rb") if match.group(group) is not None), "")
@@ -864,8 +893,23 @@ def _annotations(text: str) -> list[tuple[str, str]]:
         name = name.strip()
         role = role.strip().casefold()
         if role:  # The annotation explicitly supplies a name, including an empty name.
-            found.append((name, role))
-    return found
+            yield match.span(), name, role
+
+
+def _annotations(text: str) -> list[tuple[str, str]]:
+    return [(name, role) for _, name, role in _annotation_spans(text)]
+
+
+def scenario_clause_analysis(whens, thens):
+    from .behavior_contracts import analyze_public_clause
+    rows = []
+    for phase, steps, field in (('when', whens, 'action'), ('then', thens, 'kind')):
+        for index, step in enumerate(steps):
+            if step.get(field) == 'unknown':
+                parts = analyze_public_clause(phase, step)
+                if parts:
+                    rows.append(dict(phase=phase, index=index, parts=parts))
+    return rows
 
 
 def _first_target(text: str) -> tuple[str | None, str | None]:

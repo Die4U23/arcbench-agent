@@ -103,7 +103,7 @@ class PlatformSettings:
     inspection_turn_limit: int = 3
     control_policy: str = 'adaptive'
     budget_policy: str = 'adaptive'
-    recovery_attempt_limit: int = 1
+    recovery_attempt_limit: int | None = None
     api_retries_per_call: int | None = None
     api_retry_total: int | None = None
     api_wait_seconds: int = 60
